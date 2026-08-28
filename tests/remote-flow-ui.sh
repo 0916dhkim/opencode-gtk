@@ -146,6 +146,24 @@ wait_for_event "session:create:New session"
 wait_for_no_window 'New session'
 
 xdotool windowfocus "${main_window}"
+xdotool mousemove --window "${main_window}" 90 70 mousedown 1
+for x in 140 190 240 290 320; do
+  xdotool mousemove --sync --window "${main_window}" "${x}" 70
+  sleep 0.1
+done
+xdotool mouseup 1
+sleep 0.5
+python3 - "${temporary}/config/opencode-gtk/state.json" "$(<"${temporary}/address")" <<'PY'
+import json
+import sys
+
+state = json.load(open(sys.argv[1], encoding="utf-8"))
+server = sys.argv[2].rstrip("/")
+tabs = state["servers"][server]["tabs"]
+assert [tab["id"] for tab in tabs[:2]] == ["ses_other", "ses_test"], state
+PY
+
+xdotool windowfocus "${main_window}"
 xdotool key --window "${main_window}" ctrl+comma
 settings_window="$(wait_for_window Settings)"
 xdotool windowfocus "${settings_window}"
@@ -179,11 +197,11 @@ PY
 
 xdotool windowfocus "${main_window}"
 xdotool mousemove --window "${main_window}" 500 680 click 1
-printf '%s' 'integration ping' | xclip -selection clipboard
+printf '%s' $'integration\nping' | xclip -selection clipboard
 xdotool key --window "${main_window}" ctrl+v
 sleep 0.5
 xdotool key --window "${main_window}" Return
-wait_for_event "prompt:integration ping" "${temporary}/events-two"
+wait_for_event $'prompt:integration\nping' "${temporary}/events-two"
 
 question_window="$(wait_for_window 'OpenCode needs your input')"
 xdotool windowfocus "${question_window}"

@@ -48,6 +48,18 @@ headerbar {
   color: #f2efe9;
 }
 
+.session-tab.dragging {
+  opacity: 0.55;
+}
+
+.session-tab.drop-before {
+  box-shadow: inset 2px 0 #e5b567;
+}
+
+.session-tab.drop-after {
+  box-shadow: inset -2px 0 #e5b567;
+}
+
 .session-tab-status {
   margin-left: 8px;
   min-width: 9px;

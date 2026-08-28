@@ -34,6 +34,14 @@ headerbar {
   color: #242321;
 }
 
+.session-tab.drop-before {
+  box-shadow: inset 2px 0 #9c641a;
+}
+
+.session-tab.drop-after {
+  box-shadow: inset -2px 0 #9c641a;
+}
+
 .session-tab-status.idle {
   background: #78827e;
 }

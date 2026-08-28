@@ -32,6 +32,7 @@ const BOTTOM_EPSILON: f64 = 2.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum TranscriptUpdate {
+    Activate,
     Content,
     Prepend,
 }
@@ -483,12 +484,13 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
     composer.set_bottom_margin(10);
     composer.set_left_margin(12);
     composer.set_right_margin(12);
-    composer.set_height_request(94);
     composer.add_css_class("composer-input");
     let composer_scroll = gtk::ScrolledWindow::builder()
         .hscrollbar_policy(gtk::PolicyType::Never)
         .vscrollbar_policy(gtk::PolicyType::Automatic)
+        .min_content_height(44)
         .max_content_height(220)
+        .propagate_natural_height(true)
         .child(&composer)
         .build();
 
@@ -1736,12 +1738,59 @@ impl Controller {
             let middle = gtk::GestureClick::new();
             middle.set_button(2);
             let weak_middle = weak.clone();
+            let middle_id = id.clone();
             middle.connect_released(move |_, _, _, _| {
                 if let Some(controller) = weak_middle.upgrade() {
-                    Self::close_tab(&controller, &id);
+                    Self::close_tab(&controller, &middle_id);
                 }
             });
             select.add_controller(middle);
+
+            let drag = gtk::DragSource::new();
+            drag.set_actions(gdk::DragAction::MOVE);
+            drag.set_content(Some(&gdk::ContentProvider::for_value(&id.to_value())));
+            drag.connect_drag_begin(|source, _| {
+                if let Some(widget) = source.widget() {
+                    widget.add_css_class("dragging");
+                }
+            });
+            drag.connect_drag_end(|source, _, _| {
+                if let Some(widget) = source.widget() {
+                    widget.remove_css_class("dragging");
+                }
+            });
+            tab.add_controller(drag);
+
+            let drop_target = gtk::DropTarget::new(String::static_type(), gdk::DragAction::MOVE);
+            drop_target.connect_motion(|target, x, _| {
+                if let Some(widget) = target.widget() {
+                    let after = x >= f64::from(widget.width()) / 2.0;
+                    widget.remove_css_class(if after { "drop-before" } else { "drop-after" });
+                    widget.add_css_class(if after { "drop-after" } else { "drop-before" });
+                }
+                gdk::DragAction::MOVE
+            });
+            drop_target.connect_leave(|target| {
+                if let Some(widget) = target.widget() {
+                    widget.remove_css_class("drop-before");
+                    widget.remove_css_class("drop-after");
+                }
+            });
+            let weak_drop = weak.clone();
+            let target_id = id.clone();
+            drop_target.connect_drop(move |target, value, x, _| {
+                let Ok(source_id) = value.get::<String>() else {
+                    return false;
+                };
+                let Some(controller) = weak_drop.upgrade() else {
+                    return false;
+                };
+                let after = target
+                    .widget()
+                    .is_some_and(|widget| x >= f64::from(widget.width()) / 2.0);
+                Self::reorder_tab(&controller, &source_id, &target_id, after)
+            });
+            tab.add_controller(drop_target);
             self.widgets.tab_bar.append(&tab);
         }
     }
@@ -1779,9 +1828,9 @@ impl Controller {
             }
             let load_models = !this.state.catalogs.contains_key(&session.directory)
                 && this.state.loading_models.insert(session.directory.clone());
+            this.transcript_at_bottom = true;
+            this.transcript_scroll_generation += 1;
             if active_changed {
-                this.transcript_at_bottom = true;
-                this.transcript_scroll_generation += 1;
                 this.persist_state();
             }
             (
@@ -1789,7 +1838,12 @@ impl Controller {
                 load_models.then_some(session),
             )
         };
-        Self::refresh_all(controller);
+        let weak = Rc::downgrade(controller);
+        let mut this = controller.borrow_mut();
+        this.refresh_tabs(&weak);
+        this.refresh_composer();
+        this.refresh_transcript(TranscriptUpdate::Activate);
+        drop(this);
         let this = controller.borrow();
         if let Some(session) = load_messages {
             this.api.send(Command::LoadMessages {
@@ -1804,6 +1858,22 @@ impl Controller {
             });
         }
         this.widgets.composer.grab_focus();
+    }
+
+    fn reorder_tab(
+        controller: &Rc<RefCell<Self>>,
+        source_id: &str,
+        target_id: &str,
+        after: bool,
+    ) -> bool {
+        let mut this = controller.borrow_mut();
+        if !move_tab(&mut this.state.tabs, source_id, target_id, after) {
+            return false;
+        }
+        this.persist_state();
+        let weak = this.self_weak.clone();
+        this.refresh_tabs(&weak);
+        true
     }
 
     fn close_tab(controller: &Rc<RefCell<Self>>, id: &str) {
@@ -2233,17 +2303,31 @@ impl Controller {
                     adjustment.set_value(clamp_adjustment(&adjustment, value));
                 }
             });
-        } else if follow_bottom {
+        } else if should_follow_transcript(update, follow_bottom) {
+            let force_bottom = update == TranscriptUpdate::Activate;
             glib::idle_add_local_once(move || {
                 let should_follow = weak.upgrade().is_some_and(|controller| {
                     let controller = controller.borrow();
                     controller.transcript_scroll_generation == generation
                         && controller.state.active == active
-                        && controller.transcript_at_bottom
+                        && (force_bottom || controller.transcript_at_bottom)
                 });
                 if should_follow {
-                    let bottom = adjustment.upper() - adjustment.page_size();
-                    adjustment.set_value(clamp_adjustment(&adjustment, bottom));
+                    scroll_adjustment_to_bottom(&adjustment);
+                    if force_bottom {
+                        let adjustment = adjustment.clone();
+                        let weak = weak.clone();
+                        glib::timeout_add_local_once(Duration::from_millis(50), move || {
+                            let still_active = weak.upgrade().is_some_and(|controller| {
+                                let controller = controller.borrow();
+                                controller.transcript_scroll_generation == generation
+                                    && controller.state.active == active
+                            });
+                            if still_active {
+                                scroll_adjustment_to_bottom(&adjustment);
+                            }
+                        });
+                    }
                 }
             });
         }
@@ -3764,6 +3848,11 @@ fn clamp_adjustment(adjustment: &gtk::Adjustment, value: f64) -> f64 {
     value.clamp(lower, upper)
 }
 
+fn scroll_adjustment_to_bottom(adjustment: &gtk::Adjustment) {
+    let bottom = adjustment.upper() - adjustment.page_size();
+    adjustment.set_value(clamp_adjustment(adjustment, bottom));
+}
+
 fn transcript_indicator(
     has_session: bool,
     loading: bool,
@@ -3794,6 +3883,35 @@ fn transcript_indicator(
 
 fn status_transitioned_to_idle(previous: Option<RunStatus>, current: RunStatus) -> bool {
     previous == Some(RunStatus::Busy) && current == RunStatus::Idle
+}
+
+fn should_follow_transcript(update: TranscriptUpdate, at_bottom: bool) -> bool {
+    update == TranscriptUpdate::Activate || at_bottom
+}
+
+fn move_tab(tabs: &mut Vec<String>, source_id: &str, target_id: &str, after: bool) -> bool {
+    if source_id == target_id {
+        return false;
+    }
+    let Some(source_index) = tabs.iter().position(|id| id == source_id) else {
+        return false;
+    };
+    let Some(target_index) = tabs.iter().position(|id| id == target_id) else {
+        return false;
+    };
+    let source = tabs.remove(source_index);
+    let target_index = if source_index < target_index {
+        target_index - 1
+    } else {
+        target_index
+    };
+    let destination = target_index + usize::from(after);
+    if destination == source_index {
+        tabs.insert(source_index, source);
+        return false;
+    }
+    tabs.insert(destination, source);
+    true
 }
 
 fn clear_box(container: &gtk::Box) {
@@ -3906,6 +4024,24 @@ mod tests {
             Some(RunStatus::Busy),
             RunStatus::Busy
         ));
+    }
+
+    #[test]
+    fn activating_a_tab_forces_the_transcript_to_follow_the_latest_message() {
+        assert!(should_follow_transcript(TranscriptUpdate::Activate, false));
+        assert!(should_follow_transcript(TranscriptUpdate::Content, true));
+        assert!(!should_follow_transcript(TranscriptUpdate::Content, false));
+    }
+
+    #[test]
+    fn tabs_move_to_either_side_of_the_drop_target() {
+        let mut tabs = vec!["a".to_owned(), "b".to_owned(), "c".to_owned()];
+        assert!(move_tab(&mut tabs, "a", "b", true));
+        assert_eq!(tabs, ["b", "a", "c"]);
+        assert!(move_tab(&mut tabs, "c", "b", false));
+        assert_eq!(tabs, ["c", "b", "a"]);
+        assert!(!move_tab(&mut tabs, "c", "c", true));
+        assert!(!move_tab(&mut tabs, "missing", "a", false));
     }
 
     #[test]
