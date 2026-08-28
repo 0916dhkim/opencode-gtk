@@ -116,7 +116,7 @@ Cloudflare Access credentials can also be supplied for one run with `OPENCODE_CF
 | --- | --- |
 | `Enter` | Send prompt |
 | `Shift+Enter` | Insert a newline |
-| `Ctrl+T` | Create a session |
+| `Ctrl+N` or `Ctrl+T` | Create a session |
 | `Ctrl+W` | Close the active tab |
 | `Ctrl+Tab` | Select the next tab |
 | `Ctrl+Shift+Tab` | Select the previous tab |
