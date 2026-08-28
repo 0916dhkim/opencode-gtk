@@ -39,6 +39,10 @@ struct TranscriptRow {
     role: String,
     body: String,
     images: Vec<String>,
+    #[serde(default)]
+    sticky_position: Option<i8>,
+    #[serde(default)]
+    sticky: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -105,7 +109,10 @@ struct Widgets {
     status: gtk::Label,
     tab_bar: gtk::Box,
     transcript_model: gtk::StringList,
+    transcript: gtk::ListView,
     transcript_scroll: gtk::ScrolledWindow,
+    sticky_message: gtk::Box,
+    sticky_message_body: gtk::Label,
     transcript_status: gtk::Box,
     transcript_spinner: gtk::Spinner,
     transcript_status_label: gtk::Label,
@@ -141,6 +148,8 @@ struct Controller {
     rendered_rows: Vec<String>,
     transcript_at_bottom: bool,
     transcript_scroll_generation: u64,
+    transcript_edge_refresh_scheduled: bool,
+    show_sticky_if_unrealized: bool,
     current_models: Vec<ModelOption>,
     current_variants: Vec<Option<String>>,
     controls_updating: bool,
@@ -245,6 +254,8 @@ pub fn launch(
         rendered_rows: Vec::new(),
         transcript_at_bottom: true,
         transcript_scroll_generation: 0,
+        transcript_edge_refresh_scheduled: false,
+        show_sticky_if_unrealized: false,
         current_models: Vec::new(),
         current_variants: Vec::new(),
         controls_updating: false,
@@ -441,7 +452,7 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
     window.set_titlebar(Some(&header));
 
     let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    let tab_bar = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    let tab_bar = gtk::Box::new(gtk::Orientation::Horizontal, 2);
     tab_bar.set_margin_start(10);
     tab_bar.set_margin_end(10);
     tab_bar.set_margin_top(7);
@@ -478,10 +489,33 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
     transcript_status.set_can_target(false);
     transcript_status.append(&transcript_spinner);
     transcript_status.append(&transcript_status_label);
+    let sticky_message = gtk::Box::new(gtk::Orientation::Vertical, 6);
+    sticky_message.add_css_class("message-row");
+    sticky_message.add_css_class("user-message");
+    sticky_message.add_css_class("sticky-message");
+    sticky_message.set_halign(gtk::Align::Fill);
+    sticky_message.set_valign(gtk::Align::Start);
+    sticky_message.set_can_target(false);
+    sticky_message.set_visible(false);
+    let sticky_message_role = gtk::Label::new(Some("YOU"));
+    sticky_message_role.set_xalign(0.0);
+    sticky_message_role.add_css_class("message-role");
+    let sticky_message_body = gtk::Label::new(None);
+    sticky_message_body.set_xalign(0.0);
+    sticky_message_body.set_yalign(0.0);
+    sticky_message_body.set_wrap(true);
+    sticky_message_body.set_wrap_mode(pango::WrapMode::WordChar);
+    sticky_message_body.set_ellipsize(pango::EllipsizeMode::End);
+    sticky_message_body.set_lines(3);
+    sticky_message_body.add_css_class("message-content");
+    sticky_message_body.add_css_class("message-plain-text");
+    sticky_message.append(&sticky_message_role);
+    sticky_message.append(&sticky_message_body);
     let overlay = gtk::Overlay::new();
     overlay.set_vexpand(true);
     overlay.set_child(Some(&transcript_scroll));
     overlay.add_overlay(&transcript_status);
+    overlay.add_overlay(&sticky_message);
     let conversation = gtk::Box::new(gtk::Orientation::Vertical, 0);
     conversation.set_vexpand(true);
     conversation.append(&load_earlier);
@@ -553,7 +587,10 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
         status,
         tab_bar,
         transcript_model,
+        transcript,
         transcript_scroll,
+        sticky_message,
+        sticky_message_body,
         transcript_status,
         transcript_spinner,
         transcript_status_label,
@@ -640,11 +677,22 @@ fn transcript_factory() -> gtk::SignalListItemFactory {
         }
         row.remove_css_class("user-message");
         row.remove_css_class("assistant-message");
+        row.remove_css_class("before-sticky-source");
+        row.remove_css_class("sticky-source");
+        row.remove_css_class("after-sticky-source");
         row.add_css_class(if role_text == "YOU" {
             "user-message"
         } else {
             "assistant-message"
         });
+        if parsed.as_ref().is_some_and(|row| row.sticky) {
+            row.add_css_class("sticky-source");
+        }
+        match parsed.as_ref().and_then(|row| row.sticky_position) {
+            Some(-1) => row.add_css_class("before-sticky-source"),
+            Some(1) => row.add_css_class("after-sticky-source"),
+            _ => {}
+        }
     });
     factory
 }
@@ -714,6 +762,8 @@ fn wire_callbacks(controller: &Rc<RefCell<Controller>>) {
                 return;
             };
             controller.transcript_at_bottom = adjustment_at_bottom(adjustment);
+            controller.refresh_load_earlier_visibility();
+            controller.queue_transcript_edge_refresh(false);
         });
 
     let weak = Rc::downgrade(controller);
@@ -1790,6 +1840,7 @@ impl Controller {
 
     fn refresh_tabs(&mut self, weak: &Weak<RefCell<Self>>) {
         clear_box(&self.widgets.tab_bar);
+        let mut previous_inactive = false;
         for id in self.state.tabs.clone() {
             let title = self
                 .session(&id)
@@ -1797,8 +1848,16 @@ impl Controller {
                 .unwrap_or_else(|| "Unknown session".to_owned());
             let tab = gtk::Box::new(gtk::Orientation::Horizontal, 0);
             tab.add_css_class("session-tab");
-            if self.state.active.as_deref() == Some(id.as_str()) {
+            let active = self.state.active.as_deref() == Some(id.as_str());
+            if active {
                 tab.add_css_class("active");
+                previous_inactive = false;
+            } else {
+                tab.add_css_class("inactive");
+                if previous_inactive {
+                    tab.add_css_class("divided");
+                }
+                previous_inactive = true;
             }
             let busy = self.state.statuses.get(&id) == Some(&RunStatus::Busy);
             let status = if busy {
@@ -1823,6 +1882,7 @@ impl Controller {
             let close = gtk::Button::with_label("×");
             close.set_tooltip_text(Some("Close tab"));
             close.add_css_class("flat");
+            close.add_css_class("session-tab-close");
             tab.append(&status);
             tab.append(&select);
             tab.append(&close);
@@ -2340,6 +2400,12 @@ impl Controller {
             .and_then(|active| self.state.conversations.get(active))
             .map(Conversation::transcript_rows)
             .unwrap_or_default();
+        let sticky_body = rows.iter().find_map(|row| {
+            serde_json::from_str::<TranscriptRow>(row)
+                .ok()
+                .filter(|row| row.sticky)
+                .map(sticky_message_text)
+        });
         let adjustment = self.widgets.transcript_scroll.vadjustment();
         let old_upper = adjustment.upper();
         let old_value = adjustment.value();
@@ -2382,19 +2448,21 @@ impl Controller {
             load_error.is_some(),
         );
         self.refresh_transcript_indicator(indicator, has_rows, load_error.map(String::as_str));
-        let next_cursor = active
-            .as_ref()
-            .and_then(|active| self.state.conversations.get(active))
-            .and_then(|conversation| conversation.next_cursor.as_ref());
-        self.widgets.load_earlier.set_visible(next_cursor.is_some());
-        self.widgets.load_earlier.set_sensitive(!loading);
-        self.widgets
-            .load_earlier
-            .set_label(if loading && !replacing {
-                "Loading earlier messages..."
-            } else {
-                "Load earlier messages"
-            });
+        match sticky_body {
+            Some(body) => self.widgets.sticky_message_body.set_label(&body),
+            None => {
+                self.widgets.sticky_message_body.set_label("");
+                self.widgets.sticky_message.set_visible(false);
+            }
+        }
+        if update == TranscriptUpdate::Activate {
+            self.widgets.load_earlier.set_visible(false);
+            self.widgets.sticky_message.set_visible(false);
+            self.refresh_transcript_status_margin();
+        } else {
+            self.refresh_load_earlier_visibility();
+            self.queue_transcript_edge_refresh(false);
+        }
 
         let generation = self.transcript_scroll_generation;
         let weak = self.self_weak.clone();
@@ -2432,12 +2500,119 @@ impl Controller {
                             });
                             if still_active {
                                 scroll_adjustment_to_bottom(&adjustment);
+                                if let Some(controller) = weak.upgrade() {
+                                    let mut controller = controller.borrow_mut();
+                                    controller.queue_transcript_edge_refresh(true);
+                                }
                             }
                         });
                     }
                 }
             });
         }
+    }
+
+    fn refresh_load_earlier_visibility(&self) {
+        let active = self.state.active.as_ref();
+        let has_earlier = active
+            .and_then(|active| self.state.conversations.get(active))
+            .is_some_and(|conversation| conversation.next_cursor.is_some());
+        let loading = active.is_some_and(|active| self.state.loading_messages.contains(active));
+        let replacing = active.is_some_and(|active| self.replacing_messages.contains(active));
+        let at_boundary = adjustment_at_top(&self.widgets.transcript_scroll.vadjustment());
+        self.widgets
+            .load_earlier
+            .set_visible(has_earlier && at_boundary);
+        self.widgets.load_earlier.set_sensitive(!loading);
+        self.widgets
+            .load_earlier
+            .set_label(if loading && !replacing {
+                "Loading earlier messages..."
+            } else {
+                "Load earlier messages"
+            });
+    }
+
+    fn refresh_sticky_message(&self, show_if_source_unrealized: bool) {
+        if self.widgets.sticky_message_body.label().is_empty()
+            || adjustment_at_top(&self.widgets.transcript_scroll.vadjustment())
+        {
+            self.widgets.sticky_message.set_visible(false);
+            self.refresh_transcript_status_margin();
+            return;
+        }
+        let transcript = self.widgets.transcript.clone().upcast::<gtk::Widget>();
+        let adjustment = self.widgets.transcript_scroll.vadjustment();
+        let viewport_top = adjustment.value();
+        let viewport_bottom = viewport_top + adjustment.page_size();
+        let mut realized = RealizedStickyRows::default();
+        inspect_realized_sticky_rows(&transcript, &mut realized);
+        let before_visible = realized
+            .before
+            .iter()
+            .any(|row| widget_intersects_viewport(row, &transcript, viewport_top, viewport_bottom));
+        let after_visible = realized
+            .after
+            .iter()
+            .any(|row| widget_intersects_viewport(row, &transcript, viewport_top, viewport_bottom));
+        let source_top = realized
+            .source
+            .and_then(|source| source.compute_bounds(&transcript))
+            .map(|bounds| f64::from(bounds.y()));
+        let visible = sticky_message_visible(
+            source_top,
+            viewport_top,
+            before_visible,
+            after_visible,
+            show_if_source_unrealized || self.widgets.sticky_message.is_visible(),
+        );
+        self.widgets.sticky_message.set_visible(visible);
+        self.refresh_transcript_status_margin();
+    }
+
+    fn queue_transcript_edge_refresh(&mut self, show_if_source_unrealized: bool) {
+        self.show_sticky_if_unrealized |= show_if_source_unrealized;
+        if self.transcript_edge_refresh_scheduled {
+            return;
+        }
+        self.transcript_edge_refresh_scheduled = true;
+        let weak = self.self_weak.clone();
+        glib::idle_add_local_once(move || {
+            let Some(controller) = weak.upgrade() else {
+                return;
+            };
+            let mut controller = controller.borrow_mut();
+            controller.transcript_edge_refresh_scheduled = false;
+            let show_if_source_unrealized = controller.show_sticky_if_unrealized;
+            controller.show_sticky_if_unrealized = false;
+            controller.refresh_load_earlier_visibility();
+            controller.refresh_sticky_message(show_if_source_unrealized);
+        });
+    }
+
+    fn refresh_transcript_status_margin(&self) {
+        let compact = self
+            .widgets
+            .transcript_status
+            .has_css_class("transcript-status-compact");
+        let sticky_offset = if self.widgets.sticky_message.is_visible()
+            && self.widgets.transcript_status.valign() == gtk::Align::Start
+        {
+            let width = self.widgets.transcript_scroll.width().max(1);
+            let (_, natural_height, _, _) = self
+                .widgets
+                .sticky_message
+                .measure(gtk::Orientation::Vertical, width);
+            natural_height
+        } else {
+            0
+        };
+        self.widgets
+            .transcript_status
+            .set_margin_top(if compact { 12 + sticky_offset } else { 0 });
+        self.widgets
+            .transcript_status
+            .set_margin_bottom(if compact { 12 } else { 0 });
     }
 
     fn refresh_transcript_indicator(
@@ -2473,12 +2648,6 @@ impl Controller {
         let compact = visible && has_rows;
         self.widgets.transcript_status.set_visible(visible);
         self.widgets.transcript_status.set_valign(alignment);
-        self.widgets
-            .transcript_status
-            .set_margin_top(if compact { 12 } else { 0 });
-        self.widgets
-            .transcript_status
-            .set_margin_bottom(if compact { 12 } else { 0 });
         if compact {
             self.widgets
                 .transcript_status
@@ -2488,6 +2657,7 @@ impl Controller {
                 .transcript_status
                 .remove_css_class("transcript-status-compact");
         }
+        self.refresh_transcript_status_margin();
         self.widgets.transcript_status_label.set_label(label);
         self.widgets.transcript_status.set_tooltip_text(error);
         self.widgets.transcript_spinner.set_visible(spinning);
@@ -3982,6 +4152,71 @@ fn transcript_session_changed(
     rendered_session != active_session
 }
 
+#[derive(Default)]
+struct RealizedStickyRows {
+    source: Option<gtk::Widget>,
+    before: Vec<gtk::Widget>,
+    after: Vec<gtk::Widget>,
+}
+
+fn inspect_realized_sticky_rows(widget: &gtk::Widget, realized: &mut RealizedStickyRows) {
+    let mut child = widget.first_child();
+    while let Some(current) = child {
+        if current.has_css_class("sticky-source") {
+            realized.source = Some(current.clone());
+        } else if current.has_css_class("before-sticky-source") {
+            realized.before.push(current.clone());
+        } else if current.has_css_class("after-sticky-source") {
+            realized.after.push(current.clone());
+        }
+        inspect_realized_sticky_rows(&current, realized);
+        child = current.next_sibling();
+    }
+}
+
+fn widget_intersects_viewport(
+    widget: &gtk::Widget,
+    transcript: &gtk::Widget,
+    viewport_top: f64,
+    viewport_bottom: f64,
+) -> bool {
+    widget.compute_bounds(transcript).is_some_and(|bounds| {
+        let top = f64::from(bounds.y());
+        let bottom = top + f64::from(bounds.height());
+        bottom >= viewport_top && top <= viewport_bottom
+    })
+}
+
+fn sticky_message_visible(
+    source_top: Option<f64>,
+    viewport_top: f64,
+    before_visible: bool,
+    after_visible: bool,
+    fallback: bool,
+) -> bool {
+    source_top
+        .map(|source_top| source_top <= viewport_top + BOTTOM_EPSILON)
+        .unwrap_or_else(|| match (before_visible, after_visible) {
+            (true, false) => false,
+            (false, true) => true,
+            _ => fallback,
+        })
+}
+
+fn sticky_message_text(row: TranscriptRow) -> String {
+    if !row.body.is_empty() || row.images.is_empty() {
+        row.body
+    } else if row.images.len() == 1 {
+        "Attached image".to_owned()
+    } else {
+        format!("Attached {} images", row.images.len())
+    }
+}
+
+fn adjustment_at_top(adjustment: &gtk::Adjustment) -> bool {
+    viewport_at_top(adjustment.value(), adjustment.lower())
+}
+
 fn adjustment_at_bottom(adjustment: &gtk::Adjustment) -> bool {
     viewport_at_bottom(
         adjustment.value(),
@@ -3992,6 +4227,10 @@ fn adjustment_at_bottom(adjustment: &gtk::Adjustment) -> bool {
 
 fn viewport_at_bottom(value: f64, page_size: f64, upper: f64) -> bool {
     value + page_size >= upper - BOTTOM_EPSILON
+}
+
+fn viewport_at_top(value: f64, lower: f64) -> bool {
+    value <= lower + BOTTOM_EPSILON
 }
 
 fn clamp_adjustment(adjustment: &gtk::Adjustment, value: f64) -> f64 {
@@ -4139,6 +4378,48 @@ mod tests {
         assert!(viewport_at_bottom(700.0, 300.0, 1000.0));
         assert!(viewport_at_bottom(698.5, 300.0, 1000.0));
         assert!(!viewport_at_bottom(697.0, 300.0, 1000.0));
+    }
+
+    #[test]
+    fn top_tracking_uses_a_small_layout_tolerance() {
+        assert!(viewport_at_top(0.0, 0.0));
+        assert!(viewport_at_top(1.5, 0.0));
+        assert!(!viewport_at_top(3.0, 0.0));
+    }
+
+    #[test]
+    fn sticky_visibility_tracks_the_source_and_realized_sides() {
+        assert!(!sticky_message_visible(
+            Some(100.0),
+            50.0,
+            false,
+            false,
+            true
+        ));
+        assert!(sticky_message_visible(
+            Some(48.5),
+            50.0,
+            false,
+            false,
+            false
+        ));
+        assert!(!sticky_message_visible(None, 50.0, true, false, true));
+        assert!(sticky_message_visible(None, 50.0, false, true, false));
+        assert!(sticky_message_visible(None, 50.0, true, true, true));
+    }
+
+    #[test]
+    fn image_only_prompts_have_sticky_text() {
+        assert_eq!(
+            sticky_message_text(TranscriptRow {
+                role: "YOU".to_owned(),
+                body: String::new(),
+                images: vec!["data:image/png;base64,AA==".to_owned()],
+                sticky_position: Some(0),
+                sticky: true,
+            }),
+            "Attached image"
+        );
     }
 
     #[test]

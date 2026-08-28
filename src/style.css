@@ -34,6 +34,23 @@ headerbar {
   border-radius: 7px;
 }
 
+.session-tab.inactive.divided {
+  border-left: 1px solid #2b3034;
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+}
+
+.session-tab:hover {
+  background: #191d20;
+}
+
+.session-tab button,
+.session-tab button:hover,
+.session-tab button:active {
+  background: transparent;
+  box-shadow: none;
+}
+
 .session-tab button {
   min-height: 28px;
   padding: 3px 7px;
@@ -44,8 +61,25 @@ headerbar {
   background: #22262a;
 }
 
+.session-tab.active:hover {
+  background: #292e32;
+}
+
 .session-tab.active button {
   color: #f2efe9;
+}
+
+.session-tab button.session-tab-close {
+  min-width: 24px;
+  min-height: 24px;
+  margin: 2px 3px 2px 0;
+  padding: 0;
+  border-radius: 999px;
+}
+
+.session-tab button.session-tab-close:hover {
+  background: #8e3737;
+  color: #ffffff;
 }
 
 .session-tab.dragging {
@@ -164,6 +198,11 @@ headerbar {
 
 .user-message {
   background: #15191c;
+}
+
+.sticky-message {
+  border-bottom: 1px solid #343a3f;
+  box-shadow: 0 5px 10px alpha(#000000, 0.24);
 }
 
 .assistant-message {

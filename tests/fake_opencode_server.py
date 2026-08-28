@@ -5,7 +5,7 @@ import queue
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 
 class ServerState:
@@ -19,10 +19,27 @@ class ServerState:
         self.messages = [
             {
                 "info": {
+                    "id": "msg_prompt",
+                    "sessionID": "ses_test",
+                    "role": "user",
+                    "time": {"created": 1},
+                },
+                "parts": [
+                    {
+                        "id": "part_prompt",
+                        "messageID": "msg_prompt",
+                        "sessionID": "ses_test",
+                        "type": "text",
+                        "text": "Show the current response while keeping this prompt in view.",
+                    }
+                ],
+            },
+            {
+                "info": {
                     "id": "msg_ready",
                     "sessionID": "ses_test",
                     "role": "assistant",
-                    "time": {"created": 1},
+                    "time": {"created": 2},
                 },
                 "parts": [
                     {
@@ -35,7 +52,11 @@ class ServerState:
                             "- **Markdown** content\n"
                             "- Inline `code <tag>`\n\n"
                             "> Safe [link](https://example.com?a=1&b=2)\n\n"
-                            "```rust\nfn main() {}\n```"
+                            "```rust\nfn main() {}\n```\n\n"
+                            + "\n\n".join(
+                                f"Response detail {index}: transcript scrolling remains stable."
+                                for index in range(1, 13)
+                            )
                         ),
                     }
                 ],
@@ -84,12 +105,14 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *_args):
         pass
 
-    def send_json(self, value, status=200):
+    def send_json(self, value, status=200, headers=None):
         body = json.dumps(value).encode()
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Connection", "close")
+        for name, header_value in (headers or {}).items():
+            self.send_header(name, header_value)
         self.end_headers()
         self.wfile.write(body)
 
@@ -105,7 +128,8 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.flush()
 
     def do_GET(self):
-        path = urlparse(self.path).path
+        request_url = urlparse(self.path)
+        path = request_url.path
         if path == "/global/event":
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
@@ -139,10 +163,33 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({})
         elif path in {"/session/ses_test/message", "/session/ses_other/message"}:
             session_id = path.split("/")[2]
-            self.state.record(f"messages:{session_id}")
+            before = parse_qs(request_url.query).get("before", ["latest"])[0]
+            self.state.record(f"messages:{session_id}:{before}")
             if session_id == "ses_test":
-                with self.state.lock:
-                    messages = list(self.state.messages)
+                if before == "latest":
+                    with self.state.lock:
+                        messages = list(self.state.messages)
+                else:
+                    messages = [
+                        {
+                            "info": {
+                                "id": f"msg_older_{index}",
+                                "sessionID": "ses_test",
+                                "role": "assistant",
+                                "time": {"created": 0},
+                            },
+                            "parts": [
+                                {
+                                    "id": f"part_older_{index}",
+                                    "messageID": f"msg_older_{index}",
+                                    "sessionID": "ses_test",
+                                    "type": "text",
+                                    "text": f"Earlier conversation content {index}",
+                                }
+                            ],
+                        }
+                        for index in range(1, 13)
+                    ]
             else:
                 messages = [
                     {
@@ -163,7 +210,13 @@ class Handler(BaseHTTPRequestHandler):
                         ],
                     }
                 ]
-            self.send_json(messages)
+            is_initial_page = before == "latest"
+            headers = (
+                {"X-Next-Cursor": "msg_older"}
+                if session_id == "ses_test" and is_initial_page
+                else None
+            )
+            self.send_json(messages, headers=headers)
         elif path == "/session":
             self.send_json(
                 [

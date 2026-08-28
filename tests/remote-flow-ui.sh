@@ -137,6 +137,21 @@ xdotool key --window "${main_window}" ctrl+2
 wait_for_event "messages:ses_other"
 xdotool key --window "${main_window}" ctrl+1
 
+eval "$(xdotool getwindowgeometry --shell "${main_window}")"
+xdotool mousemove --window "${main_window}" "$((WIDTH / 2))" 120 click 1
+sleep 0.3
+if [[ "$(<"${temporary}/events")" == *"messages:ses_test:msg_older"* ]]; then
+  printf 'Load-earlier control was clickable away from the history boundary\n' >&2
+  exit 1
+fi
+xdotool mousemove --window "${main_window}" "$((WIDTH / 2))" 300
+for _ in {1..30}; do
+  xdotool click 4
+done
+sleep 0.3
+xdotool mousemove --window "${main_window}" "$((WIDTH / 2))" 120 click 1
+wait_for_event "messages:ses_test:msg_older"
+
 xdotool windowfocus "${main_window}"
 xdotool key --window "${main_window}" ctrl+t
 new_session_window="$(wait_for_window 'New session')"

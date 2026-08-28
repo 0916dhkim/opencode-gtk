@@ -26,12 +26,29 @@ headerbar {
   color: #666b69;
 }
 
+.session-tab.inactive.divided {
+  border-left-color: #d0ccc4;
+}
+
+.session-tab:hover {
+  background: #e5e2dc;
+}
+
 .session-tab.active {
   background: #dedbd4;
 }
 
+.session-tab.active:hover {
+  background: #d7d3cc;
+}
+
 .session-tab.active button {
   color: #242321;
+}
+
+.session-tab button.session-tab-close:hover {
+  background: #b84b45;
+  color: #ffffff;
 }
 
 .session-tab.drop-before {
@@ -103,6 +120,11 @@ headerbar {
 
 .user-message {
   background: #efede8;
+}
+
+.sticky-message {
+  border-bottom-color: #c8c3ba;
+  box-shadow: 0 5px 10px alpha(#5f5a52, 0.18);
 }
 
 .transcript-status {
