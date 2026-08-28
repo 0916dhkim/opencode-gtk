@@ -48,6 +48,23 @@ headerbar {
   color: #f2efe9;
 }
 
+.session-tab-status {
+  margin-left: 8px;
+  min-width: 9px;
+  min-height: 9px;
+}
+
+.session-tab-status.idle {
+  border-radius: 999px;
+  background: #68736f;
+}
+
+.session-tab-status.busy {
+  color: #e5b567;
+  min-width: 14px;
+  min-height: 14px;
+}
+
 .transcript {
   background: #101214;
 }

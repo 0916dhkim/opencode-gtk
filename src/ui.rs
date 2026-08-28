@@ -1033,9 +1033,8 @@ impl Controller {
                             })
                         }
                         Err(error) => {
-                            this.state
-                                .statuses
-                                .insert(session_id.clone(), RunStatus::Idle);
+                            let status_changed =
+                                this.update_session_status(&session_id, RunStatus::Idle);
                             this.state.server_busy.remove(&session_id);
                             this.state.abort_requested.remove(&session_id);
                             let pending = this
@@ -1059,6 +1058,10 @@ impl Controller {
                             if this.state.active.as_deref() == Some(session_id.as_str()) {
                                 this.refresh_composer();
                             }
+                            if status_changed {
+                                let weak = this.self_weak.clone();
+                                this.refresh_tabs(&weak);
+                            }
                             None
                         }
                     }
@@ -1079,9 +1082,12 @@ impl Controller {
                     Ok(()) => {
                         this.state.server_busy.remove(&session_id);
                         this.state.abort_requested.remove(&session_id);
-                        this.state
-                            .statuses
-                            .insert(session_id.clone(), RunStatus::Idle);
+                        let status_changed =
+                            this.update_session_status(&session_id, RunStatus::Idle);
+                        if status_changed {
+                            let weak = this.self_weak.clone();
+                            this.refresh_tabs(&weak);
+                        }
                         if this.state.active.as_deref() == Some(session_id.as_str()) {
                             this.refresh_transcript(TranscriptUpdate::Content);
                         }
@@ -1480,6 +1486,7 @@ impl Controller {
         let active = this.state.active.clone();
         let mut transcript_changed = false;
         let mut tabs_changed = false;
+        let mut tab_status_changed = false;
 
         for envelope in events {
             let payload = envelope.payload;
@@ -1539,7 +1546,9 @@ impl Controller {
                         this.state.pending_prompts.remove(&session_id);
                     }
                 }
-                this.state.statuses.insert(session_id, status);
+                let status_changed = this.update_session_status(&session_id, status);
+                tab_status_changed |=
+                    status_changed && this.state.tabs.iter().any(|id| id == &session_id);
             }
             if let Some(session_id) = event_session_id(&payload).map(str::to_owned) {
                 if this.replacing_messages.contains(&session_id) {
@@ -1632,6 +1641,9 @@ impl Controller {
             drop(this);
             Self::refresh_all(controller);
             this = controller.borrow_mut();
+        } else if tab_status_changed {
+            let weak = this.self_weak.clone();
+            this.refresh_tabs(&weak);
         }
         if transcript_changed {
             this.refresh_transcript(TranscriptUpdate::Content);
@@ -1680,12 +1692,30 @@ impl Controller {
             if self.state.active.as_deref() == Some(id.as_str()) {
                 tab.add_css_class("active");
             }
+            let busy = self.state.statuses.get(&id) == Some(&RunStatus::Busy);
+            let status = if busy {
+                let spinner = gtk::Spinner::new();
+                spinner.start();
+                spinner.upcast::<gtk::Widget>()
+            } else {
+                gtk::Box::new(gtk::Orientation::Horizontal, 0).upcast::<gtk::Widget>()
+            };
+            status.add_css_class("session-tab-status");
+            status.add_css_class(if busy { "busy" } else { "idle" });
+            status.set_halign(gtk::Align::Center);
+            status.set_valign(gtk::Align::Center);
+            status.set_tooltip_text(Some(if busy {
+                "Session is working"
+            } else {
+                "Session is idle"
+            }));
             let select = gtk::Button::with_label(&title);
             select.set_tooltip_text(self.session(&id).map(|session| session.directory.as_str()));
             select.add_css_class("flat");
             let close = gtk::Button::with_label("×");
             close.set_tooltip_text(Some("Close tab"));
             close.add_css_class("flat");
+            tab.append(&status);
             tab.append(&select);
             tab.append(&close);
 
@@ -2277,6 +2307,27 @@ impl Controller {
         }
     }
 
+    fn update_session_status(&mut self, session_id: &str, status: RunStatus) -> bool {
+        let previous = self.state.statuses.insert(session_id.to_owned(), status);
+        if status_transitioned_to_idle(previous, status) {
+            self.notify_session_idle(session_id);
+        }
+        previous != Some(status)
+    }
+
+    fn notify_session_idle(&self, session_id: &str) {
+        let Some(application) = self.widgets.window.application() else {
+            return;
+        };
+        let title = self
+            .session(session_id)
+            .map(|session| format!("{} is idle", session.title))
+            .unwrap_or_else(|| "OpenCode session is idle".to_owned());
+        let notification = gio::Notification::new(&title);
+        notification.set_body(Some("Ready for your next prompt."));
+        application.send_notification(None, &notification);
+    }
+
     fn send_if_idle(controller: &Rc<RefCell<Self>>) {
         let running = {
             let this = controller.borrow();
@@ -2357,7 +2408,11 @@ impl Controller {
                         draft: pending,
                     },
                 );
-                this.state.statuses.insert(active, RunStatus::Busy);
+                let status_changed = this.update_session_status(&active, RunStatus::Busy);
+                if status_changed {
+                    let weak = this.self_weak.clone();
+                    this.refresh_tabs(&weak);
+                }
                 this.refresh_composer();
                 this.refresh_transcript(TranscriptUpdate::Content);
                 Some(command)
@@ -3737,6 +3792,10 @@ fn transcript_indicator(
     }
 }
 
+fn status_transitioned_to_idle(previous: Option<RunStatus>, current: RunStatus) -> bool {
+    previous == Some(RunStatus::Busy) && current == RunStatus::Idle
+}
+
 fn clear_box(container: &gtk::Box) {
     while let Some(child) = container.first_child() {
         container.remove(&child);
@@ -3830,6 +3889,23 @@ mod tests {
             transcript_indicator(true, false, false, true, true, false, false),
             TranscriptIndicator::Hidden
         );
+    }
+
+    #[test]
+    fn idle_notifications_only_follow_an_observed_busy_state() {
+        assert!(status_transitioned_to_idle(
+            Some(RunStatus::Busy),
+            RunStatus::Idle
+        ));
+        assert!(!status_transitioned_to_idle(None, RunStatus::Idle));
+        assert!(!status_transitioned_to_idle(
+            Some(RunStatus::Idle),
+            RunStatus::Idle
+        ));
+        assert!(!status_transitioned_to_idle(
+            Some(RunStatus::Busy),
+            RunStatus::Busy
+        ));
     }
 
     #[test]
