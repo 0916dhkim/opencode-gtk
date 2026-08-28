@@ -2718,13 +2718,20 @@ impl Controller {
             })
             .collect();
         let transcript = self.widgets.transcript.clone().upcast::<gtk::Widget>();
-        let adjustment = self.widgets.transcript_scroll.vadjustment();
-        let viewport_top = adjustment.value();
-        let viewport_bottom = viewport_top + adjustment.page_size();
+        let viewport = self
+            .widgets
+            .transcript_scroll
+            .clone()
+            .upcast::<gtk::Widget>();
+        let viewport_bottom = f64::from(viewport.height());
+        if viewport_bottom <= 0.0 {
+            self.widgets.sticky_message.set_visible(false);
+            self.refresh_transcript_status_margin();
+            return;
+        }
         let mut realized = Vec::new();
-        inspect_realized_rows(&transcript, &transcript, &mut realized);
-        let sticky_index =
-            sticky_user_index(&user_indices, &realized, viewport_top, viewport_bottom);
+        inspect_realized_rows(&transcript, &viewport, &mut realized);
+        let sticky_index = sticky_user_index(&user_indices, &realized, 0.0, viewport_bottom);
         match sticky_index.and_then(|index| {
             self.rendered_rows.get(index).and_then(|row| {
                 serde_json::from_str::<TranscriptRow>(row)
@@ -4912,6 +4919,20 @@ mod tests {
         assert_eq!(sticky_user_index(&users, &realized, 50.0, 70.0), Some(0));
         assert_eq!(sticky_user_index(&users, &realized, 80.0, 400.0), None);
         assert_eq!(sticky_user_index(&users, &realized, 90.0, 400.0), Some(2));
+        assert_eq!(
+            sticky_user_index(
+                &[0],
+                &[RealizedRowBounds {
+                    index: 0,
+                    top: 12.0,
+                    bottom: 96.0,
+                    user: true,
+                }],
+                0.0,
+                640.0
+            ),
+            None
+        );
     }
 
     #[test]
