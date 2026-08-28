@@ -4534,10 +4534,12 @@ fn sticky_user_index(
     }
 
     if let Some((index, fully_visible, cut_off_top)) = latest_intersecting {
-        if fully_visible || !cut_off_top {
+        if cut_off_top {
+            Some(index)
+        } else if fully_visible {
             None
         } else {
-            Some(index)
+            latest_above
         }
     } else {
         latest_above
@@ -4917,6 +4919,7 @@ mod tests {
         ];
         assert_eq!(sticky_user_index(&users, &realized, 200.0, 500.0), Some(2));
         assert_eq!(sticky_user_index(&users, &realized, 50.0, 70.0), Some(0));
+        assert_eq!(sticky_user_index(&users, &realized, 50.0, 100.0), Some(0));
         assert_eq!(sticky_user_index(&users, &realized, 80.0, 400.0), None);
         assert_eq!(sticky_user_index(&users, &realized, 90.0, 400.0), Some(2));
         assert_eq!(
