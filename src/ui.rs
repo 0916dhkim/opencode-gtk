@@ -2429,27 +2429,17 @@ impl Controller {
             .map(|variant| variant.as_deref().unwrap_or("Default"))
             .collect();
         replace_string_list(&self.widgets.variant_store, &labels);
-        let selected = selection
-            .as_ref()
-            .and_then(|selection| {
-                self.current_variants
-                    .iter()
-                    .position(|variant| variant == &selection.variant)
-            })
-            .unwrap_or_else(|| {
-                if selection
-                    .as_ref()
-                    .is_some_and(|selection| selection.variant.is_some())
-                {
-                    if let Some(active) = self.state.active.as_ref() {
-                        if let Some(selection) = self.state.selections.get_mut(active) {
-                            selection.variant = None;
-                        }
-                    }
-                    self.persist_state();
+        let saved = selection.as_ref().map(|selection| &selection.variant);
+        let (selected, clear_invalid) =
+            resolved_variant_index(saved, &self.current_variants, model.is_some());
+        if clear_invalid {
+            if let Some(active) = self.state.active.as_ref() {
+                if let Some(selection) = self.state.selections.get_mut(active) {
+                    selection.variant = None;
                 }
-                0
-            });
+            }
+            self.persist_state();
+        }
         self.widgets.variant_dropdown.set_selected(selected as u32);
         self.widgets
             .variant_dropdown
@@ -4556,6 +4546,22 @@ fn sticky_message_text(row: TranscriptRow) -> String {
     }
 }
 
+fn resolved_variant_index(
+    saved: Option<&Option<String>>,
+    current_variants: &[Option<String>],
+    model_loaded: bool,
+) -> (usize, bool) {
+    if let Some(saved) = saved {
+        if let Some(index) = current_variants.iter().position(|variant| variant == saved) {
+            return (index, false);
+        }
+        if model_loaded && saved.is_some() {
+            return (0, true);
+        }
+    }
+    (0, false)
+}
+
 fn close_window_on_escape(window: &gtk::Window) {
     let key = gtk::EventControllerKey::new();
     key.set_propagation_phase(gtk::PropagationPhase::Capture);
@@ -4981,6 +4987,33 @@ mod tests {
                 images: vec!["data:image/png;base64,AA==".to_owned()],
             }),
             "Attached image"
+        );
+    }
+
+    #[test]
+    fn variant_index_keeps_saved_effort_until_the_model_is_loaded() {
+        let variants = [
+            None,
+            Some("low".into()),
+            Some("medium".into()),
+            Some("high".into()),
+        ];
+        let high = Some("high".into());
+        assert_eq!(
+            resolved_variant_index(Some(&high), &[None], false),
+            (0, false)
+        );
+        assert_eq!(
+            resolved_variant_index(Some(&high), &variants, true),
+            (3, false)
+        );
+        assert_eq!(
+            resolved_variant_index(Some(&high), &[None, Some("low".into())], true),
+            (0, true)
+        );
+        assert_eq!(
+            resolved_variant_index(Some(&None), &variants, true),
+            (0, false)
         );
     }
 
