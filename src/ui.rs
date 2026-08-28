@@ -35,7 +35,10 @@ const MAX_INLINE_IMAGE_BYTES: usize = 25 * 1024 * 1024;
 struct TranscriptRow {
     role: String,
     body: String,
+    #[serde(default)]
     images: Vec<String>,
+    #[serde(default)]
+    time: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -654,13 +657,21 @@ fn transcript_factory() -> gtk::SignalListItemFactory {
         };
         let row = gtk::Box::new(gtk::Orientation::Vertical, 6);
         row.add_css_class("message-row");
+        let header = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        header.add_css_class("message-header");
         let role = gtk::Label::new(None);
         role.set_xalign(0.0);
+        role.set_hexpand(true);
         role.add_css_class("message-role");
+        let time = gtk::Label::new(None);
+        time.set_xalign(1.0);
+        time.add_css_class("message-time");
+        header.append(&role);
+        header.append(&time);
         let content = gtk::Box::new(gtk::Orientation::Vertical, 10);
         content.set_hexpand(true);
         content.add_css_class("message-content");
-        row.append(&role);
+        row.append(&header);
         row.append(&content);
         item.set_child(Some(&row));
     });
@@ -674,7 +685,13 @@ fn transcript_factory() -> gtk::SignalListItemFactory {
         let Some(row) = item.child().and_downcast::<gtk::Box>() else {
             return;
         };
-        let Some(role) = row.first_child().and_downcast::<gtk::Label>() else {
+        let Some(header) = row.first_child().and_downcast::<gtk::Box>() else {
+            return;
+        };
+        let Some(role) = header.first_child().and_downcast::<gtk::Label>() else {
+            return;
+        };
+        let Some(time) = header.last_child().and_downcast::<gtk::Label>() else {
             return;
         };
         let Some(content) = row.last_child().and_downcast::<gtk::Box>() else {
@@ -682,16 +699,26 @@ fn transcript_factory() -> gtk::SignalListItemFactory {
         };
         let value = object.string();
         let parsed = serde_json::from_str::<TranscriptRow>(&value).ok();
-        let (role_text, body, images) = parsed
+        let (role_text, body, images, timestamp) = parsed
             .as_ref()
-            .map(|row| (row.role.as_str(), row.body.as_str(), row.images.as_slice()))
+            .map(|row| {
+                (
+                    row.role.as_str(),
+                    row.body.as_str(),
+                    row.images.as_slice(),
+                    row.time,
+                )
+            })
             .unwrap_or_else(|| {
                 let (role, body) = value
                     .split_once('\n')
                     .unwrap_or(("OPENCODE", value.as_str()));
-                (role, body, &[])
+                (role, body, &[], 0)
             });
         role.set_label(role_text);
+        let time_text = display_local_timestamp(timestamp).unwrap_or_default();
+        time.set_label(&time_text);
+        time.set_visible(!time_text.is_empty());
         clear_box(&content);
         if role_text == "YOU" {
             let label = gtk::Label::new(Some(body));
@@ -4623,6 +4650,17 @@ fn format_local_timestamp(timestamp: u64) -> String {
         .unwrap_or_default()
 }
 
+fn display_local_timestamp(timestamp: u64) -> Option<String> {
+    let seconds = if timestamp >= 1_000_000_000_000 {
+        timestamp / 1000
+    } else {
+        timestamp
+    };
+    (seconds >= 1_000_000_000)
+        .then(|| format_local_timestamp(timestamp))
+        .filter(|formatted| !formatted.is_empty())
+}
+
 fn pointer_hits_widget(
     widget: &impl IsA<gtk::Widget>,
     origin: &impl IsA<gtk::Widget>,
@@ -4985,6 +5023,7 @@ mod tests {
                 role: "YOU".to_owned(),
                 body: String::new(),
                 images: vec!["data:image/png;base64,AA==".to_owned()],
+                time: 0,
             }),
             "Attached image"
         );
@@ -5052,6 +5091,8 @@ mod tests {
         assert!(formatted.chars().any(|ch| ch.is_ascii_digit()));
         assert!(formatted.contains('-'));
         assert!(formatted.contains(':'));
+        assert_eq!(display_local_timestamp(1), None);
+        assert!(display_local_timestamp(1_704_067_200_000).is_some());
     }
 
     #[test]

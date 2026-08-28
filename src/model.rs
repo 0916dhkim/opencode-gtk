@@ -247,6 +247,7 @@ struct Segment {
     kind: SegmentKind,
     text: String,
     image_url: Option<String>,
+    created: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -269,6 +270,7 @@ impl ChatMessage {
         }
     }
 
+    #[cfg(test)]
     pub fn render(&self) -> String {
         let mut blocks = Vec::new();
         for segment in &self.segments {
@@ -289,18 +291,59 @@ impl ChatMessage {
         blocks.join("\n\n")
     }
 
-    pub fn image_urls(&self) -> impl Iterator<Item = &str> {
-        self.segments
-            .iter()
-            .filter_map(|segment| segment.image_url.as_deref())
+    fn transcript_rows(&self) -> Vec<String> {
+        let mut rows = Vec::new();
+        let mut blocks = Vec::new();
+        let mut images = Vec::new();
+        let role = self.role.label();
+        for segment in &self.segments {
+            if segment.kind == SegmentKind::Tool {
+                push_transcript_row(&mut rows, role, blocks.join("\n\n"), images, self.created);
+                blocks = Vec::new();
+                images = Vec::new();
+                if !segment.text.trim().is_empty() {
+                    push_transcript_row(
+                        &mut rows,
+                        role,
+                        segment.text.clone(),
+                        Vec::new(),
+                        if segment.created == 0 {
+                            self.created
+                        } else {
+                            segment.created
+                        },
+                    );
+                }
+                continue;
+            }
+            if !segment.text.trim().is_empty() {
+                match segment.kind {
+                    SegmentKind::Reasoning => {
+                        blocks.push(format!("Reasoning\n{}", segment.text.trim()))
+                    }
+                    _ => blocks.push(segment.text.clone()),
+                }
+            }
+            if let Some(url) = &segment.image_url {
+                images.push(url.clone());
+            }
+        }
+        if let Some(error) = &self.error {
+            blocks.push(format!("Error: {error}"));
+        }
+        push_transcript_row(&mut rows, role, blocks.join("\n\n"), images, self.created);
+        rows
     }
 
-    fn upsert_segment(&mut self, segment: Segment) {
+    fn upsert_segment(&mut self, mut segment: Segment) {
         if let Some(existing) = self
             .segments
             .iter_mut()
             .find(|existing| existing.key == segment.key)
         {
+            if segment.created == 0 {
+                segment.created = existing.created;
+            }
             *existing = segment;
         } else {
             self.segments.push(segment);
@@ -321,6 +364,7 @@ impl ChatMessage {
             kind,
             text: delta.to_owned(),
             image_url: None,
+            created: 0,
         });
     }
 }
@@ -372,18 +416,7 @@ impl Conversation {
     pub fn transcript_rows(&self) -> Vec<String> {
         self.messages
             .iter()
-            .filter_map(|message| {
-                let body = message.render();
-                let images: Vec<_> = message.image_urls().collect();
-                (!body.is_empty() || !images.is_empty()).then(|| {
-                    json!({
-                        "role": message.role.label(),
-                        "body": body,
-                        "images": images,
-                    })
-                    .to_string()
-                })
-            })
+            .flat_map(ChatMessage::transcript_rows)
             .collect()
     }
 
@@ -561,6 +594,7 @@ impl Conversation {
             kind: SegmentKind::Text,
             text: text.to_owned(),
             image_url: None,
+            created: 0,
         });
         true
     }
@@ -591,6 +625,7 @@ impl Conversation {
             kind,
             text: String::new(),
             image_url: None,
+            created: 0,
         });
         true
     }
@@ -622,6 +657,7 @@ impl Conversation {
             kind,
             text: text.to_owned(),
             image_url: None,
+            created: 0,
         });
         true
     }
@@ -663,6 +699,7 @@ impl Conversation {
             kind: SegmentKind::Tool,
             text: format!("{name} · {status}{detail}"),
             image_url: None,
+            created: value_time(data),
         });
         true
     }
@@ -747,18 +784,21 @@ fn segment_from_part(part: &Value) -> Option<Segment> {
         .and_then(Value::as_str)
         .map(str::to_owned)
         .unwrap_or_else(|| format!("{part_type}:unknown"));
+    let created = value_time(part);
     match part_type {
         "text" => Some(Segment {
             key,
             kind: SegmentKind::Text,
             text: part.get("text")?.as_str()?.to_owned(),
             image_url: None,
+            created,
         }),
         "reasoning" => Some(Segment {
             key,
             kind: SegmentKind::Reasoning,
             text: part.get("text")?.as_str()?.to_owned(),
             image_url: None,
+            created,
         }),
         "file" => {
             let filename = part
@@ -777,6 +817,7 @@ fn segment_from_part(part: &Value) -> Option<Segment> {
                     .starts_with("image/")
                     .then(|| part.get("url").and_then(Value::as_str).map(str::to_owned))
                     .flatten(),
+                created,
             })
         }
         "tool" => {
@@ -801,6 +842,7 @@ fn segment_from_part(part: &Value) -> Option<Segment> {
                 kind: SegmentKind::Tool,
                 text: format!("{name} · {status}{title}{error}"),
                 image_url: None,
+                created,
             })
         }
         _ => None,
@@ -839,6 +881,36 @@ fn error_text(error: Option<&Value>) -> Option<String> {
 
 fn value_text(value: &Value) -> Option<String> {
     value.as_str().map(str::to_owned)
+}
+
+fn value_time(value: &Value) -> u64 {
+    value
+        .pointer("/time/start")
+        .or_else(|| value.pointer("/time/created"))
+        .or_else(|| value.pointer("/state/time/start"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0)
+}
+
+fn push_transcript_row(
+    rows: &mut Vec<String>,
+    role: &str,
+    body: String,
+    images: Vec<String>,
+    time: u64,
+) {
+    if body.is_empty() && images.is_empty() {
+        return;
+    }
+    rows.push(
+        json!({
+            "role": role,
+            "body": body,
+            "images": images,
+            "time": time,
+        })
+        .to_string(),
+    );
 }
 
 pub fn event_data(payload: &Value) -> &Value {
@@ -1029,11 +1101,73 @@ mod tests {
 
         let row: Value = serde_json::from_str(&conversation.transcript_rows()[0]).unwrap();
         assert_eq!(row["role"], "YOU");
+        assert_eq!(row["time"], 1);
         assert_eq!(row["images"], json!(["data:image/png;base64,AA=="]));
         assert_eq!(
             conversation.rendered_rows(),
             ["YOU\nAttached: clipboard.png (image/png)"]
         );
+    }
+
+    #[test]
+    fn transcript_rows_split_tool_calls_with_their_own_times() {
+        let mut conversation = Conversation::default();
+        conversation.replace_from_api(
+            &[
+                json!({
+                    "info": {
+                        "id": "msg_user",
+                        "sessionID": "ses_1",
+                        "role": "user",
+                        "time": { "created": 1_704_067_200_000_u64 }
+                    },
+                    "parts": [{
+                        "id": "part_user",
+                        "type": "text",
+                        "text": "run it"
+                    }]
+                }),
+                json!({
+                    "info": {
+                        "id": "msg_assistant",
+                        "sessionID": "ses_1",
+                        "role": "assistant",
+                        "time": { "created": 1_704_067_260_000_u64 }
+                    },
+                    "parts": [
+                        {
+                            "id": "part_text",
+                            "type": "text",
+                            "text": "calling bash"
+                        },
+                        {
+                            "id": "part_tool",
+                            "type": "tool",
+                            "tool": "bash",
+                            "state": {
+                                "status": "completed",
+                                "time": { "start": 1_704_067_261_000_u64 }
+                            }
+                        }
+                    ]
+                }),
+            ],
+            None,
+        );
+
+        let rows: Vec<Value> = conversation
+            .transcript_rows()
+            .iter()
+            .map(|row| serde_json::from_str(row).unwrap())
+            .collect();
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0]["role"], "YOU");
+        assert_eq!(rows[0]["body"], "run it");
+        assert_eq!(rows[0]["time"], 1_704_067_200_000_u64);
+        assert_eq!(rows[1]["body"], "calling bash");
+        assert_eq!(rows[1]["time"], 1_704_067_260_000_u64);
+        assert_eq!(rows[2]["body"], "bash · completed");
+        assert_eq!(rows[2]["time"], 1_704_067_261_000_u64);
     }
 
     #[test]

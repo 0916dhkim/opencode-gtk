@@ -91,6 +91,10 @@ headerbar {
   color: #707673;
 }
 
+.message-time {
+  color: #8b918e;
+}
+
 .message-content {
   color: #292724;
 }

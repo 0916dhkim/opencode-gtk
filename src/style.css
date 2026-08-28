@@ -162,6 +162,11 @@ headerbar {
   letter-spacing: 0.08em;
 }
 
+.message-time {
+  color: #6a7279;
+  font-size: 0.76em;
+}
+
 .message-content {
   color: #e7e3dc;
   font-size: 0.96em;
