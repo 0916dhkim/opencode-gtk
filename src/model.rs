@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct Session {
@@ -246,6 +246,7 @@ struct Segment {
     key: String,
     kind: SegmentKind,
     text: String,
+    image_url: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -288,6 +289,12 @@ impl ChatMessage {
         blocks.join("\n\n")
     }
 
+    pub fn image_urls(&self) -> impl Iterator<Item = &str> {
+        self.segments
+            .iter()
+            .filter_map(|segment| segment.image_url.as_deref())
+    }
+
     fn upsert_segment(&mut self, segment: Segment) {
         if let Some(existing) = self
             .segments
@@ -313,6 +320,7 @@ impl ChatMessage {
             key: key.to_owned(),
             kind,
             text: delta.to_owned(),
+            image_url: None,
         });
     }
 }
@@ -350,12 +358,31 @@ impl Conversation {
         self.loaded = true;
     }
 
+    #[cfg(test)]
     pub fn rendered_rows(&self) -> Vec<String> {
         self.messages
             .iter()
             .filter_map(|message| {
                 let content = message.render();
                 (!content.is_empty()).then(|| format!("{}\n{content}", message.role.label()))
+            })
+            .collect()
+    }
+
+    pub fn transcript_rows(&self) -> Vec<String> {
+        self.messages
+            .iter()
+            .filter_map(|message| {
+                let body = message.render();
+                let images: Vec<_> = message.image_urls().collect();
+                (!body.is_empty() || !images.is_empty()).then(|| {
+                    json!({
+                        "role": message.role.label(),
+                        "body": body,
+                        "images": images,
+                    })
+                    .to_string()
+                })
             })
             .collect()
     }
@@ -533,6 +560,7 @@ impl Conversation {
             key: "text:0".to_owned(),
             kind: SegmentKind::Text,
             text: text.to_owned(),
+            image_url: None,
         });
         true
     }
@@ -562,6 +590,7 @@ impl Conversation {
             key,
             kind,
             text: String::new(),
+            image_url: None,
         });
         true
     }
@@ -592,6 +621,7 @@ impl Conversation {
             key,
             kind,
             text: text.to_owned(),
+            image_url: None,
         });
         true
     }
@@ -632,6 +662,7 @@ impl Conversation {
             key,
             kind: SegmentKind::Tool,
             text: format!("{name} · {status}{detail}"),
+            image_url: None,
         });
         true
     }
@@ -721,11 +752,13 @@ fn segment_from_part(part: &Value) -> Option<Segment> {
             key,
             kind: SegmentKind::Text,
             text: part.get("text")?.as_str()?.to_owned(),
+            image_url: None,
         }),
         "reasoning" => Some(Segment {
             key,
             kind: SegmentKind::Reasoning,
             text: part.get("text")?.as_str()?.to_owned(),
+            image_url: None,
         }),
         "file" => {
             let filename = part
@@ -740,6 +773,10 @@ fn segment_from_part(part: &Value) -> Option<Segment> {
                 key,
                 kind: SegmentKind::File,
                 text: format!("Attached: {filename} ({mime})"),
+                image_url: mime
+                    .starts_with("image/")
+                    .then(|| part.get("url").and_then(Value::as_str).map(str::to_owned))
+                    .flatten(),
             })
         }
         "tool" => {
@@ -763,6 +800,7 @@ fn segment_from_part(part: &Value) -> Option<Segment> {
                 key,
                 kind: SegmentKind::Tool,
                 text: format!("{name} · {status}{title}{error}"),
+                image_url: None,
             })
         }
         _ => None,
@@ -963,6 +1001,39 @@ mod tests {
             "properties": { "messageID": "msg_1", "partID": "part_1" }
         })));
         assert!(conversation.rendered_rows().is_empty());
+    }
+
+    #[test]
+    fn transcript_rows_include_image_file_parts() {
+        let mut conversation = Conversation::default();
+        conversation.replace_from_api(
+            &[json!({
+                "info": {
+                    "id": "msg_image",
+                    "sessionID": "ses_1",
+                    "role": "user",
+                    "time": { "created": 1 }
+                },
+                "parts": [{
+                    "id": "part_image",
+                    "sessionID": "ses_1",
+                    "messageID": "msg_image",
+                    "type": "file",
+                    "filename": "clipboard.png",
+                    "mime": "image/png",
+                    "url": "data:image/png;base64,AA=="
+                }]
+            })],
+            None,
+        );
+
+        let row: Value = serde_json::from_str(&conversation.transcript_rows()[0]).unwrap();
+        assert_eq!(row["role"], "YOU");
+        assert_eq!(row["images"], json!(["data:image/png;base64,AA=="]));
+        assert_eq!(
+            conversation.rendered_rows(),
+            ["YOU\nAttached: clipboard.png (image/png)"]
+        );
     }
 
     #[test]

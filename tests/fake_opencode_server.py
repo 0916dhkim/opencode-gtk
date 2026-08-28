@@ -230,7 +230,7 @@ class Handler(BaseHTTPRequestHandler):
                                 "mock-model": {
                                     "id": "mock-model",
                                     "name": "Mock model",
-                                    "capabilities": {"input": {"text": True}},
+                                    "capabilities": {"input": {"text": True, "image": True}},
                                 }
                             },
                         }
@@ -273,6 +273,8 @@ class Handler(BaseHTTPRequestHandler):
                 part.get("text", "") for part in body.get("parts", []) if part.get("type") == "text"
             )
             self.state.record(f"prompt:{text}")
+            files = sum(part.get("type") == "file" for part in body.get("parts", []))
+            self.state.record(f"files:{files}")
             assistant = {
                 "info": {
                     "id": "msg_reply",

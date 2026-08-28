@@ -1,13 +1,16 @@
 use std::{
     cell::RefCell,
     collections::{HashMap, HashSet},
+    fs,
     path::PathBuf,
     rc::{Rc, Weak},
-    time::Duration,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use async_channel::Receiver;
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use gtk::{gdk, gio, glib, pango, prelude::*};
+use serde::Deserialize;
 
 use crate::{
     api::{ApiConfig, ApiHandle, Bootstrap, Command, MessagePage, ServerEnvelope, UiEvent},
@@ -29,6 +32,14 @@ const BOOTSTRAP_RETRY_MIN: Duration = Duration::from_secs(2);
 const BOOTSTRAP_RETRY_MAX: Duration = Duration::from_secs(30);
 const SESSION_PICKER_LIMIT: usize = 200;
 const BOTTOM_EPSILON: f64 = 2.0;
+const MAX_INLINE_IMAGE_BYTES: usize = 25 * 1024 * 1024;
+
+#[derive(Deserialize)]
+struct TranscriptRow {
+    role: String,
+    body: String,
+    images: Vec<String>,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum TranscriptUpdate {
@@ -593,12 +604,19 @@ fn transcript_factory() -> gtk::SignalListItemFactory {
             return;
         };
         let value = object.string();
-        let (role_text, body) = value
-            .split_once('\n')
-            .unwrap_or(("OPENCODE", value.as_str()));
+        let parsed = serde_json::from_str::<TranscriptRow>(&value).ok();
+        let (role_text, body, images) = parsed
+            .as_ref()
+            .map(|row| (row.role.as_str(), row.body.as_str(), row.images.as_slice()))
+            .unwrap_or_else(|| {
+                let (role, body) = value
+                    .split_once('\n')
+                    .unwrap_or(("OPENCODE", value.as_str()));
+                (role, body, &[])
+            });
         role.set_label(role_text);
+        clear_box(&content);
         if role_text == "YOU" {
-            clear_box(&content);
             let label = gtk::Label::new(Some(body));
             label.set_xalign(0.0);
             label.set_yalign(0.0);
@@ -610,6 +628,16 @@ fn transcript_factory() -> gtk::SignalListItemFactory {
         } else {
             markdown::render_into(&content, body);
         }
+        for image in images {
+            if let Some(texture) = inline_image_texture(image) {
+                let picture = gtk::Picture::for_paintable(&texture);
+                picture.set_size_request(320, 220);
+                picture.set_can_shrink(true);
+                picture.set_halign(gtk::Align::Start);
+                picture.add_css_class("message-image");
+                content.append(&picture);
+            }
+        }
         row.remove_css_class("user-message");
         row.remove_css_class("assistant-message");
         row.add_css_class(if role_text == "YOU" {
@@ -619,6 +647,56 @@ fn transcript_factory() -> gtk::SignalListItemFactory {
         });
     });
     factory
+}
+
+fn inline_image_texture(url: &str) -> Option<gdk::Texture> {
+    let (metadata, encoded) = url.strip_prefix("data:")?.split_once(',')?;
+    if !metadata.starts_with("image/") || !metadata.ends_with(";base64") {
+        return None;
+    }
+    if encoded.len() > MAX_INLINE_IMAGE_BYTES.div_ceil(3) * 4 {
+        return None;
+    }
+    let bytes = BASE64.decode(encoded).ok()?;
+    (bytes.len() <= MAX_INLINE_IMAGE_BYTES)
+        .then(|| gdk::Texture::from_bytes(&glib::Bytes::from_owned(bytes)).ok())
+        .flatten()
+}
+
+fn clipboard_attachment_dir() -> PathBuf {
+    std::env::temp_dir().join(format!("opencode-gtk-clipboard-{}", std::process::id()))
+}
+
+fn save_clipboard_texture(texture: &gdk::Texture) -> Result<PathBuf, String> {
+    let directory = clipboard_attachment_dir();
+    fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| error.to_string())?
+        .as_nanos();
+    let path = directory.join(format!("clipboard-{timestamp}.png"));
+    texture
+        .save_to_png(&path)
+        .map_err(|error| error.to_string())?;
+    Ok(path)
+}
+
+fn remove_clipboard_attachment(path: &PathBuf) {
+    if path.parent() != Some(clipboard_attachment_dir().as_path()) {
+        return;
+    }
+    let _ = fs::remove_file(path);
+    let _ = fs::remove_dir(clipboard_attachment_dir());
+}
+
+fn remove_pending_clipboard_attachments(pending: Option<PendingPrompt>) {
+    if let Some(pending) = pending {
+        pending
+            .draft
+            .attachments
+            .iter()
+            .for_each(remove_clipboard_attachment);
+    }
 }
 
 fn wire_callbacks(controller: &Rc<RefCell<Controller>>) {
@@ -728,8 +806,25 @@ fn wire_callbacks(controller: &Rc<RefCell<Controller>>) {
         });
 
     let key = gtk::EventControllerKey::new();
+    key.set_propagation_phase(gtk::PropagationPhase::Capture);
     let weak = Rc::downgrade(controller);
     key.connect_key_pressed(move |_, key, _, modifiers| {
+        if key == gdk::Key::v && modifiers.contains(gdk::ModifierType::CONTROL_MASK) {
+            let clipboard = gdk::Display::default().map(|display| display.clipboard());
+            if clipboard.is_some_and(|clipboard| {
+                let formats = clipboard.formats();
+                formats.contains_type(gdk::Texture::static_type())
+                    || formats
+                        .mime_types()
+                        .iter()
+                        .any(|mime| mime.starts_with("image/"))
+            }) {
+                if let Some(controller) = weak.upgrade() {
+                    Controller::paste_clipboard_image(&controller);
+                }
+                return glib::Propagation::Stop;
+            }
+        }
         if matches!(key, gdk::Key::Return | gdk::Key::KP_Enter)
             && !modifiers.contains(gdk::ModifierType::SHIFT_MASK)
         {
@@ -1026,7 +1121,9 @@ impl Controller {
                     }
                     match result {
                         Ok(()) => {
-                            this.state.pending_prompts.remove(&session_id);
+                            remove_pending_clipboard_attachments(
+                                this.state.pending_prompts.remove(&session_id),
+                            );
                             this.state.abort_requested.remove(&session_id).then(|| {
                                 this.session(&session_id).map(|session| Command::Abort {
                                     session_id: session_id.clone(),
@@ -1243,7 +1340,9 @@ impl Controller {
                 match status {
                     RunStatus::Busy => {
                         this.state.server_busy.insert(session_id.clone());
-                        this.state.pending_prompts.remove(&session_id);
+                        remove_pending_clipboard_attachments(
+                            this.state.pending_prompts.remove(&session_id),
+                        );
                         if this.state.abort_requested.remove(&session_id) {
                             if let Some(session) = this.session(&session_id) {
                                 api_commands.push(Command::Abort {
@@ -1255,7 +1354,9 @@ impl Controller {
                     }
                     RunStatus::Idle => {
                         this.state.server_busy.remove(&session_id);
-                        this.state.pending_prompts.remove(&session_id);
+                        remove_pending_clipboard_attachments(
+                            this.state.pending_prompts.remove(&session_id),
+                        );
                         this.state.abort_requested.remove(&session_id);
                     }
                 }
@@ -1545,10 +1646,15 @@ impl Controller {
                     RunStatus::Idle => {
                         this.state.server_busy.remove(&session_id);
                         this.state.abort_requested.remove(&session_id);
-                        this.state.pending_prompts.remove(&session_id);
+                        remove_pending_clipboard_attachments(
+                            this.state.pending_prompts.remove(&session_id),
+                        );
                     }
                 }
                 let status_changed = this.update_session_status(&session_id, status);
+                if event_returns_control(&payload) {
+                    this.notify_session_idle(&session_id);
+                }
                 tab_status_changed |=
                     status_changed && this.state.tabs.iter().any(|id| id == &session_id);
             }
@@ -2151,6 +2257,7 @@ impl Controller {
                 if let Some(draft) = this.state.drafts.get_mut(&draft_id) {
                     draft.attachments.retain(|attachment| attachment != &path);
                 }
+                remove_clipboard_attachment(&path);
                 if this.state.active.as_deref() == Some(draft_id.as_str()) {
                     this.refresh_attachments();
                     this.refresh_send_button();
@@ -2231,7 +2338,7 @@ impl Controller {
         let rows = active
             .as_ref()
             .and_then(|active| self.state.conversations.get(active))
-            .map(Conversation::rendered_rows)
+            .map(Conversation::transcript_rows)
             .unwrap_or_default();
         let adjustment = self.widgets.transcript_scroll.vadjustment();
         let old_upper = adjustment.upper();
@@ -2393,13 +2500,16 @@ impl Controller {
 
     fn update_session_status(&mut self, session_id: &str, status: RunStatus) -> bool {
         let previous = self.state.statuses.insert(session_id.to_owned(), status);
-        if status_transitioned_to_idle(previous, status) {
-            self.notify_session_idle(session_id);
-        }
         previous != Some(status)
     }
 
     fn notify_session_idle(&self, session_id: &str) {
+        if self
+            .session(session_id)
+            .is_some_and(|session| session.parent_id.is_some())
+        {
+            return;
+        }
         let Some(application) = self.widgets.window.application() else {
             return;
         };
@@ -2584,6 +2694,48 @@ impl Controller {
             chooser.hide();
         });
         chooser.show();
+    }
+
+    fn paste_clipboard_image(controller: &Rc<RefCell<Self>>) {
+        let (session_id, clipboard) = {
+            let mut this = controller.borrow_mut();
+            if !this.selected_model_supports_attachments() {
+                this.show_error("The selected model does not accept images");
+                return;
+            }
+            let Some(session_id) = this.state.active.clone() else {
+                return;
+            };
+            let Some(display) = gdk::Display::default() else {
+                return;
+            };
+            (session_id, display.clipboard())
+        };
+        let weak = Rc::downgrade(controller);
+        glib::spawn_future_local(async move {
+            let result = clipboard
+                .read_texture_future()
+                .await
+                .map_err(|error| error.to_string())
+                .and_then(|texture| texture.ok_or_else(|| "Clipboard has no image".to_owned()))
+                .and_then(|texture| save_clipboard_texture(&texture));
+            let Some(controller) = weak.upgrade() else {
+                return;
+            };
+            let mut this = controller.borrow_mut();
+            match result {
+                Ok(path) if this.state.tabs.contains(&session_id) => {
+                    let draft = this.state.drafts.entry(session_id.clone()).or_default();
+                    draft.attachments.push(path);
+                    if this.state.active.as_deref() == Some(session_id.as_str()) {
+                        this.refresh_attachments();
+                        this.refresh_send_button();
+                    }
+                }
+                Ok(path) => remove_clipboard_attachment(&path),
+                Err(error) => this.show_error(&format!("Could not paste image: {error}")),
+            }
+        });
     }
 
     fn show_session_picker(controller: &Rc<RefCell<Self>>) {
@@ -3881,8 +4033,8 @@ fn transcript_indicator(
     }
 }
 
-fn status_transitioned_to_idle(previous: Option<RunStatus>, current: RunStatus) -> bool {
-    previous == Some(RunStatus::Busy) && current == RunStatus::Idle
+fn event_returns_control(payload: &serde_json::Value) -> bool {
+    payload.get("type").and_then(serde_json::Value::as_str) == Some("session.idle")
 }
 
 fn should_follow_transcript(update: TranscriptUpdate, at_bottom: bool) -> bool {
@@ -4010,20 +4162,19 @@ mod tests {
     }
 
     #[test]
-    fn idle_notifications_only_follow_an_observed_busy_state() {
-        assert!(status_transitioned_to_idle(
-            Some(RunStatus::Busy),
-            RunStatus::Idle
-        ));
-        assert!(!status_transitioned_to_idle(None, RunStatus::Idle));
-        assert!(!status_transitioned_to_idle(
-            Some(RunStatus::Idle),
-            RunStatus::Idle
-        ));
-        assert!(!status_transitioned_to_idle(
-            Some(RunStatus::Busy),
-            RunStatus::Busy
-        ));
+    fn notifications_only_follow_the_terminal_idle_event() {
+        assert!(event_returns_control(&serde_json::json!({
+            "type": "session.idle"
+        })));
+        for event_type in [
+            "session.status",
+            "session.execution.succeeded",
+            "session.error",
+        ] {
+            assert!(!event_returns_control(&serde_json::json!({
+                "type": event_type
+            })));
+        }
     }
 
     #[test]

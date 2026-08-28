@@ -200,8 +200,14 @@ xdotool mousemove --window "${main_window}" 500 680 click 1
 printf '%s' $'integration\nping' | xclip -selection clipboard
 xdotool key --window "${main_window}" ctrl+v
 sleep 0.5
+printf '%s' 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=' \
+  | base64 -d \
+  | xclip -selection clipboard -t image/png
+xdotool key --window "${main_window}" ctrl+v
+sleep 0.5
 xdotool key --window "${main_window}" Return
 wait_for_event $'prompt:integration\nping' "${temporary}/events-two"
+wait_for_event "files:1" "${temporary}/events-two"
 
 question_window="$(wait_for_window 'OpenCode needs your input')"
 xdotool windowfocus "${question_window}"

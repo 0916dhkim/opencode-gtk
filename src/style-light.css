@@ -67,6 +67,10 @@ headerbar {
   color: #292724;
 }
 
+.message-image {
+  border: 1px solid alpha(#242321, 0.14);
+}
+
 .markdown-heading {
   color: #1f1e1c;
 }
