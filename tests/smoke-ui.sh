@@ -11,7 +11,7 @@ trap 'kill "${pid}" 2>/dev/null || true; wait "${pid}" 2>/dev/null || true' EXIT
 
 main_window=""
 for _ in {1..50}; do
-  if main_window="$(xdotool search --name '^OpenCode$' 2>/dev/null | tail -n 1)" && [[ -n "${main_window}" ]]; then
+  if main_window="$(xdotool search --onlyvisible --name '^OpenCode$' 2>/dev/null | tail -n 1)" && [[ -n "${main_window}" ]]; then
     break
   fi
   if ! kill -0 "${pid}" 2>/dev/null; then
@@ -25,7 +25,7 @@ done
 xdotool windowfocus "${main_window}"
 xdotool key --window "${main_window}" ctrl+t
 for _ in {1..50}; do
-  if xdotool search --name '^New session$' >/dev/null 2>&1; then
+  if xdotool search --onlyvisible --name '^New session$' >/dev/null 2>&1; then
     exit 0
   fi
   sleep 0.1

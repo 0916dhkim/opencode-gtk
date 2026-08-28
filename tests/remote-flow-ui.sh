@@ -47,7 +47,7 @@ wait_for_window() {
   for _ in {1..100}; do
     while read -r candidate; do
       window="${candidate}"
-    done < <(xdotool search --name "^${title}$" 2>/dev/null || true)
+    done < <(xdotool search --onlyvisible --name "^${title}$" 2>/dev/null || true)
     if [[ -n "${window}" ]]; then
       printf '%s\n' "${window}"
       return 0
@@ -62,7 +62,7 @@ wait_for_no_window() {
   local title="$1"
   local quiet=0
   for _ in {1..50}; do
-    if ! xdotool search --name "^${title}$" >/dev/null 2>&1; then
+    if ! xdotool search --onlyvisible --name "^${title}$" >/dev/null 2>&1; then
       quiet=$((quiet + 1))
       if [[ "${quiet}" -ge 5 ]]; then
         return 0
