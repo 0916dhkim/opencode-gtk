@@ -148,7 +148,14 @@ wait_for_no_window 'Permission required'
 
 wait_for_event "messages:ses_test"
 xdotool windowfocus "${main_window}"
-xdotool key --window "${main_window}" ctrl+2
+xdotool key --window "${main_window}" ctrl+p
+sessions_popover="$(wait_for_window opencode-gtk)"
+if xdotool search --onlyvisible --name '^Sessions$' >/dev/null 2>&1; then
+  printf 'Sessions opened as a separate window\n' >&2
+  exit 1
+fi
+xdotool mousemove --window "${sessions_popover}" 100 220 click 1
+wait_for_window_closed "${sessions_popover}"
 wait_for_event "messages:ses_other"
 xdotool key --window "${main_window}" ctrl+1
 
@@ -166,6 +173,26 @@ done
 sleep 0.3
 xdotool mousemove --window "${main_window}" "$((WIDTH / 2))" 60 click 1
 wait_for_event "messages:ses_test:msg_older"
+
+xdotool mousemove --window "${main_window}" 40 129 mousedown 1
+sleep 0.3
+xdotool mousemove --window "${main_window}" 40 145
+sleep 0.2
+xdotool mousemove --window "${main_window}" 40 165
+sleep 0.2
+xdotool mousemove --window "${main_window}" 40 180
+sleep 0.3
+xdotool mouseup 1
+sleep 0.5
+python3 - "${temporary}/config/opencode-gtk/state.json" "$(<"${temporary}/address")" <<'PY'
+import json
+import sys
+
+state = json.load(open(sys.argv[1], encoding="utf-8"))
+server = sys.argv[2].rstrip("/")
+tabs = state["servers"][server]["tabs"]
+assert [tab["id"] for tab in tabs[:2]] == ["ses_other", "ses_test"], state
+PY
 
 xdotool windowfocus "${main_window}"
 xdotool key --window "${main_window}" F2
@@ -198,18 +225,17 @@ PY
 
 xdotool windowfocus "${main_window}"
 xdotool key --window "${main_window}" ctrl+comma
-settings_window="$(wait_for_window Settings)"
-xdotool windowfocus "${settings_window}"
+settings_popover="$(wait_for_window opencode-gtk)"
+if xdotool search --onlyvisible --name '^Settings$' >/dev/null 2>&1; then
+  printf 'Settings opened as a separate window\n' >&2
+  exit 1
+fi
 xclip -selection clipboard <"${temporary}/address-two"
-xdotool key --window "${settings_window}" ctrl+a
-xdotool key --window "${settings_window}" ctrl+v
+xdotool key ctrl+a
+xdotool key ctrl+v
 sleep 0.5
-xdotool key --window "${settings_window}" Tab
-xdotool key --window "${settings_window}" alt+l
-sleep 0.5
-eval "$(xdotool getwindowgeometry --shell "${settings_window}")"
-xdotool mousemove --window "${settings_window}" "$((WIDTH - 55))" "$((HEIGHT - 30))" click 1
-wait_for_no_window Settings
+xdotool key ctrl+Return
+wait_for_window_closed "${settings_popover}"
 wait_for_event "sse:1" "${temporary}/events-two"
 
 permission_window="$(wait_for_window 'Permission required')"
@@ -225,7 +251,7 @@ import sys
 
 state = json.load(open(sys.argv[1], encoding="utf-8"))
 assert state["connection"]["server"] == sys.argv[2], state
-assert state["theme"] == "light", state
+assert "theme" not in state, state
 PY
 
 xdotool windowfocus "${main_window}"

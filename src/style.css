@@ -29,6 +29,15 @@ headerbar {
   border-right: 1px solid #24282c;
 }
 
+.sidebar-new-session {
+  min-height: 34px;
+}
+
+.modal-heading {
+  font-size: 1.15em;
+  font-weight: 700;
+}
+
 .session-tab {
   background: transparent;
   border-radius: 7px;
@@ -260,6 +269,12 @@ headerbar {
   background: #191c1f;
   border: 1px solid #30353a;
   border-radius: 12px;
+}
+
+.composer-action {
+  min-width: 34px;
+  min-height: 34px;
+  padding: 0;
 }
 
 .composer-input {

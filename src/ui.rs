@@ -1,5 +1,5 @@
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     collections::{HashMap, HashSet},
     fs,
     path::PathBuf,
@@ -21,10 +21,7 @@ use crate::{
         Conversation, ModelCatalog, ModelOption, ModelSelection, Project, RunStatus, Session,
         SessionTime,
     },
-    persist::{
-        default_path, ConnectionSettings, PersistedState, PersistedTab, ServerState,
-        ThemePreference,
-    },
+    persist::{default_path, ConnectionSettings, PersistedState, PersistedTab, ServerState},
 };
 
 const STREAM_FRAME: Duration = Duration::from_millis(33);
@@ -104,9 +101,9 @@ struct State {
 #[derive(Clone)]
 struct Widgets {
     window: gtk::ApplicationWindow,
-    session_button: gtk::Button,
+    session_button: gtk::MenuButton,
     new_button: gtk::Button,
-    settings_button: gtk::Button,
+    settings_button: gtk::MenuButton,
     status: gtk::Label,
     tab_bar: gtk::Box,
     transcript_model: gtk::StringList,
@@ -144,8 +141,6 @@ struct Controller {
     had_server_state: bool,
     state: State,
     widgets: Widgets,
-    css_provider: gtk::CssProvider,
-    theme: ThemePreference,
     rendered_session: Option<String>,
     rendered_rows: Vec<String>,
     transcript_at_bottom: bool,
@@ -177,7 +172,8 @@ struct Controller {
     pending_actions: HashSet<String>,
     new_session_dialog: Option<gtk::Window>,
     rename_session_dialog: Option<gtk::Window>,
-    settings_dialog: Option<gtk::Window>,
+    session_popover: Option<gtk::Popover>,
+    settings_popover: Option<gtk::Popover>,
     next_session_request_id: u64,
     pending_session_request: Option<u64>,
     pending_rename_request: Option<u64>,
@@ -215,8 +211,7 @@ pub fn launch(
         password,
         cloudflare_access,
     };
-    let theme = persisted.theme;
-    let css_provider = install_css(theme);
+    install_css();
     let widgets = build_widgets(application);
     let (api, events, server_key) = match ApiHandle::start(config.clone()) {
         Ok(started) => started,
@@ -252,8 +247,6 @@ pub fn launch(
         had_server_state,
         state,
         widgets,
-        css_provider,
-        theme,
         rendered_session: None,
         rendered_rows: Vec::new(),
         transcript_at_bottom: true,
@@ -285,7 +278,8 @@ pub fn launch(
         pending_actions: HashSet::new(),
         new_session_dialog: None,
         rename_session_dialog: None,
-        settings_dialog: None,
+        session_popover: None,
+        settings_popover: None,
         next_session_request_id: 0,
         pending_session_request: None,
         pending_rename_request: None,
@@ -436,13 +430,14 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
         .build();
 
     let header = gtk::HeaderBar::new();
-    let session_button = gtk::Button::with_label("Sessions");
+    let session_button = gtk::MenuButton::builder().label("Sessions").build();
+    session_button.set_tooltip_text(Some("Open sessions (Ctrl+P)"));
     session_button.add_css_class("flat");
     let new_button = gtk::Button::with_label("New session");
     new_button.set_tooltip_text(Some("New session (Ctrl+T)"));
-    new_button.add_css_class("flat");
-    let settings_button = gtk::Button::with_label("Settings");
-    settings_button.set_tooltip_text(Some("Server connection and appearance (Ctrl+,)"));
+    new_button.add_css_class("sidebar-new-session");
+    let settings_button = gtk::MenuButton::builder().label("Settings").build();
+    settings_button.set_tooltip_text(Some("Server connection (Ctrl+,)"));
     settings_button.add_css_class("flat");
     let title = gtk::Label::new(Some("OpenCode"));
     title.add_css_class("app-title");
@@ -454,17 +449,23 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
     header.set_title_widget(Some(&title_box));
     header.pack_start(&session_button);
     header.pack_end(&settings_button);
-    header.pack_end(&new_button);
     window.set_titlebar(Some(&header));
 
     let root = gtk::Paned::new(gtk::Orientation::Horizontal);
     root.set_position(270);
     root.set_resize_start_child(false);
     root.set_shrink_start_child(false);
+    let sidebar = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    sidebar.add_css_class("tab-strip");
+    new_button.set_margin_start(8);
+    new_button.set_margin_end(8);
+    new_button.set_margin_top(8);
+    new_button.set_margin_bottom(4);
+    sidebar.append(&new_button);
     let tab_bar = gtk::Box::new(gtk::Orientation::Vertical, 2);
     tab_bar.set_margin_start(8);
     tab_bar.set_margin_end(8);
-    tab_bar.set_margin_top(8);
+    tab_bar.set_margin_top(4);
     tab_bar.set_margin_bottom(8);
     let tab_scroll = gtk::ScrolledWindow::builder()
         .hscrollbar_policy(gtk::PolicyType::Never)
@@ -475,8 +476,8 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
         .kinetic_scrolling(false)
         .child(&tab_bar)
         .build();
-    tab_scroll.add_css_class("tab-strip");
-    root.set_start_child(Some(&tab_scroll));
+    sidebar.append(&tab_scroll);
+    root.set_start_child(Some(&sidebar));
     let main = gtk::Box::new(gtk::Orientation::Vertical, 0);
     main.set_hexpand(true);
 
@@ -574,8 +575,9 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
 
     let attachment_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
     attachment_box.set_visible(false);
-    let attach_button = gtk::Button::with_label("Attach");
+    let attach_button = gtk::Button::from_icon_name("mail-attachment-symbolic");
     attach_button.set_tooltip_text(Some("Attach files (Ctrl+U)"));
+    attach_button.add_css_class("composer-action");
     let model_store = gtk::StringList::new(&["Loading models..."]);
     let model_dropdown = gtk::DropDown::new(Some(model_store.clone()), None::<gtk::Expression>);
     model_dropdown.set_hexpand(true);
@@ -584,8 +586,10 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
     let variant_dropdown = gtk::DropDown::new(Some(variant_store.clone()), None::<gtk::Expression>);
     variant_dropdown.set_sensitive(false);
     variant_dropdown.set_tooltip_text(Some("Reasoning level"));
-    let send_button = gtk::Button::with_label("Send");
+    let send_button = gtk::Button::from_icon_name("mail-send-symbolic");
     send_button.add_css_class("suggested-action");
+    send_button.add_css_class("composer-action");
+    send_button.set_tooltip_text(Some("Send prompt"));
     send_button.set_sensitive(false);
 
     let controls = gtk::Box::new(gtk::Orientation::Horizontal, 8);
@@ -826,7 +830,7 @@ fn wire_callbacks(controller: &Rc<RefCell<Controller>>) {
         .borrow()
         .widgets
         .session_button
-        .connect_clicked(move |_| {
+        .set_create_popup_func(move |_| {
             if let Some(controller) = weak.upgrade() {
                 Controller::show_session_picker(&controller);
             }
@@ -848,7 +852,7 @@ fn wire_callbacks(controller: &Rc<RefCell<Controller>>) {
         .borrow()
         .widgets
         .settings_button
-        .connect_clicked(move |_| {
+        .set_create_popup_func(move |_| {
             if let Some(controller) = weak.upgrade() {
                 Controller::show_settings(&controller);
             }
@@ -1025,6 +1029,7 @@ fn wire_callbacks(controller: &Rc<RefCell<Controller>>) {
         }
         match key {
             gdk::Key::comma => Controller::show_settings(&controller),
+            gdk::Key::p => Controller::show_session_picker(&controller),
             gdk::Key::t => Controller::show_new_session(&controller),
             gdk::Key::w => Controller::close_active(&controller),
             gdk::Key::u => Controller::pick_attachments(&controller),
@@ -2005,6 +2010,7 @@ impl Controller {
                 "Session is idle"
             }));
             let drag_handle = gtk::Image::from_icon_name("list-drag-handle-symbolic");
+            drag_handle.set_can_target(true);
             drag_handle.set_tooltip_text(Some("Drag to reorder session"));
             drag_handle.add_css_class("session-tab-drag-handle");
             let title_label = gtk::Label::new(Some(&title));
@@ -2070,6 +2076,7 @@ impl Controller {
             select.add_controller(middle);
 
             let drag = gtk::DragSource::new();
+            drag.set_propagation_phase(gtk::PropagationPhase::Capture);
             drag.set_actions(gdk::DragAction::MOVE);
             drag.set_content(Some(&gdk::ContentProvider::for_value(&id.to_value())));
             let drag_tab = tab.clone();
@@ -2486,14 +2493,24 @@ impl Controller {
 
     fn refresh_send_button(&mut self) {
         let Some(active) = self.state.active.as_ref() else {
-            self.widgets.send_button.set_label("Send");
+            self.widgets.send_button.set_icon_name("mail-send-symbolic");
+            self.widgets
+                .send_button
+                .set_tooltip_text(Some("Send prompt"));
             self.widgets.send_button.set_sensitive(false);
             return;
         };
         let busy = self.state.statuses.get(active) == Some(&RunStatus::Busy);
-        self.widgets
-            .send_button
-            .set_label(if busy { "Stop" } else { "Send" });
+        self.widgets.send_button.set_icon_name(if busy {
+            "media-playback-stop-symbolic"
+        } else {
+            "mail-send-symbolic"
+        });
+        self.widgets.send_button.set_tooltip_text(Some(if busy {
+            "Stop generation"
+        } else {
+            "Send prompt"
+        }));
         let draft = self.state.drafts.get(active);
         let has_input = draft
             .is_some_and(|draft| !draft.text.trim().is_empty() || !draft.attachments.is_empty());
@@ -3086,19 +3103,22 @@ impl Controller {
     }
 
     fn show_session_picker(controller: &Rc<RefCell<Self>>) {
+        let existing = controller.borrow().session_popover.clone();
+        if let Some(popover) = existing {
+            popover.popup();
+            return;
+        }
         let this = controller.borrow();
-        let dialog = gtk::Window::builder()
-            .title("Open session")
-            .transient_for(&this.widgets.window)
-            .modal(true)
-            .default_width(620)
-            .default_height(620)
-            .build();
+        let popover = gtk::Popover::builder().autohide(true).build();
+        this.widgets.session_button.set_popover(Some(&popover));
         let root = gtk::Box::new(gtk::Orientation::Vertical, 10);
         root.set_margin_top(14);
         root.set_margin_bottom(14);
         root.set_margin_start(14);
         root.set_margin_end(14);
+        let heading = gtk::Label::new(Some("Sessions"));
+        heading.set_xalign(0.0);
+        heading.add_css_class("modal-heading");
         let search = gtk::SearchEntry::new();
         search.set_placeholder_text(Some("Search sessions or directories"));
         let list = gtk::ListBox::new();
@@ -3106,27 +3126,20 @@ impl Controller {
         let scroll = gtk::ScrolledWindow::builder()
             .vexpand(true)
             .hscrollbar_policy(gtk::PolicyType::Never)
+            .propagate_natural_height(true)
+            .max_content_height(480)
             .child(&list)
             .build();
+        root.append(&heading);
         root.append(&search);
         root.append(&scroll);
-        dialog.set_child(Some(&root));
+        popover.set_child(Some(&root));
         drop(this);
 
-        {
-            let this = controller.borrow();
-            populate_session_list(
-                &list,
-                &this.state.sessions,
-                "",
-                Rc::downgrade(controller),
-                dialog.clone(),
-            );
-        }
         search.connect_search_changed({
             let list = list.clone();
             let weak = Rc::downgrade(controller);
-            let dialog = dialog.clone();
+            let popover = popover.clone();
             move |search| {
                 if let Some(controller) = weak.upgrade() {
                     let this = controller.borrow();
@@ -3135,40 +3148,61 @@ impl Controller {
                         &this.state.sessions,
                         search.text().as_str(),
                         Rc::downgrade(&controller),
-                        dialog.clone(),
+                        popover.clone(),
                     );
                 }
             }
         });
-        dialog.present();
-        search.grab_focus();
+        popover.connect_map({
+            let list = list.clone();
+            let search = search.clone();
+            let weak = Rc::downgrade(controller);
+            move |popover| {
+                if search.text().is_empty() {
+                    if let Some(controller) = weak.upgrade() {
+                        let this = controller.borrow();
+                        populate_session_list(
+                            &list,
+                            &this.state.sessions,
+                            "",
+                            Rc::downgrade(&controller),
+                            popover.clone(),
+                        );
+                    }
+                } else {
+                    search.set_text("");
+                }
+                search.grab_focus();
+            }
+        });
+        controller.borrow_mut().session_popover = Some(popover.clone());
+        popover.popup();
     }
 
     fn show_settings(controller: &Rc<RefCell<Self>>) {
-        if let Some(dialog) = controller.borrow().settings_dialog.clone() {
-            dialog.present();
+        let existing = controller.borrow().settings_popover.clone();
+        if let Some(popover) = existing {
+            popover.popup();
             return;
         }
-        let (parent, config, theme) = {
+        let (settings_button, config) = {
             let this = controller.borrow();
             (
-                this.widgets.window.clone(),
+                this.widgets.settings_button.clone(),
                 this.connection_config.clone(),
-                this.theme,
             )
         };
-        let dialog = gtk::Window::builder()
-            .title("Settings")
-            .transient_for(&parent)
-            .modal(true)
-            .default_width(560)
-            .build();
+        let popover = gtk::Popover::builder().autohide(true).build();
+        settings_button.set_popover(Some(&popover));
         let root = gtk::Box::new(gtk::Orientation::Vertical, 10);
         root.set_margin_top(18);
         root.set_margin_bottom(18);
         root.set_margin_start(18);
         root.set_margin_end(18);
 
+        let heading = gtk::Label::new(Some("Settings"));
+        heading.set_xalign(0.0);
+        heading.add_css_class("modal-heading");
         let server_label = gtk::Label::new(Some("OpenCode server URL"));
         server_label.set_xalign(0.0);
         let server = gtk::Entry::new();
@@ -3221,19 +3255,6 @@ impl Controller {
         cloudflare_hint.set_wrap(true);
         cloudflare_hint.add_css_class("session-picker-path");
 
-        let theme_label = gtk::Label::new(Some("Appearance"));
-        theme_label.set_xalign(0.0);
-        let theme_control = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        let dark_theme = gtk::CheckButton::with_mnemonic("_Dark");
-        let light_theme = gtk::CheckButton::with_mnemonic("_Light");
-        light_theme.set_group(Some(&dark_theme));
-        match theme {
-            ThemePreference::Dark => dark_theme.set_active(true),
-            ThemePreference::Light => light_theme.set_active(true),
-        }
-        theme_control.append(&dark_theme);
-        theme_control.append(&light_theme);
-
         let validation = gtk::Label::new(None);
         validation.set_xalign(0.0);
         validation.set_wrap(true);
@@ -3246,6 +3267,7 @@ impl Controller {
         actions.append(&cancel);
         actions.append(&apply);
 
+        root.append(&heading);
         root.append(&server_label);
         root.append(&server);
         root.append(&username_label);
@@ -3260,12 +3282,10 @@ impl Controller {
         root.append(&cloudflare_client_secret_label);
         root.append(&cloudflare_client_secret);
         root.append(&cloudflare_hint);
-        root.append(&theme_label);
-        root.append(&theme_control);
         root.append(&validation);
         root.append(&actions);
-        dialog.set_child(Some(&root));
-        dialog.set_default_widget(Some(&apply));
+        popover.set_child(Some(&root));
+        popover.set_default_widget(Some(&apply));
         server.set_activates_default(true);
         username.set_activates_default(true);
         password.set_activates_default(true);
@@ -3278,18 +3298,17 @@ impl Controller {
         cloudflare_client_secret_label.set_mnemonic_widget(Some(&cloudflare_client_secret));
 
         cancel.connect_clicked({
-            let dialog = dialog.clone();
-            move |_| dialog.close()
+            let popover = popover.clone();
+            move |_| popover.popdown()
         });
         apply.connect_clicked({
             let weak = Rc::downgrade(controller);
-            let dialog = dialog.clone();
+            let popover = popover.clone();
             let server = server.clone();
             let username = username.clone();
             let password = password.clone();
             let cloudflare_client_id = cloudflare_client_id.clone();
             let cloudflare_client_secret = cloudflare_client_secret.clone();
-            let light_theme = light_theme.clone();
             let validation = validation.clone();
             move |_| {
                 let Some(controller) = weak.upgrade() else {
@@ -3301,11 +3320,6 @@ impl Controller {
                     validation.set_label("Server URL and username are required");
                     return;
                 }
-                let theme = if light_theme.is_active() {
-                    ThemePreference::Light
-                } else {
-                    ThemePreference::Dark
-                };
                 let current = controller.borrow().connection_config.clone();
                 let same_server = same_server(&current.base_url, &base_url);
                 let same_identity = same_server && current.username == username_value;
@@ -3339,9 +3353,9 @@ impl Controller {
                         return;
                     }
                     let mut this = controller.borrow_mut();
-                    this.apply_preferences(&config, theme);
+                    this.apply_preferences(&config);
                     drop(this);
-                    dialog.close();
+                    popover.popdown();
                     return;
                 }
 
@@ -3352,15 +3366,8 @@ impl Controller {
                             validation.set_label(&error.to_string());
                             return;
                         }
-                        Self::switch_connection(
-                            &controller,
-                            config,
-                            theme,
-                            api,
-                            events,
-                            server_key,
-                        );
-                        dialog.close();
+                        Self::switch_connection(&controller, config, api, events, server_key);
+                        popover.popdown();
                     }
                     Err(error) => validation.set_label(&error.to_string()),
                 }
@@ -3369,18 +3376,8 @@ impl Controller {
         let settings_shortcuts = gtk::EventControllerKey::new();
         settings_shortcuts.set_propagation_phase(gtk::PropagationPhase::Capture);
         settings_shortcuts.connect_key_pressed({
-            let dark_theme = dark_theme.clone();
-            let light_theme = light_theme.clone();
             let apply = apply.clone();
             move |_, key, _, modifiers| {
-                if modifiers.contains(gdk::ModifierType::ALT_MASK) {
-                    match key {
-                        gdk::Key::d => dark_theme.set_active(true),
-                        gdk::Key::l => light_theme.set_active(true),
-                        _ => return glib::Propagation::Proceed,
-                    }
-                    return glib::Propagation::Stop;
-                }
                 if modifiers.contains(gdk::ModifierType::CONTROL_MASK)
                     && matches!(key, gdk::Key::Return | gdk::Key::KP_Enter)
                 {
@@ -3390,39 +3387,31 @@ impl Controller {
                 glib::Propagation::Proceed
             }
         });
-        dialog.add_controller(settings_shortcuts);
-        dialog.connect_close_request({
-            let weak = Rc::downgrade(controller);
+        popover.add_controller(settings_shortcuts);
+        popover.connect_map({
+            let server = server.clone();
             move |_| {
-                if let Some(controller) = weak.upgrade() {
-                    controller.borrow_mut().settings_dialog = None;
-                }
-                glib::Propagation::Proceed
+                server.grab_focus();
             }
         });
-        controller.borrow_mut().settings_dialog = Some(dialog.clone());
-        dialog.present();
-        server.grab_focus();
+        controller.borrow_mut().settings_popover = Some(popover.clone());
+        popover.popup();
     }
 
-    fn apply_preferences(&mut self, config: &ApiConfig, theme: ThemePreference) {
+    fn apply_preferences(&mut self, config: &ApiConfig) {
         self.connection_config = config.clone();
-        self.theme = theme;
         self.persisted.connection = ConnectionSettings {
             server: config.base_url.clone(),
             username: config.username.clone(),
             cloudflare_access: config.cloudflare_access.is_some(),
         };
         self.credential_warning = None;
-        self.persisted.theme = theme;
-        apply_theme(&self.css_provider, theme);
         self.persist_state();
     }
 
     fn switch_connection(
         controller: &Rc<RefCell<Self>>,
         config: ApiConfig,
-        theme: ThemePreference,
         api: ApiHandle,
         events: Receiver<UiEvent>,
         server_key: String,
@@ -3458,15 +3447,12 @@ impl Controller {
                 .unwrap_or_default();
             this.had_server_state = this.persisted.servers.contains_key(&server_key);
             this.connection_config = config.clone();
-            this.theme = theme;
             this.persisted.connection = ConnectionSettings {
                 server: config.base_url,
                 username: config.username,
                 cloudflare_access: config.cloudflare_access.is_some(),
             };
             this.credential_warning = None;
-            this.persisted.theme = theme;
-            apply_theme(&this.css_provider, theme);
             this.state = restored_state(server_state);
             this.rendered_session = None;
             this.rendered_rows.clear();
@@ -4342,7 +4328,7 @@ fn populate_session_list(
     sessions: &[Session],
     query: &str,
     controller: Weak<RefCell<Controller>>,
-    dialog: gtk::Window,
+    popover: gtk::Popover,
 ) {
     while let Some(child) = list.first_child() {
         list.remove(&child);
@@ -4375,12 +4361,12 @@ fn populate_session_list(
         button.set_child(Some(&labels));
         let id = session.id.clone();
         let weak = controller.clone();
-        let dialog = dialog.clone();
+        let popover = popover.clone();
         button.connect_clicked(move |_| {
             if let Some(controller) = weak.upgrade() {
                 Controller::open_tab(&controller, &id);
             }
-            dialog.close();
+            popover.popdown();
         });
         list.append(&button);
     }
@@ -4647,7 +4633,7 @@ fn buffer_text(buffer: &gtk::TextBuffer) -> String {
         .to_string()
 }
 
-fn install_css(theme: ThemePreference) -> gtk::CssProvider {
+fn install_css() {
     let provider = gtk::CssProvider::new();
     if let Some(display) = gdk::Display::default() {
         gtk::style_context_add_provider_for_display(
@@ -4656,27 +4642,67 @@ fn install_css(theme: ThemePreference) -> gtk::CssProvider {
             gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
         );
     }
-    apply_theme(&provider, theme);
-    provider
-}
-
-fn apply_theme(provider: &gtk::CssProvider, theme: ThemePreference) {
-    if let Some(settings) = gtk::Settings::default() {
-        settings.set_property(
-            "gtk-application-prefer-dark-theme",
-            theme == ThemePreference::Dark,
-        );
+    let Some(settings) = gtk::Settings::default() else {
+        provider.load_from_data(include_str!("style.css"));
+        return;
+    };
+    let mode = Rc::new(Cell::new(
+        dark_light::detect().unwrap_or(dark_light::Mode::Unspecified),
+    ));
+    apply_system_theme(&provider, &settings, mode.get());
+    for property in ["gtk-theme-name", "gtk-application-prefer-dark-theme"] {
+        let provider = provider.clone();
+        let mode = mode.clone();
+        settings.connect_notify_local(Some(property), move |settings, _| {
+            apply_system_theme(&provider, settings, mode.get());
+        });
     }
-    provider.load_from_data(match theme {
-        ThemePreference::Dark => include_str!("style.css"),
-        ThemePreference::Light => {
-            concat!(
-                include_str!("style.css"),
-                "\n",
-                include_str!("style-light.css")
-            )
+
+    let (sender, receiver) = async_channel::unbounded();
+    std::thread::spawn(move || {
+        let Ok(watcher) = dark_light::subscribe() else {
+            return;
+        };
+        for mode in watcher.iter() {
+            if sender.send_blocking(mode).is_err() {
+                break;
+            }
         }
     });
+    glib::spawn_future_local(async move {
+        while let Ok(next_mode) = receiver.recv().await {
+            mode.set(next_mode);
+            apply_system_theme(&provider, &settings, next_mode);
+        }
+    });
+}
+
+fn apply_system_theme(
+    provider: &gtk::CssProvider,
+    settings: &gtk::Settings,
+    mode: dark_light::Mode,
+) {
+    let theme_name = settings.property::<String>("gtk-theme-name");
+    let prefer_dark = settings.property::<bool>("gtk-application-prefer-dark-theme");
+    provider.load_from_data(if system_theme_is_dark(mode, &theme_name, prefer_dark) {
+        include_str!("style.css")
+    } else {
+        concat!(
+            include_str!("style.css"),
+            "\n",
+            include_str!("style-light.css")
+        )
+    });
+}
+
+fn system_theme_is_dark(mode: dark_light::Mode, theme_name: &str, prefer_dark: bool) -> bool {
+    match mode {
+        dark_light::Mode::Dark => true,
+        dark_light::Mode::Light => false,
+        dark_light::Mode::Unspecified => {
+            prefer_dark || theme_name.to_ascii_lowercase().contains("dark")
+        }
+    }
 }
 
 #[cfg(test)]
@@ -4823,6 +4849,35 @@ mod tests {
             scroll_target(60.0, 0.0, 100.0, 40.0, 10.0, -1.0),
             Some(36.0)
         );
+    }
+
+    #[test]
+    fn system_theme_tracks_dark_variants_and_explicit_preference() {
+        assert!(system_theme_is_dark(
+            dark_light::Mode::Dark,
+            "Adwaita",
+            false
+        ));
+        assert!(!system_theme_is_dark(
+            dark_light::Mode::Light,
+            "Adwaita-dark",
+            true
+        ));
+        assert!(system_theme_is_dark(
+            dark_light::Mode::Unspecified,
+            "Adwaita-dark",
+            false
+        ));
+        assert!(system_theme_is_dark(
+            dark_light::Mode::Unspecified,
+            "Adwaita",
+            true
+        ));
+        assert!(!system_theme_is_dark(
+            dark_light::Mode::Unspecified,
+            "Adwaita",
+            false
+        ));
     }
 
     #[test]

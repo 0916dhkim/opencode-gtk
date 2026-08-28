@@ -16,8 +16,6 @@ pub struct PersistedState {
     #[serde(default)]
     pub connection: ConnectionSettings,
     #[serde(default)]
-    pub theme: ThemePreference,
-    #[serde(default)]
     pub servers: HashMap<String, ServerState>,
 }
 
@@ -37,14 +35,6 @@ impl Default for ConnectionSettings {
             cloudflare_access: false,
         }
     }
-}
-
-#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ThemePreference {
-    #[default]
-    Dark,
-    Light,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -155,7 +145,6 @@ mod tests {
                 username: "danny".into(),
                 cloudflare_access: true,
             },
-            theme: ThemePreference::Light,
             ..PersistedState::default()
         };
         state.servers.insert(
@@ -177,23 +166,22 @@ mod tests {
         assert!(warning.is_none());
         assert_eq!(loaded.servers["http://127.0.0.1:4096"].tabs[0].id, "ses_1");
         assert_eq!(loaded.connection, state.connection);
-        assert_eq!(loaded.theme, ThemePreference::Light);
         let contents = fs::read_to_string(path).unwrap();
         assert!(!contents.contains("password"));
         assert!(!contents.contains("client.access"));
+        assert!(!contents.contains("theme"));
     }
 
     #[test]
-    fn older_state_gets_connection_and_theme_defaults() {
+    fn older_state_gets_connection_defaults_and_ignores_legacy_theme() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("state.json");
-        fs::write(&path, br#"{"servers":{}}"#).unwrap();
+        fs::write(&path, br#"{"theme":"light","servers":{}}"#).unwrap();
 
         let (loaded, warning) = PersistedState::load(&path).unwrap();
 
         assert!(warning.is_none());
         assert_eq!(loaded.connection, ConnectionSettings::default());
-        assert_eq!(loaded.theme, ThemePreference::Dark);
     }
 
     #[test]
