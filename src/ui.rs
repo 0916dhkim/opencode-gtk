@@ -441,7 +441,7 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
     session_button.set_tooltip_text(Some("Open sessions (Ctrl+P)"));
     session_button.add_css_class("flat");
     let new_button = gtk::Button::with_label("New session");
-    new_button.set_tooltip_text(Some("New session (Ctrl+N)"));
+    new_button.set_tooltip_text(Some("New session (Ctrl+T)"));
     new_button.add_css_class("sidebar-new-session");
     let settings_button = gtk::Button::with_label("Settings");
     settings_button.set_tooltip_text(Some("Server connection (Ctrl+,)"));
@@ -1065,7 +1065,7 @@ fn wire_callbacks(controller: &Rc<RefCell<Controller>>) {
         match key {
             gdk::Key::comma => Controller::show_settings(&controller),
             gdk::Key::p => Controller::show_session_picker(&controller),
-            gdk::Key::n | gdk::Key::t => Controller::show_new_session(&controller),
+            gdk::Key::t => Controller::show_new_session(&controller),
             gdk::Key::w => Controller::close_active(&controller),
             gdk::Key::u => Controller::pick_attachments(&controller),
             gdk::Key::Tab => Controller::cycle_tab(
