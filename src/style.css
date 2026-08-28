@@ -269,15 +269,16 @@ listview.transcript > row:focus {
   background: #101214;
 }
 
-.message-reasoning .message-role,
-.message-reasoning .message-time {
-  color: #6a7279;
+.message-reasoning {
+  opacity: 0.42;
 }
 
+.message-reasoning .message-role,
+.message-reasoning .message-time,
 .message-reasoning .message-content,
 .message-reasoning .markdown-paragraph,
 .message-reasoning .markdown-heading {
-  color: #8a9197;
+  color: #6a7279;
 }
 
 .transcript-status {

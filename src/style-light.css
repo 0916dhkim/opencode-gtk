@@ -158,15 +158,16 @@ listview.transcript > row:focus {
   color: #5c4a2e;
 }
 
-.message-reasoning .message-role,
-.message-reasoning .message-time {
-  color: #9a9e9b;
+.message-reasoning {
+  opacity: 0.42;
 }
 
+.message-reasoning .message-role,
+.message-reasoning .message-time,
 .message-reasoning .message-content,
 .message-reasoning .markdown-paragraph,
 .message-reasoning .markdown-heading {
-  color: #7a7e7b;
+  color: #9a9e9b;
 }
 
 .sticky-message {
