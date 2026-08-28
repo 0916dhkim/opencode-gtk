@@ -83,6 +83,17 @@ headerbar {
   background: #f7f5f1;
 }
 
+listview.transcript > row,
+listview.transcript > row:hover,
+listview.transcript > row:active,
+listview.transcript > row:selected,
+listview.transcript > row:focus {
+  background: transparent;
+  box-shadow: none;
+  outline: none;
+  border: none;
+}
+
 .message-row {
   border-bottom-color: alpha(#000000, 0.08);
 }
@@ -145,6 +156,17 @@ headerbar {
 
 .user-message .message-role {
   color: #5c4a2e;
+}
+
+.message-reasoning .message-role,
+.message-reasoning .message-time {
+  color: #9a9e9b;
+}
+
+.message-reasoning .message-content,
+.message-reasoning .markdown-paragraph,
+.message-reasoning .markdown-heading {
+  color: #7a7e7b;
 }
 
 .sticky-message {

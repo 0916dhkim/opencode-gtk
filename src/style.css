@@ -150,6 +150,17 @@ headerbar {
   background: #101214;
 }
 
+listview.transcript > row,
+listview.transcript > row:hover,
+listview.transcript > row:active,
+listview.transcript > row:selected,
+listview.transcript > row:focus {
+  background: transparent;
+  box-shadow: none;
+  outline: none;
+  border: none;
+}
+
 .message-row {
   padding: 18px 28px 20px 28px;
   border-bottom: 1px solid alpha(#ffffff, 0.055);
@@ -256,6 +267,17 @@ headerbar {
 
 .assistant-message {
   background: #101214;
+}
+
+.message-reasoning .message-role,
+.message-reasoning .message-time {
+  color: #6a7279;
+}
+
+.message-reasoning .message-content,
+.message-reasoning .markdown-paragraph,
+.message-reasoning .markdown-heading {
+  color: #8a9197;
 }
 
 .transcript-status {

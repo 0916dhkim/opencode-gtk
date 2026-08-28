@@ -39,6 +39,8 @@ struct TranscriptRow {
     images: Vec<String>,
     #[serde(default)]
     time: u64,
+    #[serde(default)]
+    kind: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -683,6 +685,8 @@ fn transcript_factory() -> gtk::SignalListItemFactory {
         content.add_css_class("message-content");
         row.append(&header);
         row.append(&content);
+        item.set_activatable(false);
+        item.set_selectable(false);
         item.set_child(Some(&row));
     });
     factory.connect_bind(|_, item| {
@@ -752,11 +756,15 @@ fn transcript_factory() -> gtk::SignalListItemFactory {
         }
         row.remove_css_class("user-message");
         row.remove_css_class("assistant-message");
+        row.remove_css_class("message-reasoning");
         row.add_css_class(if role_text == "YOU" {
             "user-message"
         } else {
             "assistant-message"
         });
+        if parsed.as_ref().is_some_and(|row| row.kind == "reasoning") {
+            row.add_css_class("message-reasoning");
+        }
         row.set_widget_name(&format!("row-{}", item.position()));
     });
     factory
@@ -5037,6 +5045,7 @@ mod tests {
                 body: String::new(),
                 images: vec!["data:image/png;base64,AA==".to_owned()],
                 time: 0,
+                kind: String::new(),
             }),
             "Attached image"
         );

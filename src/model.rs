@@ -297,32 +297,41 @@ impl ChatMessage {
         let mut images = Vec::new();
         let role = self.role.label();
         for segment in &self.segments {
-            if segment.kind == SegmentKind::Tool {
-                push_transcript_row(&mut rows, role, blocks.join("\n\n"), images, self.created);
+            if matches!(segment.kind, SegmentKind::Tool | SegmentKind::Reasoning) {
+                push_transcript_row(
+                    &mut rows,
+                    role,
+                    blocks.join("\n\n"),
+                    images,
+                    self.created,
+                    "",
+                );
                 blocks = Vec::new();
                 images = Vec::new();
                 if !segment.text.trim().is_empty() {
+                    let (body, kind) = match segment.kind {
+                        SegmentKind::Reasoning => {
+                            (format!("Reasoning\n{}", segment.text.trim()), "reasoning")
+                        }
+                        _ => (segment.text.clone(), "tool"),
+                    };
                     push_transcript_row(
                         &mut rows,
                         role,
-                        segment.text.clone(),
+                        body,
                         Vec::new(),
                         if segment.created == 0 {
                             self.created
                         } else {
                             segment.created
                         },
+                        kind,
                     );
                 }
                 continue;
             }
             if !segment.text.trim().is_empty() {
-                match segment.kind {
-                    SegmentKind::Reasoning => {
-                        blocks.push(format!("Reasoning\n{}", segment.text.trim()))
-                    }
-                    _ => blocks.push(segment.text.clone()),
-                }
+                blocks.push(segment.text.clone());
             }
             if let Some(url) = &segment.image_url {
                 images.push(url.clone());
@@ -331,7 +340,14 @@ impl ChatMessage {
         if let Some(error) = &self.error {
             blocks.push(format!("Error: {error}"));
         }
-        push_transcript_row(&mut rows, role, blocks.join("\n\n"), images, self.created);
+        push_transcript_row(
+            &mut rows,
+            role,
+            blocks.join("\n\n"),
+            images,
+            self.created,
+            "",
+        );
         rows
     }
 
@@ -898,6 +914,7 @@ fn push_transcript_row(
     body: String,
     images: Vec<String>,
     time: u64,
+    kind: &str,
 ) {
     if body.is_empty() && images.is_empty() {
         return;
@@ -908,6 +925,7 @@ fn push_transcript_row(
             "body": body,
             "images": images,
             "time": time,
+            "kind": kind,
         })
         .to_string(),
     );
@@ -1168,6 +1186,46 @@ mod tests {
         assert_eq!(rows[1]["time"], 1_704_067_260_000_u64);
         assert_eq!(rows[2]["body"], "bash · completed");
         assert_eq!(rows[2]["time"], 1_704_067_261_000_u64);
+        assert_eq!(rows[2]["kind"], "tool");
+    }
+
+    #[test]
+    fn transcript_rows_split_reasoning_from_replies() {
+        let mut conversation = Conversation::default();
+        conversation.replace_from_api(
+            &[json!({
+                "info": {
+                    "id": "msg_assistant",
+                    "sessionID": "ses_1",
+                    "role": "assistant",
+                    "time": { "created": 2 }
+                },
+                "parts": [
+                    {
+                        "id": "part_reason",
+                        "type": "reasoning",
+                        "text": "think first"
+                    },
+                    {
+                        "id": "part_text",
+                        "type": "text",
+                        "text": "done"
+                    }
+                ]
+            })],
+            None,
+        );
+
+        let rows: Vec<Value> = conversation
+            .transcript_rows()
+            .iter()
+            .map(|row| serde_json::from_str(row).unwrap())
+            .collect();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0]["body"], "Reasoning\nthink first");
+        assert_eq!(rows[0]["kind"], "reasoning");
+        assert_eq!(rows[1]["body"], "done");
+        assert_eq!(rows[1]["kind"], "");
     }
 
     #[test]
