@@ -67,19 +67,10 @@ headerbar {
   color: #92999f;
 }
 
-.session-tab button.session-tab-select {
+.session-tab-title {
   padding-left: 3px;
   padding-right: 6px;
-}
-
-.session-tab-drag-handle {
-  min-width: 16px;
-  color: #697077;
-  opacity: 0.55;
-}
-
-.session-tab:hover .session-tab-drag-handle {
-  opacity: 1;
+  color: #92999f;
 }
 
 .session-tab.active {
@@ -90,11 +81,12 @@ headerbar {
   background: #292e32;
 }
 
+.session-tab.active .session-tab-title,
 .session-tab.active button {
   color: #f2efe9;
 }
 
-.session-tab.unread button.session-tab-select {
+.session-tab.unread .session-tab-title {
   color: #d9efff;
   font-weight: 700;
 }
@@ -313,6 +305,11 @@ headerbar {
 .session-picker-path {
   color: #7f878e;
   font-size: 0.84em;
+}
+
+.session-picker-time {
+  color: #6a7279;
+  font-size: 0.78em;
 }
 
 .prompt-heading {

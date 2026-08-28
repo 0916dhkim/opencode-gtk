@@ -149,13 +149,11 @@ wait_for_no_window 'Permission required'
 wait_for_event "messages:ses_test"
 xdotool windowfocus "${main_window}"
 xdotool key --window "${main_window}" ctrl+p
-sessions_popover="$(wait_for_window opencode-gtk)"
-if xdotool search --onlyvisible --name '^Sessions$' >/dev/null 2>&1; then
-  printf 'Sessions opened as a separate window\n' >&2
-  exit 1
-fi
-xdotool mousemove --window "${sessions_popover}" 100 220 click 1
-wait_for_window_closed "${sessions_popover}"
+sessions_window="$(wait_for_window Sessions)"
+xdotool windowfocus "${sessions_window}"
+eval "$(xdotool getwindowgeometry --shell "${sessions_window}")"
+xdotool mousemove --window "${sessions_window}" 100 220 click 1
+wait_for_window_closed "${sessions_window}"
 wait_for_event "messages:ses_other"
 xdotool key --window "${main_window}" ctrl+1
 
@@ -225,17 +223,14 @@ PY
 
 xdotool windowfocus "${main_window}"
 xdotool key --window "${main_window}" ctrl+comma
-settings_popover="$(wait_for_window opencode-gtk)"
-if xdotool search --onlyvisible --name '^Settings$' >/dev/null 2>&1; then
-  printf 'Settings opened as a separate window\n' >&2
-  exit 1
-fi
+settings_window="$(wait_for_window Settings)"
+xdotool windowfocus "${settings_window}"
 xclip -selection clipboard <"${temporary}/address-two"
 xdotool key ctrl+a
 xdotool key ctrl+v
 sleep 0.5
 xdotool key ctrl+Return
-wait_for_window_closed "${settings_popover}"
+wait_for_window_closed "${settings_window}"
 wait_for_event "sse:1" "${temporary}/events-two"
 
 permission_window="$(wait_for_window 'Permission required')"

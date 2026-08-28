@@ -370,32 +370,16 @@ impl Conversation {
     }
 
     pub fn transcript_rows(&self) -> Vec<String> {
-        let sticky_index = self
-            .messages
-            .iter()
-            .rposition(|message| message.role == Role::User);
         self.messages
             .iter()
-            .enumerate()
-            .filter_map(|(index, message)| {
+            .filter_map(|message| {
                 let body = message.render();
                 let images: Vec<_> = message.image_urls().collect();
                 (!body.is_empty() || !images.is_empty()).then(|| {
-                    let sticky_position = sticky_index.map(|sticky_index| {
-                        if index < sticky_index {
-                            -1
-                        } else if index > sticky_index {
-                            1
-                        } else {
-                            0
-                        }
-                    });
                     json!({
                         "role": message.role.label(),
                         "body": body,
                         "images": images,
-                        "sticky_position": sticky_position,
-                        "sticky": Some(index) == sticky_index,
                     })
                     .to_string()
                 })
@@ -1046,8 +1030,6 @@ mod tests {
         let row: Value = serde_json::from_str(&conversation.transcript_rows()[0]).unwrap();
         assert_eq!(row["role"], "YOU");
         assert_eq!(row["images"], json!(["data:image/png;base64,AA=="]));
-        assert_eq!(row["sticky_position"], 0);
-        assert_eq!(row["sticky"], true);
         assert_eq!(
             conversation.rendered_rows(),
             ["YOU\nAttached: clipboard.png (image/png)"]

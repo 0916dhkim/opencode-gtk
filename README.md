@@ -122,9 +122,10 @@ Cloudflare Access credentials can also be supplied for one run with `OPENCODE_CF
 | `Ctrl+Shift+Tab` | Select the previous tab |
 | `Ctrl+1` through `Ctrl+9` | Select a tab by position |
 | `Ctrl+P` | Open sessions |
+| `Ctrl+Q` | Quit |
 | `F2` | Rename the active session |
 | `Ctrl+U` | Attach files |
-| `Ctrl+,` | Open settings |
+| `Escape` | Close the active modal |
 
 Closing a tab does not delete or archive the server session. Reopen it at any time from **Sessions**.
 

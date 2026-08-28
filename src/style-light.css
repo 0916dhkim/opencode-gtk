@@ -22,7 +22,8 @@ headerbar {
   border-right-color: #d8d4cc;
 }
 
-.session-tab button {
+.session-tab button,
+.session-tab-title {
   color: #666b69;
 }
 
@@ -42,11 +43,12 @@ headerbar {
   background: #d7d3cc;
 }
 
+.session-tab.active .session-tab-title,
 .session-tab.active button {
   color: #242321;
 }
 
-.session-tab.unread button.session-tab-select {
+.session-tab.unread .session-tab-title {
   color: #135d83;
 }
 
@@ -170,6 +172,10 @@ headerbar {
 
 .session-picker-path {
   color: #737875;
+}
+
+.session-picker-time {
+  color: #7c817e;
 }
 
 .prompt-detail,

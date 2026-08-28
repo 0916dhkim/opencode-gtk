@@ -36,10 +36,6 @@ struct TranscriptRow {
     role: String,
     body: String,
     images: Vec<String>,
-    #[serde(default)]
-    sticky_position: Option<i8>,
-    #[serde(default)]
-    sticky: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -101,9 +97,9 @@ struct State {
 #[derive(Clone)]
 struct Widgets {
     window: gtk::ApplicationWindow,
-    session_button: gtk::MenuButton,
+    session_button: gtk::Button,
     new_button: gtk::Button,
-    settings_button: gtk::MenuButton,
+    settings_button: gtk::Button,
     status: gtk::Label,
     tab_bar: gtk::Box,
     transcript_model: gtk::StringList,
@@ -146,7 +142,6 @@ struct Controller {
     transcript_at_bottom: bool,
     transcript_scroll_generation: u64,
     transcript_edge_refresh_scheduled: bool,
-    show_sticky_if_unrealized: bool,
     current_models: Vec<ModelOption>,
     current_variants: Vec<Option<String>>,
     controls_updating: bool,
@@ -172,8 +167,8 @@ struct Controller {
     pending_actions: HashSet<String>,
     new_session_dialog: Option<gtk::Window>,
     rename_session_dialog: Option<gtk::Window>,
-    session_popover: Option<gtk::Popover>,
-    settings_popover: Option<gtk::Popover>,
+    session_dialog: Option<gtk::Window>,
+    settings_dialog: Option<gtk::Window>,
     next_session_request_id: u64,
     pending_session_request: Option<u64>,
     pending_rename_request: Option<u64>,
@@ -252,7 +247,6 @@ pub fn launch(
         transcript_at_bottom: true,
         transcript_scroll_generation: 0,
         transcript_edge_refresh_scheduled: false,
-        show_sticky_if_unrealized: false,
         current_models: Vec::new(),
         current_variants: Vec::new(),
         controls_updating: false,
@@ -278,8 +272,8 @@ pub fn launch(
         pending_actions: HashSet::new(),
         new_session_dialog: None,
         rename_session_dialog: None,
-        session_popover: None,
-        settings_popover: None,
+        session_dialog: None,
+        settings_dialog: None,
         next_session_request_id: 0,
         pending_session_request: None,
         pending_rename_request: None,
@@ -294,6 +288,13 @@ pub fn launch(
     }
 
     wire_callbacks(&controller);
+    let quit = gio::SimpleAction::new("quit", None);
+    let window = controller.borrow().widgets.window.clone();
+    quit.connect_activate(move |_, _| {
+        window.close();
+    });
+    application.add_action(&quit);
+    application.set_accels_for_action("app.quit", &["<Control>q"]);
     Controller::refresh_all(&controller);
     controller.borrow().widgets.window.present();
     controller.borrow().api.send(Command::Bootstrap);
@@ -430,13 +431,13 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
         .build();
 
     let header = gtk::HeaderBar::new();
-    let session_button = gtk::MenuButton::builder().label("Sessions").build();
+    let session_button = gtk::Button::with_label("Sessions");
     session_button.set_tooltip_text(Some("Open sessions (Ctrl+P)"));
     session_button.add_css_class("flat");
     let new_button = gtk::Button::with_label("New session");
     new_button.set_tooltip_text(Some("New session (Ctrl+T)"));
     new_button.add_css_class("sidebar-new-session");
-    let settings_button = gtk::MenuButton::builder().label("Settings").build();
+    let settings_button = gtk::Button::with_label("Settings");
     settings_button.set_tooltip_text(Some("Server connection (Ctrl+,)"));
     settings_button.add_css_class("flat");
     let title = gtk::Label::new(Some("OpenCode"));
@@ -716,22 +717,12 @@ fn transcript_factory() -> gtk::SignalListItemFactory {
         }
         row.remove_css_class("user-message");
         row.remove_css_class("assistant-message");
-        row.remove_css_class("before-sticky-source");
-        row.remove_css_class("sticky-source");
-        row.remove_css_class("after-sticky-source");
         row.add_css_class(if role_text == "YOU" {
             "user-message"
         } else {
             "assistant-message"
         });
-        if parsed.as_ref().is_some_and(|row| row.sticky) {
-            row.add_css_class("sticky-source");
-        }
-        match parsed.as_ref().and_then(|row| row.sticky_position) {
-            Some(-1) => row.add_css_class("before-sticky-source"),
-            Some(1) => row.add_css_class("after-sticky-source"),
-            _ => {}
-        }
+        row.set_widget_name(&item.position().to_string());
     });
     factory
 }
@@ -822,7 +813,7 @@ fn wire_callbacks(controller: &Rc<RefCell<Controller>>) {
             };
             controller.transcript_at_bottom = adjustment_at_bottom(adjustment);
             controller.refresh_load_earlier_visibility();
-            controller.queue_transcript_edge_refresh(false);
+            controller.queue_transcript_edge_refresh();
         });
 
     let weak = Rc::downgrade(controller);
@@ -830,7 +821,7 @@ fn wire_callbacks(controller: &Rc<RefCell<Controller>>) {
         .borrow()
         .widgets
         .session_button
-        .set_create_popup_func(move |_| {
+        .connect_clicked(move |_| {
             if let Some(controller) = weak.upgrade() {
                 Controller::show_session_picker(&controller);
             }
@@ -852,7 +843,7 @@ fn wire_callbacks(controller: &Rc<RefCell<Controller>>) {
         .borrow()
         .widgets
         .settings_button
-        .set_create_popup_func(move |_| {
+        .connect_clicked(move |_| {
             if let Some(controller) = weak.upgrade() {
                 Controller::show_settings(&controller);
             }
@@ -2009,25 +2000,12 @@ impl Controller {
             } else {
                 "Session is idle"
             }));
-            let drag_handle = gtk::Image::from_icon_name("list-drag-handle-symbolic");
-            drag_handle.set_can_target(true);
-            drag_handle.set_tooltip_text(Some("Drag to reorder session"));
-            drag_handle.add_css_class("session-tab-drag-handle");
             let title_label = gtk::Label::new(Some(&title));
             title_label.set_xalign(0.0);
+            title_label.set_hexpand(true);
             title_label.set_ellipsize(pango::EllipsizeMode::End);
             title_label.set_max_width_chars(24);
-            let select = gtk::Button::new();
-            select.set_hexpand(true);
-            select.set_halign(gtk::Align::Fill);
-            select.set_child(Some(&title_label));
-            select.set_tooltip_text(
-                self.session(&id)
-                    .map(|session| format!("{}\nOpen session", session.directory))
-                    .as_deref(),
-            );
-            select.add_css_class("flat");
-            select.add_css_class("session-tab-select");
+            title_label.add_css_class("session-tab-title");
             let rename = gtk::Button::from_icon_name("document-edit-symbolic");
             rename.set_tooltip_text(Some("Rename session (F2)"));
             rename.add_css_class("flat");
@@ -2037,19 +2015,34 @@ impl Controller {
             close.add_css_class("flat");
             close.add_css_class("session-tab-action");
             close.add_css_class("session-tab-close");
+            tab.set_tooltip_text(
+                self.session(&id)
+                    .map(|session| format!("{}\nOpen session", session.directory))
+                    .as_deref(),
+            );
             tab.append(&status);
-            tab.append(&drag_handle);
-            tab.append(&select);
+            tab.append(&title_label);
             tab.append(&rename);
             tab.append(&close);
 
             let weak_select = weak.clone();
             let select_id = id.clone();
-            select.connect_clicked(move |_| {
+            let rename_hit = rename.clone();
+            let close_hit = close.clone();
+            let click_tab = tab.clone();
+            let click = gtk::GestureClick::new();
+            click.set_button(1);
+            click.connect_released(move |_, _, x, y| {
+                if pointer_hits_widget(&rename_hit, &click_tab, x, y)
+                    || pointer_hits_widget(&close_hit, &click_tab, x, y)
+                {
+                    return;
+                }
                 if let Some(controller) = weak_select.upgrade() {
                     Self::activate_tab(&controller, &select_id);
                 }
             });
+            tab.add_controller(click);
             let weak_rename = weak.clone();
             let rename_id = id.clone();
             rename.connect_clicked(move |_| {
@@ -2073,12 +2066,23 @@ impl Controller {
                     Self::close_tab(&controller, &middle_id);
                 }
             });
-            select.add_controller(middle);
+            tab.add_controller(middle);
 
             let drag = gtk::DragSource::new();
-            drag.set_propagation_phase(gtk::PropagationPhase::Capture);
             drag.set_actions(gdk::DragAction::MOVE);
-            drag.set_content(Some(&gdk::ContentProvider::for_value(&id.to_value())));
+            let drag_tab = tab.clone();
+            let drag_rename = rename.clone();
+            let drag_close = close.clone();
+            let drag_id = id.clone();
+            drag.connect_prepare(move |_, x, y| {
+                if pointer_hits_widget(&drag_rename, &drag_tab, x, y)
+                    || pointer_hits_widget(&drag_close, &drag_tab, x, y)
+                {
+                    None
+                } else {
+                    Some(gdk::ContentProvider::for_value(&drag_id.to_value()))
+                }
+            });
             let drag_tab = tab.clone();
             drag.connect_drag_begin(move |_, _| {
                 drag_tab.add_css_class("dragging");
@@ -2087,7 +2091,7 @@ impl Controller {
             drag.connect_drag_end(move |_, _, _| {
                 drag_tab.remove_css_class("dragging");
             });
-            drag_handle.add_controller(drag);
+            tab.add_controller(drag);
 
             let drop_target = gtk::DropTarget::new(String::static_type(), gdk::DragAction::MOVE);
             drop_target.connect_motion(|target, _, y| {
@@ -2280,7 +2284,10 @@ impl Controller {
             .and_then(|active| self.state.drafts.get(active))
             .cloned()
             .unwrap_or_default();
-        self.widgets.composer.buffer().set_text(&draft.text);
+        let buffer = self.widgets.composer.buffer();
+        if buffer_text(&buffer) != draft.text {
+            buffer.set_text(&draft.text);
+        }
         self.widgets.composer.set_editable(active.is_some());
         self.refresh_attachments();
         self.refresh_model_control();
@@ -2574,12 +2581,6 @@ impl Controller {
             .and_then(|active| self.state.conversations.get(active))
             .map(Conversation::transcript_rows)
             .unwrap_or_default();
-        let sticky_body = rows.iter().find_map(|row| {
-            serde_json::from_str::<TranscriptRow>(row)
-                .ok()
-                .filter(|row| row.sticky)
-                .map(sticky_message_text)
-        });
         let adjustment = self.widgets.transcript_scroll.vadjustment();
         let old_upper = adjustment.upper();
         let old_value = adjustment.value();
@@ -2622,28 +2623,13 @@ impl Controller {
             load_error.is_some(),
         );
         self.refresh_transcript_indicator(indicator, has_rows, load_error.map(String::as_str));
-        match sticky_body {
-            Some(body) => {
-                if self.widgets.sticky_message_body.text() != body {
-                    self.widgets
-                        .sticky_message_scroll
-                        .vadjustment()
-                        .set_value(0.0);
-                    self.widgets.sticky_message_body.set_label(&body);
-                }
-            }
-            None => {
-                self.widgets.sticky_message_body.set_label("");
-                self.widgets.sticky_message.set_visible(false);
-            }
-        }
         if update == TranscriptUpdate::Activate {
             self.widgets.load_earlier.set_visible(false);
             self.widgets.sticky_message.set_visible(false);
             self.refresh_transcript_status_margin();
         } else {
             self.refresh_load_earlier_visibility();
-            self.queue_transcript_edge_refresh(false);
+            self.queue_transcript_edge_refresh();
         }
 
         let generation = self.transcript_scroll_generation;
@@ -2683,8 +2669,7 @@ impl Controller {
                             if still_active {
                                 scroll_adjustment_to_bottom(&adjustment);
                                 if let Some(controller) = weak.upgrade() {
-                                    let mut controller = controller.borrow_mut();
-                                    controller.queue_transcript_edge_refresh(true);
+                                    controller.borrow_mut().queue_transcript_edge_refresh();
                                 }
                             }
                         });
@@ -2715,45 +2700,57 @@ impl Controller {
             });
     }
 
-    fn refresh_sticky_message(&self, show_if_source_unrealized: bool) {
-        if self.widgets.sticky_message_body.label().is_empty()
-            || adjustment_at_top(&self.widgets.transcript_scroll.vadjustment())
-        {
+    fn refresh_sticky_message(&self) {
+        if adjustment_at_top(&self.widgets.transcript_scroll.vadjustment()) {
             self.widgets.sticky_message.set_visible(false);
             self.refresh_transcript_status_margin();
             return;
         }
+        let user_indices: Vec<usize> = self
+            .rendered_rows
+            .iter()
+            .enumerate()
+            .filter_map(|(index, row)| {
+                serde_json::from_str::<TranscriptRow>(row)
+                    .ok()
+                    .filter(|row| row.role == "YOU")
+                    .map(|_| index)
+            })
+            .collect();
         let transcript = self.widgets.transcript.clone().upcast::<gtk::Widget>();
         let adjustment = self.widgets.transcript_scroll.vadjustment();
         let viewport_top = adjustment.value();
         let viewport_bottom = viewport_top + adjustment.page_size();
-        let mut realized = RealizedStickyRows::default();
-        inspect_realized_sticky_rows(&transcript, &mut realized);
-        let before_visible = realized
-            .before
-            .iter()
-            .any(|row| widget_intersects_viewport(row, &transcript, viewport_top, viewport_bottom));
-        let after_visible = realized
-            .after
-            .iter()
-            .any(|row| widget_intersects_viewport(row, &transcript, viewport_top, viewport_bottom));
-        let source_top = realized
-            .source
-            .and_then(|source| source.compute_bounds(&transcript))
-            .map(|bounds| f64::from(bounds.y()));
-        let visible = sticky_message_visible(
-            source_top,
-            viewport_top,
-            before_visible,
-            after_visible,
-            show_if_source_unrealized || self.widgets.sticky_message.is_visible(),
-        );
-        self.widgets.sticky_message.set_visible(visible);
+        let mut realized = Vec::new();
+        inspect_realized_rows(&transcript, &transcript, &mut realized);
+        let sticky_index =
+            sticky_user_index(&user_indices, &realized, viewport_top, viewport_bottom);
+        match sticky_index.and_then(|index| {
+            self.rendered_rows.get(index).and_then(|row| {
+                serde_json::from_str::<TranscriptRow>(row)
+                    .ok()
+                    .map(sticky_message_text)
+            })
+        }) {
+            Some(body) => {
+                if self.widgets.sticky_message_body.text() != body {
+                    self.widgets
+                        .sticky_message_scroll
+                        .vadjustment()
+                        .set_value(0.0);
+                    self.widgets.sticky_message_body.set_label(&body);
+                }
+                self.widgets.sticky_message.set_visible(true);
+            }
+            None => {
+                self.widgets.sticky_message_body.set_label("");
+                self.widgets.sticky_message.set_visible(false);
+            }
+        }
         self.refresh_transcript_status_margin();
     }
 
-    fn queue_transcript_edge_refresh(&mut self, show_if_source_unrealized: bool) {
-        self.show_sticky_if_unrealized |= show_if_source_unrealized;
+    fn queue_transcript_edge_refresh(&mut self) {
         if self.transcript_edge_refresh_scheduled {
             return;
         }
@@ -2765,10 +2762,8 @@ impl Controller {
             };
             let mut controller = controller.borrow_mut();
             controller.transcript_edge_refresh_scheduled = false;
-            let show_if_source_unrealized = controller.show_sticky_if_unrealized;
-            controller.show_sticky_if_unrealized = false;
             controller.refresh_load_earlier_visibility();
-            controller.refresh_sticky_message(show_if_source_unrealized);
+            controller.refresh_sticky_message();
         });
     }
 
@@ -3103,14 +3098,18 @@ impl Controller {
     }
 
     fn show_session_picker(controller: &Rc<RefCell<Self>>) {
-        let existing = controller.borrow().session_popover.clone();
-        if let Some(popover) = existing {
-            popover.popup();
+        if let Some(dialog) = controller.borrow().session_dialog.clone() {
+            dialog.present();
             return;
         }
         let this = controller.borrow();
-        let popover = gtk::Popover::builder().autohide(true).build();
-        this.widgets.session_button.set_popover(Some(&popover));
+        let dialog = gtk::Window::builder()
+            .title("Sessions")
+            .transient_for(&this.widgets.window)
+            .modal(true)
+            .default_width(560)
+            .default_height(640)
+            .build();
         let root = gtk::Box::new(gtk::Orientation::Vertical, 10);
         root.set_margin_top(14);
         root.set_margin_bottom(14);
@@ -3127,19 +3126,18 @@ impl Controller {
             .vexpand(true)
             .hscrollbar_policy(gtk::PolicyType::Never)
             .propagate_natural_height(true)
-            .max_content_height(480)
             .child(&list)
             .build();
         root.append(&heading);
         root.append(&search);
         root.append(&scroll);
-        popover.set_child(Some(&root));
+        dialog.set_child(Some(&root));
         drop(this);
 
         search.connect_search_changed({
             let list = list.clone();
             let weak = Rc::downgrade(controller);
-            let popover = popover.clone();
+            let dialog = dialog.clone();
             move |search| {
                 if let Some(controller) = weak.upgrade() {
                     let this = controller.borrow();
@@ -3148,16 +3146,16 @@ impl Controller {
                         &this.state.sessions,
                         search.text().as_str(),
                         Rc::downgrade(&controller),
-                        popover.clone(),
+                        dialog.clone(),
                     );
                 }
             }
         });
-        popover.connect_map({
+        dialog.connect_map({
             let list = list.clone();
             let search = search.clone();
             let weak = Rc::downgrade(controller);
-            move |popover| {
+            move |dialog| {
                 if search.text().is_empty() {
                     if let Some(controller) = weak.upgrade() {
                         let this = controller.borrow();
@@ -3166,7 +3164,7 @@ impl Controller {
                             &this.state.sessions,
                             "",
                             Rc::downgrade(&controller),
-                            popover.clone(),
+                            dialog.clone(),
                         );
                     }
                 } else {
@@ -3175,25 +3173,35 @@ impl Controller {
                 search.grab_focus();
             }
         });
-        controller.borrow_mut().session_popover = Some(popover.clone());
-        popover.popup();
+        dialog.connect_close_request({
+            let weak = Rc::downgrade(controller);
+            move |_| {
+                if let Some(controller) = weak.upgrade() {
+                    controller.borrow_mut().session_dialog = None;
+                }
+                glib::Propagation::Proceed
+            }
+        });
+        close_window_on_escape(&dialog);
+        controller.borrow_mut().session_dialog = Some(dialog.clone());
+        dialog.present();
     }
 
     fn show_settings(controller: &Rc<RefCell<Self>>) {
-        let existing = controller.borrow().settings_popover.clone();
-        if let Some(popover) = existing {
-            popover.popup();
+        if let Some(dialog) = controller.borrow().settings_dialog.clone() {
+            dialog.present();
             return;
         }
-        let (settings_button, config) = {
+        let (parent, config) = {
             let this = controller.borrow();
-            (
-                this.widgets.settings_button.clone(),
-                this.connection_config.clone(),
-            )
+            (this.widgets.window.clone(), this.connection_config.clone())
         };
-        let popover = gtk::Popover::builder().autohide(true).build();
-        settings_button.set_popover(Some(&popover));
+        let dialog = gtk::Window::builder()
+            .title("Settings")
+            .transient_for(&parent)
+            .modal(true)
+            .default_width(560)
+            .build();
         let root = gtk::Box::new(gtk::Orientation::Vertical, 10);
         root.set_margin_top(18);
         root.set_margin_bottom(18);
@@ -3284,8 +3292,8 @@ impl Controller {
         root.append(&cloudflare_hint);
         root.append(&validation);
         root.append(&actions);
-        popover.set_child(Some(&root));
-        popover.set_default_widget(Some(&apply));
+        dialog.set_child(Some(&root));
+        dialog.set_default_widget(Some(&apply));
         server.set_activates_default(true);
         username.set_activates_default(true);
         password.set_activates_default(true);
@@ -3298,12 +3306,12 @@ impl Controller {
         cloudflare_client_secret_label.set_mnemonic_widget(Some(&cloudflare_client_secret));
 
         cancel.connect_clicked({
-            let popover = popover.clone();
-            move |_| popover.popdown()
+            let dialog = dialog.clone();
+            move |_| dialog.close()
         });
         apply.connect_clicked({
             let weak = Rc::downgrade(controller);
-            let popover = popover.clone();
+            let dialog = dialog.clone();
             let server = server.clone();
             let username = username.clone();
             let password = password.clone();
@@ -3355,7 +3363,7 @@ impl Controller {
                     let mut this = controller.borrow_mut();
                     this.apply_preferences(&config);
                     drop(this);
-                    popover.popdown();
+                    dialog.close();
                     return;
                 }
 
@@ -3367,7 +3375,7 @@ impl Controller {
                             return;
                         }
                         Self::switch_connection(&controller, config, api, events, server_key);
-                        popover.popdown();
+                        dialog.close();
                     }
                     Err(error) => validation.set_label(&error.to_string()),
                 }
@@ -3378,6 +3386,9 @@ impl Controller {
         settings_shortcuts.connect_key_pressed({
             let apply = apply.clone();
             move |_, key, _, modifiers| {
+                if key == gdk::Key::Escape {
+                    return glib::Propagation::Proceed;
+                }
                 if modifiers.contains(gdk::ModifierType::CONTROL_MASK)
                     && matches!(key, gdk::Key::Return | gdk::Key::KP_Enter)
                 {
@@ -3387,15 +3398,25 @@ impl Controller {
                 glib::Propagation::Proceed
             }
         });
-        popover.add_controller(settings_shortcuts);
-        popover.connect_map({
+        dialog.add_controller(settings_shortcuts);
+        dialog.connect_map({
             let server = server.clone();
             move |_| {
                 server.grab_focus();
             }
         });
-        controller.borrow_mut().settings_popover = Some(popover.clone());
-        popover.popup();
+        dialog.connect_close_request({
+            let weak = Rc::downgrade(controller);
+            move |_| {
+                if let Some(controller) = weak.upgrade() {
+                    controller.borrow_mut().settings_dialog = None;
+                }
+                glib::Propagation::Proceed
+            }
+        });
+        close_window_on_escape(&dialog);
+        controller.borrow_mut().settings_dialog = Some(dialog.clone());
+        dialog.present();
     }
 
     fn apply_preferences(&mut self, config: &ApiConfig) {
@@ -3416,7 +3437,7 @@ impl Controller {
         events: Receiver<UiEvent>,
         server_key: String,
     ) {
-        let (old_dialogs, old_new_session, old_rename_session, generation) = {
+        let (old_dialogs, old_windows, generation) = {
             let mut this = controller.borrow_mut();
             this.persist_state();
             if let Some(application) = this.widgets.window.application() {
@@ -3433,8 +3454,12 @@ impl Controller {
             let old_dialogs = std::mem::take(&mut this.dialogs)
                 .into_values()
                 .collect::<Vec<_>>();
-            let old_new_session = this.new_session_dialog.take();
-            let old_rename_session = this.rename_session_dialog.take();
+            let old_windows = [
+                this.new_session_dialog.take(),
+                this.rename_session_dialog.take(),
+                this.session_dialog.take(),
+                this.settings_dialog.take(),
+            ];
 
             this.api = api;
             this.events = events.clone();
@@ -3488,16 +3513,13 @@ impl Controller {
                 .set_label(&format!("Connecting to {server_key}"));
             this.widgets.status.set_tooltip_text(Some(&server_key));
             this.persist_state();
-            (old_dialogs, old_new_session, old_rename_session, generation)
+            (old_dialogs, old_windows, generation)
         };
 
         for dialog in old_dialogs {
             dialog.hide();
         }
-        if let Some(dialog) = old_new_session {
-            dialog.hide();
-        }
-        if let Some(dialog) = old_rename_session {
+        for dialog in old_windows.into_iter().flatten() {
             dialog.hide();
         }
         Self::refresh_all(controller);
@@ -3522,35 +3544,32 @@ impl Controller {
         root.set_margin_bottom(18);
         root.set_margin_start(18);
         root.set_margin_end(18);
-        let directory_label = gtk::Label::new(Some("Directory on the OpenCode server"));
-        directory_label.set_xalign(0.0);
-        let directory = gtk::Entry::new();
-        directory.set_activates_default(true);
-        directory.set_placeholder_text(Some("/path/to/project"));
-        if let Some(active_directory) = this.active_directory() {
-            directory.set_text(&active_directory);
-        } else if let Some(project) = this.state.projects.first() {
-            directory.set_text(&project.worktree);
+        let project_label = gtk::Label::new(Some("Project"));
+        project_label.set_xalign(0.0);
+        let known_projects = project_paths(&this.state.projects, &this.state.sessions);
+        let project = gtk::ComboBoxText::with_entry();
+        project.set_hexpand(true);
+        for path in &known_projects {
+            project.append_text(path);
         }
-        let known_directories: Vec<_> = this
-            .state
-            .projects
-            .iter()
-            .map(|project| project.worktree.as_str())
-            .collect();
-        let directory_store = gtk::StringList::new(&known_directories);
-        let directory_dropdown = gtk::DropDown::new(Some(directory_store), None::<gtk::Expression>);
-        directory_dropdown.set_visible(!known_directories.is_empty());
-        directory_dropdown.connect_selected_notify({
-            let directory = directory.clone();
-            move |dropdown| {
-                let Some(item) = dropdown.selected_item().and_downcast::<gtk::StringObject>()
-                else {
-                    return;
-                };
-                directory.set_text(&item.string());
-            }
-        });
+        let initial = this
+            .active_directory()
+            .or_else(|| known_projects.first().cloned())
+            .unwrap_or_default();
+        if let Some(index) = known_projects.iter().position(|path| path == &initial) {
+            project.set_active(Some(index as u32));
+        } else if !initial.is_empty() {
+            project.prepend_text(&initial);
+            project.set_active(Some(0));
+        }
+        if let Some(entry) = project.child().and_downcast::<gtk::Entry>() {
+            entry.set_placeholder_text(Some("/path/to/project"));
+            entry.set_activates_default(true);
+            project_label.set_mnemonic_widget(Some(&entry));
+        }
+        let project_hint = gtk::Label::new(Some("Pick a project or type a new path."));
+        project_hint.set_xalign(0.0);
+        project_hint.add_css_class("session-picker-path");
         let title_label = gtk::Label::new(Some("Title (optional)"));
         title_label.set_xalign(0.0);
         let title = gtk::Entry::new();
@@ -3562,15 +3581,14 @@ impl Controller {
         create.add_css_class("suggested-action");
         actions.append(&cancel);
         actions.append(&create);
-        root.append(&directory_label);
-        root.append(&directory);
-        root.append(&directory_dropdown);
+        root.append(&project_label);
+        root.append(&project);
+        root.append(&project_hint);
         root.append(&title_label);
         root.append(&title);
         root.append(&actions);
         dialog.set_child(Some(&root));
         dialog.set_default_widget(Some(&create));
-        directory_label.set_mnemonic_widget(Some(&directory));
         title_label.set_mnemonic_widget(Some(&title));
         drop(this);
 
@@ -3581,12 +3599,14 @@ impl Controller {
         create.connect_clicked({
             let weak = Rc::downgrade(controller);
             let dialog = dialog.clone();
-            let directory = directory.clone();
+            let project = project.clone();
             let title = title.clone();
             move |_| {
-                let value = directory.text().trim().to_owned();
+                let value = combo_text(&project);
                 if value.is_empty() {
-                    directory.add_css_class("error");
+                    if let Some(entry) = project.child().and_downcast::<gtk::Entry>() {
+                        entry.add_css_class("error");
+                    }
                     return;
                 }
                 if let Some(controller) = weak.upgrade() {
@@ -3616,9 +3636,12 @@ impl Controller {
                 glib::Propagation::Proceed
             }
         });
+        close_window_on_escape(&dialog);
         controller.borrow_mut().new_session_dialog = Some(dialog.clone());
         dialog.present();
-        directory.grab_focus();
+        if let Some(entry) = project.child().and_downcast::<gtk::Entry>() {
+            entry.grab_focus();
+        }
     }
 
     fn rename_active_session(controller: &Rc<RefCell<Self>>) {
@@ -3714,6 +3737,7 @@ impl Controller {
             }
         });
         controller.borrow_mut().rename_session_dialog = Some(dialog.clone());
+        close_window_on_escape(&dialog);
         dialog.present();
         title.select_region(0, -1);
         title.grab_focus();
@@ -4328,7 +4352,7 @@ fn populate_session_list(
     sessions: &[Session],
     query: &str,
     controller: Weak<RefCell<Controller>>,
-    popover: gtk::Popover,
+    dialog: gtk::Window,
 ) {
     while let Some(child) = list.first_child() {
         list.remove(&child);
@@ -4356,17 +4380,21 @@ fn populate_session_list(
         path.set_xalign(0.0);
         path.set_ellipsize(pango::EllipsizeMode::Middle);
         path.add_css_class("session-picker-path");
+        let time = gtk::Label::new(Some(&format_local_timestamp(session.time.updated)));
+        time.set_xalign(0.0);
+        time.add_css_class("session-picker-time");
         labels.append(&title);
         labels.append(&path);
+        labels.append(&time);
         button.set_child(Some(&labels));
         let id = session.id.clone();
         let weak = controller.clone();
-        let popover = popover.clone();
+        let dialog = dialog.clone();
         button.connect_clicked(move |_| {
             if let Some(controller) = weak.upgrade() {
                 Controller::open_tab(&controller, &id);
             }
-            popover.popdown();
+            dialog.close();
         });
         list.append(&button);
     }
@@ -4427,55 +4455,86 @@ fn transcript_session_changed(
     rendered_session != active_session
 }
 
-#[derive(Default)]
-struct RealizedStickyRows {
-    source: Option<gtk::Widget>,
-    before: Vec<gtk::Widget>,
-    after: Vec<gtk::Widget>,
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct RealizedRowBounds {
+    index: usize,
+    top: f64,
+    bottom: f64,
+    user: bool,
 }
 
-fn inspect_realized_sticky_rows(widget: &gtk::Widget, realized: &mut RealizedStickyRows) {
+fn inspect_realized_rows(
+    widget: &gtk::Widget,
+    transcript: &gtk::Widget,
+    realized: &mut Vec<RealizedRowBounds>,
+) {
     let mut child = widget.first_child();
     while let Some(current) = child {
-        if current.has_css_class("sticky-source") {
-            realized.source = Some(current.clone());
-        } else if current.has_css_class("before-sticky-source") {
-            realized.before.push(current.clone());
-        } else if current.has_css_class("after-sticky-source") {
-            realized.after.push(current.clone());
+        if current.has_css_class("message-row") {
+            if let Ok(index) = current.widget_name().parse::<usize>() {
+                if let Some(bounds) = current.compute_bounds(transcript) {
+                    realized.push(RealizedRowBounds {
+                        index,
+                        top: f64::from(bounds.y()),
+                        bottom: f64::from(bounds.y() + bounds.height()),
+                        user: current.has_css_class("user-message"),
+                    });
+                }
+            }
         }
-        inspect_realized_sticky_rows(&current, realized);
+        inspect_realized_rows(&current, transcript, realized);
         child = current.next_sibling();
     }
 }
 
-fn widget_intersects_viewport(
-    widget: &gtk::Widget,
-    transcript: &gtk::Widget,
+fn sticky_user_index(
+    user_indices: &[usize],
+    realized: &[RealizedRowBounds],
     viewport_top: f64,
     viewport_bottom: f64,
-) -> bool {
-    widget.compute_bounds(transcript).is_some_and(|bounds| {
-        let top = f64::from(bounds.y());
-        let bottom = top + f64::from(bounds.height());
-        bottom >= viewport_top && top <= viewport_bottom
-    })
-}
+) -> Option<usize> {
+    let first_realized = realized.iter().map(|row| row.index).min();
+    let last_realized = realized.iter().map(|row| row.index).max();
+    let realized_users: HashMap<usize, (f64, f64)> = realized
+        .iter()
+        .filter(|row| row.user)
+        .map(|row| (row.index, (row.top, row.bottom)))
+        .collect();
 
-fn sticky_message_visible(
-    source_top: Option<f64>,
-    viewport_top: f64,
-    before_visible: bool,
-    after_visible: bool,
-    fallback: bool,
-) -> bool {
-    source_top
-        .map(|source_top| source_top <= viewport_top + BOTTOM_EPSILON)
-        .unwrap_or_else(|| match (before_visible, after_visible) {
-            (true, false) => false,
-            (false, true) => true,
-            _ => fallback,
-        })
+    let mut latest_above = None;
+    let mut latest_intersecting = None;
+    for &index in user_indices {
+        let (top, bottom) = if let Some(&bounds) = realized_users.get(&index) {
+            bounds
+        } else if first_realized.is_some_and(|first| index < first) {
+            (f64::NEG_INFINITY, f64::NEG_INFINITY)
+        } else if last_realized.is_some_and(|last| index > last) {
+            (f64::INFINITY, f64::INFINITY)
+        } else {
+            continue;
+        };
+        if bottom <= viewport_top + BOTTOM_EPSILON {
+            latest_above = Some(index);
+            continue;
+        }
+        if top >= viewport_bottom - BOTTOM_EPSILON {
+            continue;
+        }
+        let fully_visible =
+            top >= viewport_top - BOTTOM_EPSILON && bottom <= viewport_bottom + BOTTOM_EPSILON;
+        let cut_off_top = top < viewport_top - BOTTOM_EPSILON;
+        latest_intersecting = Some((index, fully_visible, cut_off_top));
+    }
+
+    if let Some((index, fully_visible, cut_off_top)) = latest_intersecting {
+        if fully_visible || !cut_off_top {
+            None
+        } else {
+            Some(index)
+        }
+    } else {
+        latest_above
+    }
 }
 
 fn sticky_message_text(row: TranscriptRow) -> String {
@@ -4486,6 +4545,83 @@ fn sticky_message_text(row: TranscriptRow) -> String {
     } else {
         format!("Attached {} images", row.images.len())
     }
+}
+
+fn close_window_on_escape(window: &gtk::Window) {
+    let key = gtk::EventControllerKey::new();
+    key.set_propagation_phase(gtk::PropagationPhase::Capture);
+    let window_for_key = window.clone();
+    key.connect_key_pressed(move |_, key, _, _| {
+        if key == gdk::Key::Escape {
+            window_for_key.close();
+            glib::Propagation::Stop
+        } else {
+            glib::Propagation::Proceed
+        }
+    });
+    window.add_controller(key);
+}
+
+fn project_paths(projects: &[Project], sessions: &[Session]) -> Vec<String> {
+    let mut paths = Vec::new();
+    for project in projects {
+        push_unique_path(&mut paths, project.worktree.clone());
+    }
+    for session in sessions {
+        push_unique_path(&mut paths, session.directory.clone());
+    }
+    paths
+}
+
+fn push_unique_path(paths: &mut Vec<String>, path: String) {
+    if !path.is_empty() && !paths.iter().any(|existing| existing == &path) {
+        paths.push(path);
+    }
+}
+
+fn combo_text(combo: &gtk::ComboBoxText) -> String {
+    combo
+        .active_text()
+        .map(|text| text.to_string())
+        .or_else(|| {
+            combo
+                .child()
+                .and_downcast::<gtk::Entry>()
+                .map(|entry| entry.text().to_string())
+        })
+        .unwrap_or_default()
+        .trim()
+        .to_owned()
+}
+
+fn format_local_timestamp(timestamp: u64) -> String {
+    let seconds = if timestamp >= 1_000_000_000_000 {
+        (timestamp / 1000) as i64
+    } else {
+        timestamp as i64
+    };
+    glib::DateTime::from_unix_utc(seconds)
+        .ok()
+        .and_then(|utc| utc.to_local().ok())
+        .and_then(|local| local.format("%Y-%m-%d %H:%M").ok())
+        .map(|formatted| formatted.to_string())
+        .unwrap_or_default()
+}
+
+fn pointer_hits_widget(
+    widget: &impl IsA<gtk::Widget>,
+    origin: &impl IsA<gtk::Widget>,
+    x: f64,
+    y: f64,
+) -> bool {
+    widget.compute_bounds(origin).is_some_and(|bounds| {
+        let x = x as f32;
+        let y = y as f32;
+        x >= bounds.x()
+            && x <= bounds.x() + bounds.width()
+            && y >= bounds.y()
+            && y <= bounds.y() + bounds.height()
+    })
 }
 
 fn adjustment_at_top(adjustment: &gtk::Adjustment) -> bool {
@@ -4744,24 +4880,50 @@ mod tests {
     }
 
     #[test]
-    fn sticky_visibility_tracks_the_source_and_realized_sides() {
-        assert!(!sticky_message_visible(
-            Some(100.0),
-            50.0,
-            false,
-            false,
-            true
-        ));
-        assert!(sticky_message_visible(
-            Some(48.5),
-            50.0,
-            false,
-            false,
-            false
-        ));
-        assert!(!sticky_message_visible(None, 50.0, true, false, true));
-        assert!(sticky_message_visible(None, 50.0, false, true, false));
-        assert!(sticky_message_visible(None, 50.0, true, true, true));
+    fn sticky_user_index_follows_the_latest_scrolled_prompt() {
+        let users = [0, 2];
+        let realized = [
+            RealizedRowBounds {
+                index: 0,
+                top: 0.0,
+                bottom: 40.0,
+                user: true,
+            },
+            RealizedRowBounds {
+                index: 1,
+                top: 40.0,
+                bottom: 80.0,
+                user: false,
+            },
+            RealizedRowBounds {
+                index: 2,
+                top: 80.0,
+                bottom: 120.0,
+                user: true,
+            },
+            RealizedRowBounds {
+                index: 3,
+                top: 120.0,
+                bottom: 400.0,
+                user: false,
+            },
+        ];
+        assert_eq!(sticky_user_index(&users, &realized, 200.0, 500.0), Some(2));
+        assert_eq!(sticky_user_index(&users, &realized, 50.0, 70.0), Some(0));
+        assert_eq!(sticky_user_index(&users, &realized, 80.0, 400.0), None);
+        assert_eq!(sticky_user_index(&users, &realized, 90.0, 400.0), Some(2));
+    }
+
+    #[test]
+    fn sticky_user_index_uses_unrealized_rows_above_the_viewport() {
+        let users = [0, 4];
+        let realized = [RealizedRowBounds {
+            index: 5,
+            top: 20.0,
+            bottom: 80.0,
+            user: false,
+        }];
+        assert_eq!(sticky_user_index(&users, &realized, 20.0, 300.0), Some(4));
     }
 
     #[test]
@@ -4771,11 +4933,46 @@ mod tests {
                 role: "YOU".to_owned(),
                 body: String::new(),
                 images: vec!["data:image/png;base64,AA==".to_owned()],
-                sticky_position: Some(0),
-                sticky: true,
             }),
             "Attached image"
         );
+    }
+
+    #[test]
+    fn project_paths_include_session_directories() {
+        assert_eq!(
+            project_paths(
+                &[Project {
+                    worktree: "/repo".into(),
+                    name: None,
+                }],
+                &[Session {
+                    id: "ses_1".into(),
+                    directory: "/Users/danny/.opencode-root-project".into(),
+                    title: "Catch all".into(),
+                    time: SessionTime {
+                        created: 1,
+                        updated: 2,
+                        archived: None,
+                    },
+                    parent_id: None,
+                    agent: None,
+                    model: None,
+                }]
+            ),
+            [
+                "/repo".to_string(),
+                "/Users/danny/.opencode-root-project".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn local_timestamps_use_the_host_timezone() {
+        let formatted = format_local_timestamp(1_704_067_200_000);
+        assert!(formatted.chars().any(|ch| ch.is_ascii_digit()));
+        assert!(formatted.contains('-'));
+        assert!(formatted.contains(':'));
     }
 
     #[test]
