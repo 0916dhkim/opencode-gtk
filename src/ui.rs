@@ -111,6 +111,7 @@ struct Widgets {
     sticky_message: gtk::Box,
     sticky_message_scroll: gtk::ScrolledWindow,
     sticky_message_body: gtk::Label,
+    sticky_message_time: gtk::Label,
     transcript_status: gtk::Box,
     transcript_spinner: gtk::Spinner,
     transcript_status_label: gtk::Label,
@@ -517,9 +518,17 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
     sticky_message.set_valign(gtk::Align::Start);
     sticky_message.set_can_target(true);
     sticky_message.set_visible(false);
+    let sticky_message_header = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    sticky_message_header.add_css_class("message-header");
     let sticky_message_role = gtk::Label::new(Some("YOU"));
     sticky_message_role.set_xalign(0.0);
+    sticky_message_role.set_hexpand(true);
     sticky_message_role.add_css_class("message-role");
+    let sticky_message_time = gtk::Label::new(None);
+    sticky_message_time.set_xalign(1.0);
+    sticky_message_time.add_css_class("message-time");
+    sticky_message_header.append(&sticky_message_role);
+    sticky_message_header.append(&sticky_message_time);
     let sticky_message_body = gtk::Label::new(None);
     sticky_message_body.set_xalign(0.0);
     sticky_message_body.set_yalign(0.0);
@@ -547,7 +556,7 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
         glib::Propagation::Stop
     });
     sticky_message.add_controller(sticky_scroll_controller);
-    sticky_message.append(&sticky_message_role);
+    sticky_message.append(&sticky_message_header);
     sticky_message.append(&sticky_message_scroll);
     let overlay = gtk::Overlay::new();
     overlay.set_vexpand(true);
@@ -634,6 +643,7 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
         sticky_message,
         sticky_message_scroll,
         sticky_message_body,
+        sticky_message_time,
         transcript_status,
         transcript_spinner,
         transcript_status_label,
@@ -2750,13 +2760,13 @@ impl Controller {
         inspect_realized_rows(&transcript, &viewport, &mut realized);
         let sticky_index = sticky_user_index(&user_indices, &realized, 0.0, viewport_bottom);
         match sticky_index.and_then(|index| {
-            self.rendered_rows.get(index).and_then(|row| {
-                serde_json::from_str::<TranscriptRow>(row)
-                    .ok()
-                    .map(sticky_message_text)
-            })
+            self.rendered_rows
+                .get(index)
+                .and_then(|row| serde_json::from_str::<TranscriptRow>(row).ok())
         }) {
-            Some(body) => {
+            Some(row) => {
+                let time_text = display_local_timestamp(row.time).unwrap_or_default();
+                let body = sticky_message_text(row);
                 if self.widgets.sticky_message_body.text() != body {
                     self.widgets
                         .sticky_message_scroll
@@ -2764,10 +2774,15 @@ impl Controller {
                         .set_value(0.0);
                     self.widgets.sticky_message_body.set_label(&body);
                 }
+                self.widgets.sticky_message_time.set_label(&time_text);
+                self.widgets
+                    .sticky_message_time
+                    .set_visible(!time_text.is_empty());
                 self.widgets.sticky_message.set_visible(true);
             }
             None => {
                 self.widgets.sticky_message_body.set_label("");
+                self.widgets.sticky_message_time.set_label("");
                 self.widgets.sticky_message.set_visible(false);
             }
         }
