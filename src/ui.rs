@@ -722,7 +722,7 @@ fn transcript_factory() -> gtk::SignalListItemFactory {
         } else {
             "assistant-message"
         });
-        row.set_widget_name(&item.position().to_string());
+        row.set_widget_name(&format!("row-{}", item.position()));
     });
     factory
 }
@@ -4478,7 +4478,7 @@ fn inspect_realized_rows(
     let mut child = widget.first_child();
     while let Some(current) = child {
         if current.has_css_class("message-row") {
-            if let Ok(index) = current.widget_name().parse::<usize>() {
+            if let Some(index) = transcript_row_index(&current) {
                 if let Some(bounds) = current.compute_bounds(transcript) {
                     realized.push(RealizedRowBounds {
                         index,
@@ -4492,6 +4492,13 @@ fn inspect_realized_rows(
         inspect_realized_rows(&current, transcript, realized);
         child = current.next_sibling();
     }
+}
+
+fn transcript_row_index(widget: &gtk::Widget) -> Option<usize> {
+    widget
+        .widget_name()
+        .strip_prefix("row-")
+        .and_then(|index| index.parse().ok())
 }
 
 fn sticky_user_index(
@@ -4508,8 +4515,8 @@ fn sticky_user_index(
         .map(|row| (row.index, (row.top, row.bottom)))
         .collect();
 
-    let mut latest_above = None;
-    let mut latest_intersecting = None;
+    let mut last_past_top = None;
+    let mut user_flush_with_top = false;
     for &index in user_indices {
         let (top, bottom) = if let Some(&bounds) = realized_users.get(&index) {
             bounds
@@ -4520,29 +4527,22 @@ fn sticky_user_index(
         } else {
             continue;
         };
-        if bottom <= viewport_top + BOTTOM_EPSILON {
-            latest_above = Some(index);
+        if top < viewport_top - BOTTOM_EPSILON {
+            last_past_top = Some(index);
             continue;
         }
-        if top >= viewport_bottom - BOTTOM_EPSILON {
+        if top > viewport_bottom - BOTTOM_EPSILON {
             continue;
         }
-        let fully_visible =
-            top >= viewport_top - BOTTOM_EPSILON && bottom <= viewport_bottom + BOTTOM_EPSILON;
-        let cut_off_top = top < viewport_top - BOTTOM_EPSILON;
-        latest_intersecting = Some((index, fully_visible, cut_off_top));
+        let fully_visible = bottom <= viewport_bottom + BOTTOM_EPSILON;
+        if top <= viewport_top + BOTTOM_EPSILON && fully_visible {
+            user_flush_with_top = true;
+        }
     }
-
-    if let Some((index, fully_visible, cut_off_top)) = latest_intersecting {
-        if cut_off_top {
-            Some(index)
-        } else if fully_visible {
-            None
-        } else {
-            latest_above
-        }
+    if user_flush_with_top {
+        None
     } else {
-        latest_above
+        last_past_top
     }
 }
 
@@ -4922,6 +4922,28 @@ mod tests {
         assert_eq!(sticky_user_index(&users, &realized, 50.0, 100.0), Some(0));
         assert_eq!(sticky_user_index(&users, &realized, 80.0, 400.0), None);
         assert_eq!(sticky_user_index(&users, &realized, 90.0, 400.0), Some(2));
+        assert_eq!(
+            sticky_user_index(
+                &[0, 2],
+                &[
+                    RealizedRowBounds {
+                        index: 0,
+                        top: -24.0,
+                        bottom: 40.0,
+                        user: true,
+                    },
+                    RealizedRowBounds {
+                        index: 2,
+                        top: 80.0,
+                        bottom: 140.0,
+                        user: true,
+                    },
+                ],
+                0.0,
+                640.0
+            ),
+            Some(0)
+        );
         assert_eq!(
             sticky_user_index(
                 &[0],
