@@ -228,7 +228,7 @@ impl Role {
     pub fn label(self) -> &'static str {
         match self {
             Self::User => "YOU",
-            Self::Assistant => "OPENCODE",
+            Self::Assistant => "AGENT",
         }
     }
 }
@@ -1055,7 +1055,7 @@ mod tests {
                 }
             }
         })));
-        assert_eq!(conversation.rendered_rows(), ["OPENCODE\nhello"]);
+        assert_eq!(conversation.rendered_rows(), ["AGENT\nhello"]);
 
         assert!(conversation.apply_event(&json!({
             "type": "message.part.delta",
@@ -1066,7 +1066,7 @@ mod tests {
                 "delta": " world"
             }
         })));
-        assert_eq!(conversation.rendered_rows(), ["OPENCODE\nhello world"]);
+        assert_eq!(conversation.rendered_rows(), ["AGENT\nhello world"]);
 
         assert!(conversation.apply_event(&json!({
             "type": "message.part.removed",
@@ -1194,7 +1194,7 @@ mod tests {
             assert!(conversation.apply_event(&payload));
         }
 
-        assert_eq!(conversation.rendered_rows(), ["OPENCODE\nhello"]);
+        assert_eq!(conversation.rendered_rows(), ["AGENT\nhello"]);
     }
 
     #[test]
@@ -1210,8 +1210,8 @@ mod tests {
         assert_eq!(
             conversation.rendered_rows(),
             [
-                "OPENCODE\nError: first failure",
-                "OPENCODE\nError: second failure"
+                "AGENT\nError: first failure",
+                "AGENT\nError: second failure"
             ]
         );
     }

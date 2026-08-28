@@ -87,6 +87,10 @@ headerbar {
   border-bottom-color: alpha(#000000, 0.08);
 }
 
+.assistant-message {
+  border-bottom: none;
+}
+
 .message-role {
   color: #707673;
 }
@@ -134,7 +138,13 @@ headerbar {
 }
 
 .user-message {
-  background: #efede8;
+  background: #e4ddd0;
+  border-top-color: #cfc6b6;
+  border-bottom-color: #cfc6b6;
+}
+
+.user-message .message-role {
+  color: #5c4a2e;
 }
 
 .sticky-message {

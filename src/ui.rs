@@ -720,9 +720,7 @@ fn transcript_factory() -> gtk::SignalListItemFactory {
                 )
             })
             .unwrap_or_else(|| {
-                let (role, body) = value
-                    .split_once('\n')
-                    .unwrap_or(("OPENCODE", value.as_str()));
+                let (role, body) = value.split_once('\n').unwrap_or(("AGENT", value.as_str()));
                 (role, body, &[], 0)
             });
         role.set_label(role_text);
