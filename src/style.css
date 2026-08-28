@@ -1,0 +1,167 @@
+window {
+  background: #101214;
+  color: #e8e5df;
+}
+
+headerbar {
+  background: #14171a;
+  border-bottom: 1px solid #2a2e32;
+  box-shadow: none;
+}
+
+.app-title {
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.connection-status {
+  color: #899097;
+  font-size: 0.82em;
+}
+
+.connection-status.error,
+.error {
+  color: #e68178;
+}
+
+.tab-strip {
+  background: #0d0f11;
+  border-bottom: 1px solid #24282c;
+}
+
+.session-tab {
+  background: transparent;
+  border-radius: 7px;
+}
+
+.session-tab button {
+  min-height: 28px;
+  padding: 3px 7px;
+  color: #92999f;
+}
+
+.session-tab.active {
+  background: #22262a;
+}
+
+.session-tab.active button {
+  color: #f2efe9;
+}
+
+.transcript {
+  background: #101214;
+}
+
+.message-row {
+  padding: 18px 28px 20px 28px;
+  border-bottom: 1px solid alpha(#ffffff, 0.055);
+}
+
+.message-role {
+  color: #8d959d;
+  font-size: 0.76em;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+
+.message-content {
+  color: #e7e3dc;
+  font-family: monospace;
+  font-size: 0.96em;
+  line-height: 1.35;
+}
+
+.user-message {
+  background: #15191c;
+}
+
+.assistant-message {
+  background: #101214;
+}
+
+.empty-state {
+  color: #70777d;
+  font-size: 1.05em;
+}
+
+.composer-frame {
+  background: #191c1f;
+  border: 1px solid #30353a;
+  border-radius: 12px;
+}
+
+.composer-input {
+  background: transparent;
+  color: #f0ede7;
+  caret-color: #e5b567;
+}
+
+.composer-frame dropdown,
+.composer-frame button {
+  min-height: 32px;
+}
+
+.attachment-chip {
+  border-radius: 999px;
+  padding: 2px 9px;
+  background: #262b30;
+  color: #c8c4bd;
+}
+
+.session-picker-row {
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: transparent;
+}
+
+.session-picker-row:hover {
+  background: #202428;
+}
+
+.session-picker-title {
+  color: #eeebe5;
+  font-weight: 600;
+}
+
+.session-picker-path {
+  color: #7f878e;
+  font-size: 0.84em;
+}
+
+.prompt-heading {
+  font-size: 1.2em;
+  font-weight: 700;
+}
+
+.prompt-detail,
+.prompt-metadata {
+  padding: 10px 12px;
+  border-radius: 7px;
+  background: #15191c;
+  color: #d2cec7;
+  font-family: monospace;
+}
+
+.prompt-metadata {
+  color: #9da4aa;
+  font-size: 0.9em;
+}
+
+.question-section {
+  padding: 14px;
+  border: 1px solid #2d3236;
+  border-radius: 9px;
+  background: #15181b;
+}
+
+.question-header {
+  color: #d8a55f;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+button.suggested-action {
+  background: #d29b52;
+  color: #17130e;
+  font-weight: 700;
+}

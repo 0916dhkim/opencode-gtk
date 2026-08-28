@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=OpenCode GTK
+Comment=Linux desktop client for an OpenCode server
+Exec=@EXEC@
+Icon=utilities-terminal
+Terminal=false
+Type=Application
+Categories=Development;IDE;
+Keywords=OpenCode;AI;Development;
+StartupNotify=true

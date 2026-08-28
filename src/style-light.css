@@ -1,0 +1,106 @@
+window {
+  background: #f7f5f1;
+  color: #282623;
+}
+
+headerbar {
+  background: #eeece7;
+  border-bottom-color: #d3cfc7;
+}
+
+.connection-status {
+  color: #6d716f;
+}
+
+.connection-status.error,
+.error {
+  color: #a13c34;
+}
+
+.tab-strip {
+  background: #f0eee9;
+  border-bottom-color: #d8d4cc;
+}
+
+.session-tab button {
+  color: #666b69;
+}
+
+.session-tab.active {
+  background: #dedbd4;
+}
+
+.session-tab.active button {
+  color: #242321;
+}
+
+.transcript,
+.assistant-message {
+  background: #f7f5f1;
+}
+
+.message-row {
+  border-bottom-color: alpha(#000000, 0.08);
+}
+
+.message-role {
+  color: #707673;
+}
+
+.message-content {
+  color: #292724;
+}
+
+.user-message {
+  background: #efede8;
+}
+
+.empty-state {
+  color: #777c79;
+}
+
+.composer-frame {
+  background: #ffffff;
+  border-color: #cbc7bf;
+}
+
+.composer-input {
+  color: #262421;
+  caret-color: #9c641a;
+}
+
+.attachment-chip {
+  background: #e3e0da;
+  color: #494744;
+}
+
+.session-picker-row:hover {
+  background: #e7e4de;
+}
+
+.session-picker-title {
+  color: #272522;
+}
+
+.session-picker-path {
+  color: #737875;
+}
+
+.prompt-detail,
+.prompt-metadata {
+  background: #efede8;
+  color: #34312d;
+}
+
+.prompt-metadata {
+  color: #626764;
+}
+
+.question-section {
+  border-color: #cbc7bf;
+  background: #f0eee9;
+}
+
+.question-header {
+  color: #8b5918;
+}
