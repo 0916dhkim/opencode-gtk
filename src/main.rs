@@ -1,5 +1,6 @@
 mod api;
 mod credentials;
+mod markdown;
 mod model;
 mod persist;
 mod ui;

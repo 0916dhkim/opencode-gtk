@@ -12,6 +12,7 @@ use gtk::{gdk, gio, glib, pango, prelude::*};
 use crate::{
     api::{ApiConfig, ApiHandle, Bootstrap, Command, MessagePage, ServerEnvelope, UiEvent},
     credentials::{self, CloudflareAccessCredentials},
+    markdown,
     model::{
         deleted_session_id, event_data, event_run_status, event_session, event_session_id,
         Conversation, ModelCatalog, ModelOption, ModelSelection, Project, RunStatus, Session,
@@ -27,6 +28,24 @@ const STREAM_FRAME: Duration = Duration::from_millis(33);
 const BOOTSTRAP_RETRY_MIN: Duration = Duration::from_secs(2);
 const BOOTSTRAP_RETRY_MAX: Duration = Duration::from_secs(30);
 const SESSION_PICKER_LIMIT: usize = 200;
+const BOTTOM_EPSILON: f64 = 2.0;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TranscriptUpdate {
+    Content,
+    Prepend,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TranscriptIndicator {
+    Hidden,
+    NoSession,
+    Loading,
+    Refreshing,
+    Working,
+    Error,
+    Empty,
+}
 
 #[derive(Clone, Debug, Default)]
 struct Draft {
@@ -75,7 +94,9 @@ struct Widgets {
     tab_bar: gtk::Box,
     transcript_model: gtk::StringList,
     transcript_scroll: gtk::ScrolledWindow,
-    transcript_empty: gtk::Label,
+    transcript_status: gtk::Box,
+    transcript_spinner: gtk::Spinner,
+    transcript_status_label: gtk::Label,
     load_earlier: gtk::Button,
     composer: gtk::TextView,
     attachment_box: gtk::Box,
@@ -106,6 +127,8 @@ struct Controller {
     theme: ThemePreference,
     rendered_session: Option<String>,
     rendered_rows: Vec<String>,
+    transcript_at_bottom: bool,
+    transcript_scroll_generation: u64,
     current_models: Vec<ModelOption>,
     current_variants: Vec<Option<String>>,
     controls_updating: bool,
@@ -208,6 +231,8 @@ pub fn launch(
         theme,
         rendered_session: None,
         rendered_rows: Vec::new(),
+        transcript_at_bottom: true,
+        transcript_scroll_generation: 0,
         current_models: Vec::new(),
         current_variants: Vec::new(),
         controls_updating: false,
@@ -432,14 +457,19 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
         .vexpand(true)
         .child(&transcript)
         .build();
-    let transcript_empty = gtk::Label::new(Some("Open a session to begin"));
-    transcript_empty.add_css_class("empty-state");
-    transcript_empty.set_halign(gtk::Align::Center);
-    transcript_empty.set_valign(gtk::Align::Center);
+    let transcript_spinner = gtk::Spinner::new();
+    let transcript_status_label = gtk::Label::new(Some("Open a session to begin"));
+    let transcript_status = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+    transcript_status.add_css_class("transcript-status");
+    transcript_status.set_halign(gtk::Align::Center);
+    transcript_status.set_valign(gtk::Align::Center);
+    transcript_status.set_can_target(false);
+    transcript_status.append(&transcript_spinner);
+    transcript_status.append(&transcript_status_label);
     let overlay = gtk::Overlay::new();
     overlay.set_vexpand(true);
     overlay.set_child(Some(&transcript_scroll));
-    overlay.add_overlay(&transcript_empty);
+    overlay.add_overlay(&transcript_status);
     let conversation = gtk::Box::new(gtk::Orientation::Vertical, 0);
     conversation.set_vexpand(true);
     conversation.append(&load_earlier);
@@ -511,7 +541,9 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
         tab_bar,
         transcript_model,
         transcript_scroll,
-        transcript_empty,
+        transcript_status,
+        transcript_spinner,
+        transcript_status_label,
         load_earlier,
         composer,
         attachment_box,
@@ -535,12 +567,8 @@ fn transcript_factory() -> gtk::SignalListItemFactory {
         let role = gtk::Label::new(None);
         role.set_xalign(0.0);
         role.add_css_class("message-role");
-        let content = gtk::Label::new(None);
-        content.set_xalign(0.0);
-        content.set_yalign(0.0);
-        content.set_wrap(true);
-        content.set_wrap_mode(pango::WrapMode::WordChar);
-        content.set_selectable(true);
+        let content = gtk::Box::new(gtk::Orientation::Vertical, 10);
+        content.set_hexpand(true);
         content.add_css_class("message-content");
         row.append(&role);
         row.append(&content);
@@ -559,7 +587,7 @@ fn transcript_factory() -> gtk::SignalListItemFactory {
         let Some(role) = row.first_child().and_downcast::<gtk::Label>() else {
             return;
         };
-        let Some(content) = row.last_child().and_downcast::<gtk::Label>() else {
+        let Some(content) = row.last_child().and_downcast::<gtk::Box>() else {
             return;
         };
         let value = object.string();
@@ -567,7 +595,19 @@ fn transcript_factory() -> gtk::SignalListItemFactory {
             .split_once('\n')
             .unwrap_or(("OPENCODE", value.as_str()));
         role.set_label(role_text);
-        content.set_label(body);
+        if role_text == "YOU" {
+            clear_box(&content);
+            let label = gtk::Label::new(Some(body));
+            label.set_xalign(0.0);
+            label.set_yalign(0.0);
+            label.set_wrap(true);
+            label.set_wrap_mode(pango::WrapMode::WordChar);
+            label.set_selectable(true);
+            label.add_css_class("message-plain-text");
+            content.append(&label);
+        } else {
+            markdown::render_into(&content, body);
+        }
         row.remove_css_class("user-message");
         row.remove_css_class("assistant-message");
         row.add_css_class(if role_text == "YOU" {
@@ -580,6 +620,22 @@ fn transcript_factory() -> gtk::SignalListItemFactory {
 }
 
 fn wire_callbacks(controller: &Rc<RefCell<Controller>>) {
+    let weak = Rc::downgrade(controller);
+    controller
+        .borrow()
+        .widgets
+        .transcript_scroll
+        .vadjustment()
+        .connect_value_changed(move |adjustment| {
+            let Some(controller) = weak.upgrade() else {
+                return;
+            };
+            let Ok(mut controller) = controller.try_borrow_mut() else {
+                return;
+            };
+            controller.transcript_at_bottom = adjustment_at_bottom(adjustment);
+        });
+
     let weak = Rc::downgrade(controller);
     controller
         .borrow()
@@ -1011,7 +1067,11 @@ impl Controller {
                 if let Some(command) = command {
                     controller.borrow().api.send(command);
                 }
-                controller.borrow_mut().refresh_send_button();
+                let mut this = controller.borrow_mut();
+                if this.state.active.as_deref() == Some(session_id.as_str()) {
+                    this.refresh_transcript(TranscriptUpdate::Content);
+                }
+                this.refresh_send_button();
             }
             UiEvent::Aborted { session_id, result } => {
                 let mut this = controller.borrow_mut();
@@ -1019,7 +1079,12 @@ impl Controller {
                     Ok(()) => {
                         this.state.server_busy.remove(&session_id);
                         this.state.abort_requested.remove(&session_id);
-                        this.state.statuses.insert(session_id, RunStatus::Idle);
+                        this.state
+                            .statuses
+                            .insert(session_id.clone(), RunStatus::Idle);
+                        if this.state.active.as_deref() == Some(session_id.as_str()) {
+                            this.refresh_transcript(TranscriptUpdate::Content);
+                        }
                         this.refresh_send_button();
                     }
                     Err(error) => this.show_error(&error),
@@ -1321,7 +1386,6 @@ impl Controller {
                     .conversations
                     .entry(session_id.clone())
                     .or_default();
-                let was_loaded = conversation.loaded;
                 if before.is_some() {
                     conversation.prepend_from_api(&page.messages, page.next_cursor);
                 } else {
@@ -1331,7 +1395,11 @@ impl Controller {
                     conversation.apply_event(&event);
                 }
                 if this.state.active.as_deref() == Some(session_id.as_str()) {
-                    this.refresh_transcript(!was_loaded, before.is_some());
+                    this.refresh_transcript(if before.is_some() {
+                        TranscriptUpdate::Prepend
+                    } else {
+                        TranscriptUpdate::Content
+                    });
                 }
             }
             Err(error) => {
@@ -1341,7 +1409,7 @@ impl Controller {
                 }
                 this.show_error(&error);
                 if this.state.active.as_deref() == Some(session_id.as_str()) {
-                    this.refresh_transcript(false, false);
+                    this.refresh_transcript(TranscriptUpdate::Content);
                 }
             }
         }
@@ -1354,7 +1422,7 @@ impl Controller {
             this.state.loading_messages.insert(session.id.clone());
             this.replacing_messages.insert(session.id.clone());
             if this.state.active.as_deref() == Some(session.id.as_str()) {
-                this.refresh_transcript(false, false);
+                this.refresh_transcript(TranscriptUpdate::Content);
             }
             let api = this.api.clone();
             drop(this);
@@ -1445,6 +1513,9 @@ impl Controller {
                 tabs_changed |= open;
             }
             if let Some((session_id, status)) = event_run_status(&payload) {
+                if active.as_deref() == Some(session_id.as_str()) {
+                    transcript_changed = true;
+                }
                 if this.bootstrap_pending {
                     this.status_events_during_bootstrap
                         .insert(session_id.clone(), status);
@@ -1563,7 +1634,7 @@ impl Controller {
             this = controller.borrow_mut();
         }
         if transcript_changed {
-            this.refresh_transcript(false, false);
+            this.refresh_transcript(TranscriptUpdate::Content);
         }
         this.refresh_send_button();
         let activate_fallback = tabs_changed
@@ -1594,7 +1665,7 @@ impl Controller {
         let mut this = controller.borrow_mut();
         this.refresh_tabs(&weak);
         this.refresh_composer();
-        this.refresh_transcript(false, false);
+        this.refresh_transcript(TranscriptUpdate::Content);
     }
 
     fn refresh_tabs(&mut self, weak: &Weak<RefCell<Self>>) {
@@ -1679,6 +1750,8 @@ impl Controller {
             let load_models = !this.state.catalogs.contains_key(&session.directory)
                 && this.state.loading_models.insert(session.directory.clone());
             if active_changed {
+                this.transcript_at_bottom = true;
+                this.transcript_scroll_generation += 1;
                 this.persist_state();
             }
             (
@@ -2053,7 +2126,7 @@ impl Controller {
             }));
     }
 
-    fn refresh_transcript(&mut self, force_bottom: bool, preserve_position: bool) {
+    fn refresh_transcript(&mut self, update: TranscriptUpdate) {
         let active = self.state.active.clone();
         let rows = active
             .as_ref()
@@ -2063,7 +2136,11 @@ impl Controller {
         let adjustment = self.widgets.transcript_scroll.vadjustment();
         let old_upper = adjustment.upper();
         let old_value = adjustment.value();
-        let was_at_bottom = old_value + adjustment.page_size() >= old_upper - 48.0;
+        if transcript_session_changed(self.rendered_session.as_deref(), active.as_deref()) {
+            self.transcript_at_bottom = true;
+            self.transcript_scroll_generation += 1;
+        }
+        let follow_bottom = self.transcript_at_bottom;
         sync_transcript_list(
             &self.widgets.transcript_model,
             &mut self.rendered_session,
@@ -2074,41 +2151,129 @@ impl Controller {
         let loading = active
             .as_ref()
             .is_some_and(|active| self.state.loading_messages.contains(active));
+        let replacing = active
+            .as_ref()
+            .is_some_and(|active| self.replacing_messages.contains(active));
+        let loaded = active
+            .as_ref()
+            .and_then(|active| self.state.conversations.get(active))
+            .is_some_and(|conversation| conversation.loaded);
+        let working = active
+            .as_ref()
+            .is_some_and(|active| self.state.statuses.get(active) == Some(&RunStatus::Busy));
         let load_error = active
             .as_ref()
             .and_then(|active| self.message_load_errors.get(active));
-        self.widgets
-            .transcript_empty
-            .set_label(if active.is_none() {
-                "Open a session to begin"
-            } else if loading {
-                "Loading messages..."
-            } else if load_error.is_some() {
-                "Could not load messages. Select this session again to retry."
-            } else {
-                "No messages yet"
-            });
-        self.widgets
-            .transcript_empty
-            .set_tooltip_text(load_error.map(String::as_str));
-        self.widgets
-            .transcript_empty
-            .set_visible(self.rendered_rows.is_empty());
+        let has_rows = !self.rendered_rows.is_empty();
+        let indicator = transcript_indicator(
+            active.is_some(),
+            loading,
+            replacing,
+            loaded,
+            has_rows,
+            working,
+            load_error.is_some(),
+        );
+        self.refresh_transcript_indicator(indicator, has_rows, load_error.map(String::as_str));
         let next_cursor = active
             .as_ref()
             .and_then(|active| self.state.conversations.get(active))
             .and_then(|conversation| conversation.next_cursor.as_ref());
         self.widgets.load_earlier.set_visible(next_cursor.is_some());
         self.widgets.load_earlier.set_sensitive(!loading);
+        self.widgets
+            .load_earlier
+            .set_label(if loading && !replacing {
+                "Loading earlier messages..."
+            } else {
+                "Load earlier messages"
+            });
 
-        if force_bottom || was_at_bottom {
+        let generation = self.transcript_scroll_generation;
+        let weak = self.self_weak.clone();
+        if update == TranscriptUpdate::Prepend {
             glib::idle_add_local_once(move || {
-                adjustment.set_value((adjustment.upper() - adjustment.page_size()).max(0.0));
+                let valid = weak.upgrade().is_some_and(|controller| {
+                    let controller = controller.borrow();
+                    controller.transcript_scroll_generation == generation
+                        && controller.state.active == active
+                });
+                if valid {
+                    let value = old_value + (adjustment.upper() - old_upper);
+                    adjustment.set_value(clamp_adjustment(&adjustment, value));
+                }
             });
-        } else if preserve_position {
+        } else if follow_bottom {
             glib::idle_add_local_once(move || {
-                adjustment.set_value(old_value + (adjustment.upper() - old_upper));
+                let should_follow = weak.upgrade().is_some_and(|controller| {
+                    let controller = controller.borrow();
+                    controller.transcript_scroll_generation == generation
+                        && controller.state.active == active
+                        && controller.transcript_at_bottom
+                });
+                if should_follow {
+                    let bottom = adjustment.upper() - adjustment.page_size();
+                    adjustment.set_value(clamp_adjustment(&adjustment, bottom));
+                }
             });
+        }
+    }
+
+    fn refresh_transcript_indicator(
+        &self,
+        indicator: TranscriptIndicator,
+        has_rows: bool,
+        error: Option<&str>,
+    ) {
+        let (label, spinning, alignment) = match indicator {
+            TranscriptIndicator::Hidden => ("", false, gtk::Align::Center),
+            TranscriptIndicator::NoSession => {
+                ("Open a session to begin", false, gtk::Align::Center)
+            }
+            TranscriptIndicator::Loading => ("Loading conversation", true, gtk::Align::Center),
+            TranscriptIndicator::Refreshing => ("Refreshing conversation", true, gtk::Align::Start),
+            TranscriptIndicator::Working => ("OpenCode is working", true, gtk::Align::End),
+            TranscriptIndicator::Error => (
+                if has_rows {
+                    "Could not refresh conversation"
+                } else {
+                    "Could not load conversation"
+                },
+                false,
+                if has_rows {
+                    gtk::Align::Start
+                } else {
+                    gtk::Align::Center
+                },
+            ),
+            TranscriptIndicator::Empty => ("No messages yet", false, gtk::Align::Center),
+        };
+        let visible = indicator != TranscriptIndicator::Hidden;
+        let compact = visible && has_rows;
+        self.widgets.transcript_status.set_visible(visible);
+        self.widgets.transcript_status.set_valign(alignment);
+        self.widgets
+            .transcript_status
+            .set_margin_top(if compact { 12 } else { 0 });
+        self.widgets
+            .transcript_status
+            .set_margin_bottom(if compact { 12 } else { 0 });
+        if compact {
+            self.widgets
+                .transcript_status
+                .add_css_class("transcript-status-compact");
+        } else {
+            self.widgets
+                .transcript_status
+                .remove_css_class("transcript-status-compact");
+        }
+        self.widgets.transcript_status_label.set_label(label);
+        self.widgets.transcript_status.set_tooltip_text(error);
+        self.widgets.transcript_spinner.set_visible(spinning);
+        if spinning {
+            self.widgets.transcript_spinner.start();
+        } else {
+            self.widgets.transcript_spinner.stop();
         }
     }
 
@@ -2194,6 +2359,7 @@ impl Controller {
                 );
                 this.state.statuses.insert(active, RunStatus::Busy);
                 this.refresh_composer();
+                this.refresh_transcript(TranscriptUpdate::Content);
                 Some(command)
             }
         };
@@ -2222,7 +2388,7 @@ impl Controller {
             if !this.state.loading_messages.insert(active.clone()) {
                 return;
             }
-            this.widgets.load_earlier.set_sensitive(false);
+            this.refresh_transcript(TranscriptUpdate::Content);
             Command::LoadMessages {
                 session_id: active,
                 directory: session.directory,
@@ -2657,6 +2823,8 @@ impl Controller {
             this.state = restored_state(server_state);
             this.rendered_session = None;
             this.rendered_rows.clear();
+            this.transcript_at_bottom = true;
+            this.transcript_scroll_generation += 1;
             this.current_models.clear();
             this.current_variants.clear();
             this.pending_events.clear();
@@ -3523,6 +3691,52 @@ fn transcript_session_changed(
     rendered_session != active_session
 }
 
+fn adjustment_at_bottom(adjustment: &gtk::Adjustment) -> bool {
+    viewport_at_bottom(
+        adjustment.value(),
+        adjustment.page_size(),
+        adjustment.upper(),
+    )
+}
+
+fn viewport_at_bottom(value: f64, page_size: f64, upper: f64) -> bool {
+    value + page_size >= upper - BOTTOM_EPSILON
+}
+
+fn clamp_adjustment(adjustment: &gtk::Adjustment, value: f64) -> f64 {
+    let lower = adjustment.lower();
+    let upper = (adjustment.upper() - adjustment.page_size()).max(lower);
+    value.clamp(lower, upper)
+}
+
+fn transcript_indicator(
+    has_session: bool,
+    loading: bool,
+    replacing: bool,
+    loaded: bool,
+    has_rows: bool,
+    working: bool,
+    load_error: bool,
+) -> TranscriptIndicator {
+    if !has_session {
+        TranscriptIndicator::NoSession
+    } else if loading && replacing && has_rows {
+        TranscriptIndicator::Refreshing
+    } else if loading && !has_rows {
+        TranscriptIndicator::Loading
+    } else if load_error {
+        TranscriptIndicator::Error
+    } else if !loaded && !has_rows {
+        TranscriptIndicator::Loading
+    } else if !has_rows {
+        TranscriptIndicator::Empty
+    } else if working {
+        TranscriptIndicator::Working
+    } else {
+        TranscriptIndicator::Hidden
+    }
+}
+
 fn clear_box(container: &gtk::Box) {
     while let Some(child) = container.first_child() {
         container.remove(&child);
@@ -3589,6 +3803,33 @@ mod tests {
             Some("ses_one"),
             Some("ses_one")
         ));
+    }
+
+    #[test]
+    fn bottom_tracking_uses_a_small_layout_tolerance() {
+        assert!(viewport_at_bottom(700.0, 300.0, 1000.0));
+        assert!(viewport_at_bottom(698.5, 300.0, 1000.0));
+        assert!(!viewport_at_bottom(697.0, 300.0, 1000.0));
+    }
+
+    #[test]
+    fn transcript_indicator_distinguishes_loading_refreshing_and_working() {
+        assert_eq!(
+            transcript_indicator(true, true, true, false, false, false, false),
+            TranscriptIndicator::Loading
+        );
+        assert_eq!(
+            transcript_indicator(true, true, true, true, true, false, false),
+            TranscriptIndicator::Refreshing
+        );
+        assert_eq!(
+            transcript_indicator(true, false, false, true, true, true, false),
+            TranscriptIndicator::Working
+        );
+        assert_eq!(
+            transcript_indicator(true, false, false, true, true, false, false),
+            TranscriptIndicator::Hidden
+        );
     }
 
     #[test]

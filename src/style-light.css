@@ -51,12 +51,48 @@ headerbar {
   color: #292724;
 }
 
+.markdown-heading {
+  color: #1f1e1c;
+}
+
+.markdown-list-marker {
+  color: #6f7471;
+}
+
+.markdown-blockquote {
+  border-left-color: #8b918e;
+  color: #555a57;
+}
+
+.markdown-code-block {
+  border-color: #d0ccc4;
+  background: #eeece7;
+}
+
+.markdown-code-language {
+  color: #6f7471;
+}
+
+.markdown-code-content {
+  color: #2f2d29;
+}
+
+.message-content link {
+  color: #8f5d1c;
+}
+
 .user-message {
   background: #efede8;
 }
 
-.empty-state {
+.transcript-status {
   color: #777c79;
+}
+
+.transcript-status-compact {
+  border-color: #cbc7bf;
+  background: alpha(#ffffff, 0.94);
+  color: #4d514f;
 }
 
 .composer-frame {

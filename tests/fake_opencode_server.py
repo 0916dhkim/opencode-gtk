@@ -30,7 +30,13 @@ class ServerState:
                         "messageID": "msg_ready",
                         "sessionID": "ses_test",
                         "type": "text",
-                        "text": "Ready",
+                        "text": (
+                            "# Ready\n\n"
+                            "- **Markdown** content\n"
+                            "- Inline `code <tag>`\n\n"
+                            "> Safe [link](https://example.com?a=1&b=2)\n\n"
+                            "```rust\nfn main() {}\n```"
+                        ),
                     }
                 ],
             }
