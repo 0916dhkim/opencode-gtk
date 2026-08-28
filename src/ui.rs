@@ -92,6 +92,7 @@ struct State {
     catalogs: HashMap<String, ModelCatalog>,
     selections: HashMap<String, ModelSelection>,
     statuses: HashMap<String, RunStatus>,
+    unread: HashSet<String>,
     drafts: HashMap<String, Draft>,
     pending_prompts: HashMap<String, PendingPrompt>,
     server_busy: HashSet<String>,
@@ -112,6 +113,7 @@ struct Widgets {
     transcript: gtk::ListView,
     transcript_scroll: gtk::ScrolledWindow,
     sticky_message: gtk::Box,
+    sticky_message_scroll: gtk::ScrolledWindow,
     sticky_message_body: gtk::Label,
     transcript_status: gtk::Box,
     transcript_spinner: gtk::Spinner,
@@ -174,9 +176,11 @@ struct Controller {
     dialogs: HashMap<String, gtk::Window>,
     pending_actions: HashSet<String>,
     new_session_dialog: Option<gtk::Window>,
+    rename_session_dialog: Option<gtk::Window>,
     settings_dialog: Option<gtk::Window>,
     next_session_request_id: u64,
     pending_session_request: Option<u64>,
+    pending_rename_request: Option<u64>,
     next_prompt_request_id: u64,
     connected_once: bool,
     event_connected: bool,
@@ -280,9 +284,11 @@ pub fn launch(
         dialogs: HashMap::new(),
         pending_actions: HashSet::new(),
         new_session_dialog: None,
+        rename_session_dialog: None,
         settings_dialog: None,
         next_session_request_id: 0,
         pending_session_request: None,
+        pending_rename_request: None,
         next_prompt_request_id: 0,
         connected_once: false,
         event_connected: false,
@@ -451,19 +457,28 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
     header.pack_end(&new_button);
     window.set_titlebar(Some(&header));
 
-    let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    let tab_bar = gtk::Box::new(gtk::Orientation::Horizontal, 2);
-    tab_bar.set_margin_start(10);
-    tab_bar.set_margin_end(10);
-    tab_bar.set_margin_top(7);
-    tab_bar.set_margin_bottom(7);
+    let root = gtk::Paned::new(gtk::Orientation::Horizontal);
+    root.set_position(270);
+    root.set_resize_start_child(false);
+    root.set_shrink_start_child(false);
+    let tab_bar = gtk::Box::new(gtk::Orientation::Vertical, 2);
+    tab_bar.set_margin_start(8);
+    tab_bar.set_margin_end(8);
+    tab_bar.set_margin_top(8);
+    tab_bar.set_margin_bottom(8);
     let tab_scroll = gtk::ScrolledWindow::builder()
-        .hscrollbar_policy(gtk::PolicyType::Automatic)
-        .vscrollbar_policy(gtk::PolicyType::Never)
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .vscrollbar_policy(gtk::PolicyType::Automatic)
+        .min_content_width(250)
+        .max_content_width(280)
+        .vexpand(true)
+        .kinetic_scrolling(false)
         .child(&tab_bar)
         .build();
     tab_scroll.add_css_class("tab-strip");
-    root.append(&tab_scroll);
+    root.set_start_child(Some(&tab_scroll));
+    let main = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    main.set_hexpand(true);
 
     let load_earlier = gtk::Button::with_label("Load earlier messages");
     load_earlier.add_css_class("flat");
@@ -495,7 +510,7 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
     sticky_message.add_css_class("sticky-message");
     sticky_message.set_halign(gtk::Align::Fill);
     sticky_message.set_valign(gtk::Align::Start);
-    sticky_message.set_can_target(false);
+    sticky_message.set_can_target(true);
     sticky_message.set_visible(false);
     let sticky_message_role = gtk::Label::new(Some("YOU"));
     sticky_message_role.set_xalign(0.0);
@@ -505,12 +520,30 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
     sticky_message_body.set_yalign(0.0);
     sticky_message_body.set_wrap(true);
     sticky_message_body.set_wrap_mode(pango::WrapMode::WordChar);
-    sticky_message_body.set_ellipsize(pango::EllipsizeMode::End);
-    sticky_message_body.set_lines(3);
     sticky_message_body.add_css_class("message-content");
     sticky_message_body.add_css_class("message-plain-text");
+    let sticky_message_scroll = gtk::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .vscrollbar_policy(gtk::PolicyType::Automatic)
+        .propagate_natural_height(true)
+        .max_content_height(180)
+        .child(&sticky_message_body)
+        .build();
+    sticky_message_scroll.add_css_class("sticky-message-scroll");
+    let sticky_scroll_controller =
+        gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::VERTICAL);
+    sticky_scroll_controller.set_propagation_phase(gtk::PropagationPhase::Capture);
+    let sticky_adjustment = sticky_message_scroll.vadjustment();
+    let transcript_adjustment = transcript_scroll.vadjustment();
+    sticky_scroll_controller.connect_scroll(move |_, _, delta| {
+        if !scroll_adjustment_by(&sticky_adjustment, delta) {
+            scroll_adjustment_by(&transcript_adjustment, delta);
+        }
+        glib::Propagation::Stop
+    });
+    sticky_message.add_controller(sticky_scroll_controller);
     sticky_message.append(&sticky_message_role);
-    sticky_message.append(&sticky_message_body);
+    sticky_message.append(&sticky_message_scroll);
     let overlay = gtk::Overlay::new();
     overlay.set_vexpand(true);
     overlay.set_child(Some(&transcript_scroll));
@@ -520,7 +553,7 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
     conversation.set_vexpand(true);
     conversation.append(&load_earlier);
     conversation.append(&overlay);
-    root.append(&conversation);
+    main.append(&conversation);
 
     let composer = gtk::TextView::new();
     composer.set_wrap_mode(gtk::WrapMode::WordChar);
@@ -575,7 +608,8 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
     composer_frame.set_margin_end(18);
     composer_frame.set_margin_bottom(16);
     composer_frame.set_child(Some(&composer_box));
-    root.append(&composer_frame);
+    main.append(&composer_frame);
+    root.set_end_child(Some(&main));
 
     window.set_child(Some(&root));
 
@@ -590,6 +624,7 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
         transcript,
         transcript_scroll,
         sticky_message,
+        sticky_message_scroll,
         sticky_message_body,
         transcript_status,
         transcript_spinner,
@@ -748,6 +783,26 @@ fn remove_pending_clipboard_attachments(pending: Option<PendingPrompt>) {
 }
 
 fn wire_callbacks(controller: &Rc<RefCell<Controller>>) {
+    let weak = Rc::downgrade(controller);
+    controller
+        .borrow()
+        .widgets
+        .window
+        .connect_is_active_notify(move |window| {
+            if !window.is_active() {
+                return;
+            }
+            let Some(controller) = weak.upgrade() else {
+                return;
+            };
+            let mut controller = controller.borrow_mut();
+            let active = controller.state.active.clone();
+            if active.is_some_and(|active| controller.clear_session_unread(&active)) {
+                let weak = controller.self_weak.clone();
+                controller.refresh_tabs(&weak);
+            }
+        });
+
     let weak = Rc::downgrade(controller);
     controller
         .borrow()
@@ -958,12 +1013,16 @@ fn wire_callbacks(controller: &Rc<RefCell<Controller>>) {
     let shortcuts = gtk::EventControllerKey::new();
     let weak = Rc::downgrade(controller);
     shortcuts.connect_key_pressed(move |_, key, _, modifiers| {
-        if !modifiers.contains(gdk::ModifierType::CONTROL_MASK) {
-            return glib::Propagation::Proceed;
-        }
         let Some(controller) = weak.upgrade() else {
             return glib::Propagation::Proceed;
         };
+        if key == gdk::Key::F2 && modifiers.is_empty() {
+            Controller::rename_active_session(&controller);
+            return glib::Propagation::Stop;
+        }
+        if !modifiers.contains(gdk::ModifierType::CONTROL_MASK) {
+            return glib::Propagation::Proceed;
+        }
         match key {
             gdk::Key::comma => Controller::show_settings(&controller),
             gdk::Key::t => Controller::show_new_session(&controller),
@@ -1152,6 +1211,42 @@ impl Controller {
                         }
                     }
                     this.show_error(&error);
+                }
+            },
+            UiEvent::SessionRenamed {
+                request_id,
+                session_id,
+                result,
+            } => match result {
+                Ok(session) => {
+                    let dialog = {
+                        let mut this = controller.borrow_mut();
+                        if this.session(&session.id).is_some() {
+                            this.upsert_session(session);
+                        }
+                        this.persist_state();
+                        let weak = this.self_weak.clone();
+                        this.refresh_tabs(&weak);
+                        if this.pending_rename_request == Some(request_id) {
+                            this.pending_rename_request = None;
+                            this.rename_session_dialog.take()
+                        } else {
+                            None
+                        }
+                    };
+                    if let Some(dialog) = dialog {
+                        dialog.close();
+                    }
+                }
+                Err(error) => {
+                    let mut this = controller.borrow_mut();
+                    if this.pending_rename_request == Some(request_id) {
+                        this.pending_rename_request = None;
+                        if let Some(dialog) = &this.rename_session_dialog {
+                            dialog.set_sensitive(true);
+                        }
+                    }
+                    this.show_error(&format!("Could not rename session {session_id}: {error}"));
                 }
             },
             UiEvent::PromptAccepted {
@@ -1448,6 +1543,16 @@ impl Controller {
                 .map(|session| session.id.clone())
                 .collect();
             if bootstrap.sessions_complete {
+                let stale_unread: Vec<_> = this
+                    .state
+                    .unread
+                    .iter()
+                    .filter(|id| !known.contains(*id))
+                    .cloned()
+                    .collect();
+                for id in stale_unread {
+                    this.clear_session_unread(&id);
+                }
                 this.state.tabs.retain(|id| known.contains(id));
                 this.state.conversations.retain(|id, _| known.contains(id));
                 this.state.selections.retain(|id, _| known.contains(id));
@@ -1637,6 +1742,7 @@ impl Controller {
         this.event_flush_scheduled = false;
         let events = std::mem::take(&mut this.pending_events);
         let active = this.state.active.clone();
+        let window_active = this.widgets.window.is_active();
         let mut transcript_changed = false;
         let mut tabs_changed = false;
         let mut tab_status_changed = false;
@@ -1702,11 +1808,21 @@ impl Controller {
                     }
                 }
                 let status_changed = this.update_session_status(&session_id, status);
+                let open = this.state.tabs.iter().any(|id| id == &session_id);
                 if event_returns_control(&payload) {
-                    this.notify_session_idle(&session_id);
+                    let unread =
+                        session_completion_is_unread(active.as_deref(), &session_id, window_active);
+                    let unread_changed = if open && unread {
+                        this.state.unread.insert(session_id.clone())
+                    } else {
+                        this.state.unread.remove(&session_id)
+                    };
+                    tab_status_changed |= unread_changed;
+                    if open && unread && !window_active {
+                        this.notify_session_idle(&session_id);
+                    }
                 }
-                tab_status_changed |=
-                    status_changed && this.state.tabs.iter().any(|id| id == &session_id);
+                tab_status_changed |= status_changed && open;
             }
             if let Some(session_id) = event_session_id(&payload).map(str::to_owned) {
                 if this.replacing_messages.contains(&session_id) {
@@ -1849,6 +1965,7 @@ impl Controller {
             let tab = gtk::Box::new(gtk::Orientation::Horizontal, 0);
             tab.add_css_class("session-tab");
             let active = self.state.active.as_deref() == Some(id.as_str());
+            let unread = self.state.unread.contains(&id);
             if active {
                 tab.add_css_class("active");
                 previous_inactive = false;
@@ -1859,6 +1976,9 @@ impl Controller {
                 }
                 previous_inactive = true;
             }
+            if unread {
+                tab.add_css_class("unread");
+            }
             let busy = self.state.statuses.get(&id) == Some(&RunStatus::Busy);
             let status = if busy {
                 let spinner = gtk::Spinner::new();
@@ -1868,23 +1988,53 @@ impl Controller {
                 gtk::Box::new(gtk::Orientation::Horizontal, 0).upcast::<gtk::Widget>()
             };
             status.add_css_class("session-tab-status");
-            status.add_css_class(if busy { "busy" } else { "idle" });
+            status.add_css_class(if busy {
+                "busy"
+            } else if unread {
+                "unread"
+            } else {
+                "idle"
+            });
             status.set_halign(gtk::Align::Center);
             status.set_valign(gtk::Align::Center);
             status.set_tooltip_text(Some(if busy {
                 "Session is working"
+            } else if unread {
+                "Session has unread output"
             } else {
                 "Session is idle"
             }));
-            let select = gtk::Button::with_label(&title);
-            select.set_tooltip_text(self.session(&id).map(|session| session.directory.as_str()));
+            let drag_handle = gtk::Image::from_icon_name("list-drag-handle-symbolic");
+            drag_handle.set_tooltip_text(Some("Drag to reorder session"));
+            drag_handle.add_css_class("session-tab-drag-handle");
+            let title_label = gtk::Label::new(Some(&title));
+            title_label.set_xalign(0.0);
+            title_label.set_ellipsize(pango::EllipsizeMode::End);
+            title_label.set_max_width_chars(24);
+            let select = gtk::Button::new();
+            select.set_hexpand(true);
+            select.set_halign(gtk::Align::Fill);
+            select.set_child(Some(&title_label));
+            select.set_tooltip_text(
+                self.session(&id)
+                    .map(|session| format!("{}\nOpen session", session.directory))
+                    .as_deref(),
+            );
             select.add_css_class("flat");
+            select.add_css_class("session-tab-select");
+            let rename = gtk::Button::from_icon_name("document-edit-symbolic");
+            rename.set_tooltip_text(Some("Rename session (F2)"));
+            rename.add_css_class("flat");
+            rename.add_css_class("session-tab-action");
             let close = gtk::Button::with_label("×");
             close.set_tooltip_text(Some("Close tab"));
             close.add_css_class("flat");
+            close.add_css_class("session-tab-action");
             close.add_css_class("session-tab-close");
             tab.append(&status);
+            tab.append(&drag_handle);
             tab.append(&select);
+            tab.append(&rename);
             tab.append(&close);
 
             let weak_select = weak.clone();
@@ -1892,6 +2042,13 @@ impl Controller {
             select.connect_clicked(move |_| {
                 if let Some(controller) = weak_select.upgrade() {
                     Self::activate_tab(&controller, &select_id);
+                }
+            });
+            let weak_rename = weak.clone();
+            let rename_id = id.clone();
+            rename.connect_clicked(move |_| {
+                if let Some(controller) = weak_rename.upgrade() {
+                    Self::show_rename_session(&controller, &rename_id);
                 }
             });
             let weak_close = weak.clone();
@@ -1915,22 +2072,20 @@ impl Controller {
             let drag = gtk::DragSource::new();
             drag.set_actions(gdk::DragAction::MOVE);
             drag.set_content(Some(&gdk::ContentProvider::for_value(&id.to_value())));
-            drag.connect_drag_begin(|source, _| {
-                if let Some(widget) = source.widget() {
-                    widget.add_css_class("dragging");
-                }
+            let drag_tab = tab.clone();
+            drag.connect_drag_begin(move |_, _| {
+                drag_tab.add_css_class("dragging");
             });
-            drag.connect_drag_end(|source, _, _| {
-                if let Some(widget) = source.widget() {
-                    widget.remove_css_class("dragging");
-                }
+            let drag_tab = tab.clone();
+            drag.connect_drag_end(move |_, _, _| {
+                drag_tab.remove_css_class("dragging");
             });
-            tab.add_controller(drag);
+            drag_handle.add_controller(drag);
 
             let drop_target = gtk::DropTarget::new(String::static_type(), gdk::DragAction::MOVE);
-            drop_target.connect_motion(|target, x, _| {
+            drop_target.connect_motion(|target, _, y| {
                 if let Some(widget) = target.widget() {
-                    let after = x >= f64::from(widget.width()) / 2.0;
+                    let after = y >= f64::from(widget.height()) / 2.0;
                     widget.remove_css_class(if after { "drop-before" } else { "drop-after" });
                     widget.add_css_class(if after { "drop-after" } else { "drop-before" });
                 }
@@ -1944,7 +2099,7 @@ impl Controller {
             });
             let weak_drop = weak.clone();
             let target_id = id.clone();
-            drop_target.connect_drop(move |target, value, x, _| {
+            drop_target.connect_drop(move |target, value, _, y| {
                 let Ok(source_id) = value.get::<String>() else {
                     return false;
                 };
@@ -1953,7 +2108,7 @@ impl Controller {
                 };
                 let after = target
                     .widget()
-                    .is_some_and(|widget| x >= f64::from(widget.width()) / 2.0);
+                    .is_some_and(|widget| y >= f64::from(widget.height()) / 2.0);
                 Self::reorder_tab(&controller, &source_id, &target_id, after)
             });
             tab.add_controller(drop_target);
@@ -1983,6 +2138,7 @@ impl Controller {
             };
             let active_changed = this.state.active.as_deref() != Some(id);
             this.state.active = Some(id.to_owned());
+            this.clear_session_unread(id);
             let load_messages = !this
                 .state
                 .conversations
@@ -2055,6 +2211,7 @@ impl Controller {
             this.message_reload_pending.remove(id);
             this.message_load_errors.remove(id);
             this.message_events_during_load.remove(id);
+            this.clear_session_unread(id);
             if this.state.active.as_deref() == Some(id) {
                 this.state.active = this
                     .state
@@ -2449,7 +2606,15 @@ impl Controller {
         );
         self.refresh_transcript_indicator(indicator, has_rows, load_error.map(String::as_str));
         match sticky_body {
-            Some(body) => self.widgets.sticky_message_body.set_label(&body),
+            Some(body) => {
+                if self.widgets.sticky_message_body.text() != body {
+                    self.widgets
+                        .sticky_message_scroll
+                        .vadjustment()
+                        .set_value(0.0);
+                    self.widgets.sticky_message_body.set_label(&body);
+                }
+            }
             None => {
                 self.widgets.sticky_message_body.set_label("");
                 self.widgets.sticky_message.set_visible(false);
@@ -2685,11 +2850,23 @@ impl Controller {
         };
         let title = self
             .session(session_id)
-            .map(|session| format!("{} is idle", session.title))
-            .unwrap_or_else(|| "OpenCode session is idle".to_owned());
+            .map(|session| format!("New output in {}", session.title))
+            .unwrap_or_else(|| "New OpenCode output".to_owned());
         let notification = gio::Notification::new(&title);
-        notification.set_body(Some("Ready for your next prompt."));
-        application.send_notification(None, &notification);
+        notification.set_body(Some("The session is ready for your next prompt."));
+        application.send_notification(
+            Some(&session_notification_id(&self.server_key, session_id)),
+            &notification,
+        );
+    }
+
+    fn clear_session_unread(&mut self, session_id: &str) -> bool {
+        let changed = self.state.unread.remove(session_id);
+        if let Some(application) = self.widgets.window.application() {
+            application
+                .withdraw_notification(&session_notification_id(&self.server_key, session_id));
+        }
+        changed
     }
 
     fn send_if_idle(controller: &Rc<RefCell<Self>>) {
@@ -3250,9 +3427,17 @@ impl Controller {
         events: Receiver<UiEvent>,
         server_key: String,
     ) {
-        let (old_dialogs, old_new_session, generation) = {
+        let (old_dialogs, old_new_session, old_rename_session, generation) = {
             let mut this = controller.borrow_mut();
             this.persist_state();
+            if let Some(application) = this.widgets.window.application() {
+                for session_id in &this.state.unread {
+                    application.withdraw_notification(&session_notification_id(
+                        &this.server_key,
+                        session_id,
+                    ));
+                }
+            }
             this.events.close();
             this.connection_generation += 1;
             let generation = this.connection_generation;
@@ -3260,6 +3445,7 @@ impl Controller {
                 .into_values()
                 .collect::<Vec<_>>();
             let old_new_session = this.new_session_dialog.take();
+            let old_rename_session = this.rename_session_dialog.take();
 
             this.api = api;
             this.events = events.clone();
@@ -3307,6 +3493,7 @@ impl Controller {
             this.bootstrap_retry_token += 1;
             this.bootstrap_retry_delay = BOOTSTRAP_RETRY_MIN;
             this.pending_session_request = None;
+            this.pending_rename_request = None;
             this.connected_once = false;
             this.event_connected = false;
             this.widgets.status.remove_css_class("error");
@@ -3315,13 +3502,16 @@ impl Controller {
                 .set_label(&format!("Connecting to {server_key}"));
             this.widgets.status.set_tooltip_text(Some(&server_key));
             this.persist_state();
-            (old_dialogs, old_new_session, generation)
+            (old_dialogs, old_new_session, old_rename_session, generation)
         };
 
         for dialog in old_dialogs {
             dialog.hide();
         }
         if let Some(dialog) = old_new_session {
+            dialog.hide();
+        }
+        if let Some(dialog) = old_rename_session {
             dialog.hide();
         }
         Self::refresh_all(controller);
@@ -3443,6 +3633,104 @@ impl Controller {
         controller.borrow_mut().new_session_dialog = Some(dialog.clone());
         dialog.present();
         directory.grab_focus();
+    }
+
+    fn rename_active_session(controller: &Rc<RefCell<Self>>) {
+        let active = controller.borrow().state.active.clone();
+        if let Some(active) = active {
+            Self::show_rename_session(controller, &active);
+        }
+    }
+
+    fn show_rename_session(controller: &Rc<RefCell<Self>>, session_id: &str) {
+        if let Some(dialog) = controller.borrow().rename_session_dialog.clone() {
+            dialog.present();
+            return;
+        }
+        let this = controller.borrow();
+        let Some(session) = this.session(session_id).cloned() else {
+            return;
+        };
+        let dialog = gtk::Window::builder()
+            .title("Rename session")
+            .transient_for(&this.widgets.window)
+            .modal(true)
+            .default_width(460)
+            .build();
+        let root = gtk::Box::new(gtk::Orientation::Vertical, 10);
+        root.set_margin_top(18);
+        root.set_margin_bottom(18);
+        root.set_margin_start(18);
+        root.set_margin_end(18);
+        let title_label = gtk::Label::new(Some("Session title"));
+        title_label.set_xalign(0.0);
+        let title = gtk::Entry::new();
+        title.set_text(&session.title);
+        title.set_activates_default(true);
+        title_label.set_mnemonic_widget(Some(&title));
+        let actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        actions.set_halign(gtk::Align::End);
+        let cancel = gtk::Button::with_label("Cancel");
+        let save = gtk::Button::with_label("Save");
+        save.add_css_class("suggested-action");
+        actions.append(&cancel);
+        actions.append(&save);
+        root.append(&title_label);
+        root.append(&title);
+        root.append(&actions);
+        dialog.set_child(Some(&root));
+        dialog.set_default_widget(Some(&save));
+        drop(this);
+
+        cancel.connect_clicked({
+            let dialog = dialog.clone();
+            move |_| dialog.close()
+        });
+        save.connect_clicked({
+            let weak = Rc::downgrade(controller);
+            let dialog = dialog.clone();
+            let title = title.clone();
+            move |_| {
+                let value = title.text().trim().to_owned();
+                if value.is_empty() {
+                    title.add_css_class("error");
+                    return;
+                }
+                if value == session.title {
+                    dialog.close();
+                    return;
+                }
+                if let Some(controller) = weak.upgrade() {
+                    let command = {
+                        let mut this = controller.borrow_mut();
+                        this.next_session_request_id += 1;
+                        let request_id = this.next_session_request_id;
+                        this.pending_rename_request = Some(request_id);
+                        Command::RenameSession {
+                            request_id,
+                            session_id: session.id.clone(),
+                            directory: session.directory.clone(),
+                            title: value,
+                        }
+                    };
+                    controller.borrow().api.send(command);
+                    dialog.set_sensitive(false);
+                }
+            }
+        });
+        dialog.connect_close_request({
+            let weak = Rc::downgrade(controller);
+            move |_| {
+                if let Some(controller) = weak.upgrade() {
+                    controller.borrow_mut().rename_session_dialog = None;
+                }
+                glib::Propagation::Proceed
+            }
+        });
+        controller.borrow_mut().rename_session_dialog = Some(dialog.clone());
+        dialog.present();
+        title.select_region(0, -1);
+        title.grab_focus();
     }
 
     fn show_permission(
@@ -3976,6 +4264,7 @@ impl Controller {
         self.state.loading_messages.remove(id);
         self.state.selections.remove(id);
         self.state.statuses.remove(id);
+        self.clear_session_unread(id);
         self.state.server_busy.remove(id);
         self.state.abort_requested.remove(id);
         self.state.drafts.remove(id);
@@ -4239,6 +4528,35 @@ fn clamp_adjustment(adjustment: &gtk::Adjustment, value: f64) -> f64 {
     value.clamp(lower, upper)
 }
 
+fn scroll_adjustment_by(adjustment: &gtk::Adjustment, delta: f64) -> bool {
+    let value = adjustment.value();
+    let Some(target) = scroll_target(
+        value,
+        adjustment.lower(),
+        adjustment.upper(),
+        adjustment.page_size(),
+        adjustment.step_increment(),
+        delta,
+    ) else {
+        return false;
+    };
+    adjustment.set_value(target);
+    true
+}
+
+fn scroll_target(
+    value: f64,
+    lower: f64,
+    upper: f64,
+    page_size: f64,
+    step_increment: f64,
+    delta: f64,
+) -> Option<f64> {
+    let upper = (upper - page_size).max(lower);
+    let target = (value + delta * step_increment.max(24.0)).clamp(lower, upper);
+    ((target - value).abs() >= f64::EPSILON).then_some(target)
+}
+
 fn scroll_adjustment_to_bottom(adjustment: &gtk::Adjustment) {
     let bottom = adjustment.upper() - adjustment.page_size();
     adjustment.set_value(clamp_adjustment(adjustment, bottom));
@@ -4274,6 +4592,18 @@ fn transcript_indicator(
 
 fn event_returns_control(payload: &serde_json::Value) -> bool {
     payload.get("type").and_then(serde_json::Value::as_str) == Some("session.idle")
+}
+
+fn session_completion_is_unread(
+    active_session: Option<&str>,
+    completed_session: &str,
+    window_active: bool,
+) -> bool {
+    !window_active || active_session != Some(completed_session)
+}
+
+fn session_notification_id(server_key: &str, session_id: &str) -> String {
+    format!("{server_key}:session:{session_id}")
 }
 
 fn should_follow_transcript(update: TranscriptUpdate, at_bottom: bool) -> bool {
@@ -4456,6 +4786,43 @@ mod tests {
                 "type": event_type
             })));
         }
+    }
+
+    #[test]
+    fn completed_sessions_are_unread_until_visibly_active() {
+        assert!(!session_completion_is_unread(
+            Some("ses_active"),
+            "ses_active",
+            true
+        ));
+        assert!(session_completion_is_unread(
+            Some("ses_active"),
+            "ses_other",
+            true
+        ));
+        assert!(session_completion_is_unread(
+            Some("ses_active"),
+            "ses_active",
+            false
+        ));
+    }
+
+    #[test]
+    fn notification_ids_are_scoped_to_the_server() {
+        assert_ne!(
+            session_notification_id("https://one.example", "ses_same"),
+            session_notification_id("https://two.example", "ses_same")
+        );
+    }
+
+    #[test]
+    fn sticky_scroll_can_fall_through_at_its_bounds() {
+        assert_eq!(scroll_target(0.0, 0.0, 100.0, 40.0, 10.0, 1.0), Some(24.0));
+        assert_eq!(scroll_target(60.0, 0.0, 100.0, 40.0, 10.0, 1.0), None);
+        assert_eq!(
+            scroll_target(60.0, 0.0, 100.0, 40.0, 10.0, -1.0),
+            Some(36.0)
+        );
     }
 
     #[test]

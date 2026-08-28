@@ -26,18 +26,19 @@ headerbar {
 
 .tab-strip {
   background: #0d0f11;
-  border-bottom: 1px solid #24282c;
+  border-right: 1px solid #24282c;
 }
 
 .session-tab {
   background: transparent;
   border-radius: 7px;
+  min-height: 36px;
 }
 
 .session-tab.inactive.divided {
-  border-left: 1px solid #2b3034;
+  border-top: 1px solid #2b3034;
   border-top-left-radius: 0;
-  border-bottom-left-radius: 0;
+  border-top-right-radius: 0;
 }
 
 .session-tab:hover {
@@ -53,8 +54,23 @@ headerbar {
 
 .session-tab button {
   min-height: 28px;
-  padding: 3px 7px;
+  padding: 3px 5px;
   color: #92999f;
+}
+
+.session-tab button.session-tab-select {
+  padding-left: 3px;
+  padding-right: 6px;
+}
+
+.session-tab-drag-handle {
+  min-width: 16px;
+  color: #697077;
+  opacity: 0.55;
+}
+
+.session-tab:hover .session-tab-drag-handle {
+  opacity: 1;
 }
 
 .session-tab.active {
@@ -69,12 +85,23 @@ headerbar {
   color: #f2efe9;
 }
 
-.session-tab button.session-tab-close {
+.session-tab.unread button.session-tab-select {
+  color: #d9efff;
+  font-weight: 700;
+}
+
+.session-tab button.session-tab-action {
   min-width: 24px;
   min-height: 24px;
-  margin: 2px 3px 2px 0;
+  margin: 2px 1px;
   padding: 0;
   border-radius: 999px;
+  opacity: 0.45;
+}
+
+.session-tab:hover button.session-tab-action,
+.session-tab.active button.session-tab-action {
+  opacity: 1;
 }
 
 .session-tab button.session-tab-close:hover {
@@ -87,15 +114,16 @@ headerbar {
 }
 
 .session-tab.drop-before {
-  box-shadow: inset 2px 0 #e5b567;
+  box-shadow: inset 0 2px #e5b567;
 }
 
 .session-tab.drop-after {
-  box-shadow: inset -2px 0 #e5b567;
+  box-shadow: inset 0 -2px #e5b567;
 }
 
 .session-tab-status {
   margin-left: 8px;
+  margin-right: 3px;
   min-width: 9px;
   min-height: 9px;
 }
@@ -109,6 +137,12 @@ headerbar {
   color: #e5b567;
   min-width: 14px;
   min-height: 14px;
+}
+
+.session-tab-status.unread {
+  border-radius: 999px;
+  background: #62bceb;
+  box-shadow: 0 0 0 2px alpha(#62bceb, 0.24);
 }
 
 .transcript {
@@ -202,7 +236,6 @@ headerbar {
 
 .sticky-message {
   border-bottom: 1px solid #343a3f;
-  box-shadow: 0 5px 10px alpha(#000000, 0.24);
 }
 
 .assistant-message {

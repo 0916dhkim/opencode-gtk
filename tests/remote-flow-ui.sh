@@ -76,6 +76,21 @@ wait_for_no_window() {
   return 1
 }
 
+wait_for_window_closed() {
+  local window="$1"
+  for _ in {1..50}; do
+    if ! xdotool getwindowmap "${window}" >/dev/null 2>&1; then
+      return 0
+    fi
+    if [[ "$(xdotool getwindowmap "${window}")" == "0" ]]; then
+      return 0
+    fi
+    sleep 0.1
+  done
+  printf 'Window remained open: %s\n' "${window}" >&2
+  return 1
+}
+
 python3 tests/fake_opencode_server.py \
   --address-file "${temporary}/address" \
   --events-file "${temporary}/events" &
@@ -138,7 +153,7 @@ wait_for_event "messages:ses_other"
 xdotool key --window "${main_window}" ctrl+1
 
 eval "$(xdotool getwindowgeometry --shell "${main_window}")"
-xdotool mousemove --window "${main_window}" "$((WIDTH / 2))" 120 click 1
+xdotool mousemove --window "${main_window}" "$((WIDTH / 2))" 60 click 1
 sleep 0.3
 if [[ "$(<"${temporary}/events")" == *"messages:ses_test:msg_older"* ]]; then
   printf 'Load-earlier control was clickable away from the history boundary\n' >&2
@@ -149,25 +164,28 @@ for _ in {1..30}; do
   xdotool click 4
 done
 sleep 0.3
-xdotool mousemove --window "${main_window}" "$((WIDTH / 2))" 120 click 1
+xdotool mousemove --window "${main_window}" "$((WIDTH / 2))" 60 click 1
 wait_for_event "messages:ses_test:msg_older"
+
+xdotool windowfocus "${main_window}"
+xdotool key --window "${main_window}" F2
+rename_window="$(wait_for_window 'Rename session')"
+xdotool windowfocus "${rename_window}"
+xdotool key --window "${rename_window}" ctrl+a
+xdotool type --window "${rename_window}" --clearmodifiers "Renamed integration session"
+xdotool key --window "${rename_window}" Return
+wait_for_event "session:rename:ses_test:Renamed integration session"
+wait_for_window_closed "${rename_window}"
 
 xdotool windowfocus "${main_window}"
 xdotool key --window "${main_window}" ctrl+t
 new_session_window="$(wait_for_window 'New session')"
 xdotool windowfocus "${new_session_window}"
-xdotool key --window "${new_session_window}" Return
+eval "$(xdotool getwindowgeometry --shell "${new_session_window}")"
+xdotool mousemove --window "${new_session_window}" "$((WIDTH - 55))" "$((HEIGHT - 30))" click 1
 wait_for_event "session:create:New session"
-wait_for_no_window 'New session'
+wait_for_window_closed "${new_session_window}"
 
-xdotool windowfocus "${main_window}"
-xdotool mousemove --window "${main_window}" 90 70 mousedown 1
-for x in 140 190 240 290 320; do
-  xdotool mousemove --sync --window "${main_window}" "${x}" 70
-  sleep 0.1
-done
-xdotool mouseup 1
-sleep 0.5
 python3 - "${temporary}/config/opencode-gtk/state.json" "$(<"${temporary}/address")" <<'PY'
 import json
 import sys
@@ -175,7 +193,7 @@ import sys
 state = json.load(open(sys.argv[1], encoding="utf-8"))
 server = sys.argv[2].rstrip("/")
 tabs = state["servers"][server]["tabs"]
-assert [tab["id"] for tab in tabs[:2]] == ["ses_other", "ses_test"], state
+assert next(tab["title"] for tab in tabs if tab["id"] == "ses_test") == "Renamed integration session", state
 PY
 
 xdotool windowfocus "${main_window}"

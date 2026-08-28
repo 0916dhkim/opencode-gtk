@@ -19,7 +19,7 @@ headerbar {
 
 .tab-strip {
   background: #f0eee9;
-  border-bottom-color: #d8d4cc;
+  border-right-color: #d8d4cc;
 }
 
 .session-tab button {
@@ -27,7 +27,7 @@ headerbar {
 }
 
 .session-tab.inactive.divided {
-  border-left-color: #d0ccc4;
+  border-top-color: #d0ccc4;
 }
 
 .session-tab:hover {
@@ -46,17 +46,21 @@ headerbar {
   color: #242321;
 }
 
+.session-tab.unread button.session-tab-select {
+  color: #135d83;
+}
+
 .session-tab button.session-tab-close:hover {
   background: #b84b45;
   color: #ffffff;
 }
 
 .session-tab.drop-before {
-  box-shadow: inset 2px 0 #9c641a;
+  box-shadow: inset 0 2px #9c641a;
 }
 
 .session-tab.drop-after {
-  box-shadow: inset -2px 0 #9c641a;
+  box-shadow: inset 0 -2px #9c641a;
 }
 
 .session-tab-status.idle {
@@ -65,6 +69,11 @@ headerbar {
 
 .session-tab-status.busy {
   color: #9c641a;
+}
+
+.session-tab-status.unread {
+  background: #1778a8;
+  box-shadow: 0 0 0 2px alpha(#1778a8, 0.18);
 }
 
 .transcript,
@@ -124,7 +133,6 @@ headerbar {
 
 .sticky-message {
   border-bottom-color: #c8c3ba;
-  box-shadow: 0 5px 10px alpha(#5f5a52, 0.18);
 }
 
 .transcript-status {

@@ -16,6 +16,11 @@ class ServerState:
         self.subscriptions = 0
         self.permission_pending = True
         self.sent_stale_resolution = False
+        self.session_titles = {
+            "ses_test": "Integration session",
+            "ses_other": "Second session",
+        }
+        self.session_updated = {"ses_test": 3, "ses_other": 2}
         self.messages = [
             {
                 "info": {
@@ -218,22 +223,28 @@ class Handler(BaseHTTPRequestHandler):
             )
             self.send_json(messages, headers=headers)
         elif path == "/session":
-            self.send_json(
-                [
+            with self.state.lock:
+                sessions = [
                     {
                         "id": "ses_test",
                         "directory": "/repo",
-                        "title": "Integration session",
-                        "time": {"created": 1, "updated": 3},
+                        "title": self.state.session_titles["ses_test"],
+                        "time": {
+                            "created": 1,
+                            "updated": self.state.session_updated["ses_test"],
+                        },
                     },
                     {
                         "id": "ses_other",
                         "directory": "/repo",
-                        "title": "Second session",
-                        "time": {"created": 2, "updated": 2},
+                        "title": self.state.session_titles["ses_other"],
+                        "time": {
+                            "created": 2,
+                            "updated": self.state.session_updated["ses_other"],
+                        },
                     },
                 ]
-            )
+            self.send_json(sessions)
         elif path == "/permission":
             with self.state.lock:
                 pending = self.state.permission_pending
@@ -295,6 +306,34 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({"model": "mock/mock-model"})
         else:
             self.send_json({"message": f"Unknown path: {path}"}, status=404)
+
+    def do_PATCH(self):
+        path = urlparse(self.path).path
+        length = int(self.headers.get("Content-Length", "0"))
+        body = json.loads(self.rfile.read(length) or b"{}")
+        session_id = path.removeprefix("/session/")
+        if path != f"/session/{session_id}" or session_id not in self.state.session_titles:
+            self.send_json({"message": f"Unknown path: {path}"}, status=404)
+            return
+        title = body.get("title", "").strip()
+        if not title:
+            self.send_json({"message": "Title is required"}, status=400)
+            return
+        with self.state.lock:
+            self.state.session_titles[session_id] = title
+            self.state.session_updated[session_id] += 10
+            session = {
+                "id": session_id,
+                "directory": "/repo",
+                "title": title,
+                "time": {
+                    "created": 1 if session_id == "ses_test" else 2,
+                    "updated": self.state.session_updated[session_id],
+                },
+            }
+        self.state.record(f"session:rename:{session_id}:{title}")
+        self.state.emit({"type": "session.updated", "properties": {"info": session}})
+        self.send_json(session)
 
     def do_POST(self):
         path = urlparse(self.path).path

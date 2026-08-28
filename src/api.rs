@@ -56,6 +56,12 @@ pub enum Command {
         directory: String,
         title: Option<String>,
     },
+    RenameSession {
+        request_id: u64,
+        session_id: String,
+        directory: String,
+        title: String,
+    },
     SendPrompt {
         request_id: u64,
         session_id: String,
@@ -131,6 +137,11 @@ pub enum UiEvent {
         request_id: u64,
         result: Result<Session, String>,
     },
+    SessionRenamed {
+        request_id: u64,
+        session_id: String,
+        result: Result<Session, String>,
+    },
     PromptAccepted {
         request_id: u64,
         session_id: String,
@@ -204,9 +215,9 @@ impl ApiHandle {
             Command::Bootstrap | Command::LoadMessages { .. } | Command::LoadModels { .. } => {
                 &self.refresh_commands
             }
-            Command::CreateSession { .. } | Command::SendPrompt { .. } => {
-                &self.interaction_commands
-            }
+            Command::CreateSession { .. }
+            | Command::RenameSession { .. }
+            | Command::SendPrompt { .. } => &self.interaction_commands,
             Command::Abort { .. } => &self.abort_commands,
             Command::ReplyPermission { .. }
             | Command::ReplyQuestion { .. }
@@ -621,6 +632,15 @@ impl Api {
         serde_json::from_value(value).context("server returned an invalid session")
     }
 
+    fn rename_session(&self, session_id: &str, directory: &str, title: &str) -> Result<Session> {
+        let value = self.json(
+            Method::PATCH,
+            self.url(&format!("session/{session_id}"), Some(directory))?,
+            Some(&json!({ "title": title.trim() })),
+        )?;
+        serde_json::from_value(value).context("server returned an invalid session")
+    }
+
     fn send_prompt(
         &self,
         session_id: &str,
@@ -725,6 +745,18 @@ fn spawn_command_worker(api: Api, commands: Receiver<Command>, ui: Sender<UiEven
                     result: api
                         .create_session(&directory, title.as_deref())
                         .map_err(format_error),
+                },
+                Command::RenameSession {
+                    request_id,
+                    session_id,
+                    directory,
+                    title,
+                } => UiEvent::SessionRenamed {
+                    request_id,
+                    result: api
+                        .rename_session(&session_id, &directory, &title)
+                        .map_err(format_error),
+                    session_id,
                 },
                 Command::SendPrompt {
                     request_id,

@@ -121,6 +121,7 @@ Cloudflare Access credentials can also be supplied for one run with `OPENCODE_CF
 | `Ctrl+Tab` | Select the next tab |
 | `Ctrl+Shift+Tab` | Select the previous tab |
 | `Ctrl+1` through `Ctrl+9` | Select a tab by position |
+| `F2` | Rename the active session |
 | `Ctrl+U` | Attach files |
 | `Ctrl+,` | Open settings |
 
