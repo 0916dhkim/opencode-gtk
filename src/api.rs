@@ -5,7 +5,7 @@ use std::{
     path::PathBuf,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc,
+        Arc, Mutex,
     },
     thread,
     time::{Duration, Instant},
@@ -208,6 +208,38 @@ impl ApiHandle {
             ui_receiver,
             server_key,
         ))
+    }
+
+    pub fn preview() -> (Self, Receiver<UiEvent>, String) {
+        let (refresh_sender, refresh_receiver) = async_channel::unbounded();
+        let (interaction_sender, interaction_receiver) = async_channel::unbounded();
+        let (abort_sender, abort_receiver) = async_channel::unbounded();
+        let (urgent_sender, urgent_receiver) = async_channel::unbounded();
+        let (ui_sender, ui_receiver) = async_channel::bounded(UI_EVENT_CAPACITY);
+        let alive = Arc::new(AtomicBool::new(true));
+        let lifetime = Arc::new(ApiLifetime {
+            alive: alive.clone(),
+        });
+        let state = Arc::new(Mutex::new(crate::preview::State::new()));
+        spawn_preview_worker(refresh_receiver, ui_sender.clone(), state.clone());
+        spawn_preview_worker(interaction_receiver, ui_sender.clone(), state.clone());
+        spawn_preview_worker(abort_receiver, ui_sender.clone(), state.clone());
+        spawn_preview_worker(urgent_receiver, ui_sender.clone(), state);
+        let _ = ui_sender.send_blocking(UiEvent::Connection {
+            connected: true,
+            error: None,
+        });
+        (
+            Self {
+                refresh_commands: refresh_sender,
+                interaction_commands: interaction_sender,
+                abort_commands: abort_sender,
+                urgent_commands: urgent_sender,
+                _lifetime: lifetime,
+            },
+            ui_receiver,
+            crate::preview::SERVER_KEY.to_owned(),
+        )
     }
 
     pub fn send(&self, command: Command) {
@@ -713,6 +745,24 @@ impl Api {
     }
 }
 
+fn spawn_preview_worker(
+    commands: Receiver<Command>,
+    ui: Sender<UiEvent>,
+    state: Arc<Mutex<crate::preview::State>>,
+) {
+    thread::spawn(move || {
+        while let Ok(command) = commands.recv_blocking() {
+            let event = state
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .handle(command);
+            if ui.send_blocking(event).is_err() {
+                break;
+            }
+        }
+    });
+}
+
 fn spawn_command_worker(api: Api, commands: Receiver<Command>, ui: Sender<UiEvent>) {
     thread::spawn(move || {
         while let Ok(command) = commands.recv_blocking() {
@@ -1019,6 +1069,46 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn preview_handle_answers_without_a_server() {
+        let (api, events, key) = ApiHandle::preview();
+        assert_eq!(key, crate::preview::SERVER_KEY);
+        api.send(Command::Bootstrap);
+        api.send(Command::LoadModels {
+            directory: "/repo".into(),
+        });
+        let mut saw_bootstrap = false;
+        let mut saw_models = false;
+        for _ in 0..16 {
+            match events.recv_blocking() {
+                Ok(UiEvent::Connection {
+                    connected: true, ..
+                }) => {}
+                Ok(UiEvent::Bootstrap(Ok(bootstrap))) => {
+                    assert_eq!(bootstrap.version, "preview");
+                    assert!(!bootstrap.sessions.is_empty());
+                    saw_bootstrap = true;
+                }
+                Ok(UiEvent::ModelsLoaded {
+                    result: Ok(catalog),
+                    ..
+                }) => {
+                    assert!(catalog
+                        .models
+                        .iter()
+                        .any(|model| model.supports_attachments));
+                    saw_models = true;
+                }
+                Ok(_) => {}
+                Err(_) => panic!("preview event channel closed"),
+            }
+            if saw_bootstrap && saw_models {
+                return;
+            }
+        }
+        panic!("missing preview bootstrap or models");
+    }
 
     fn config(base_url: String, password: Option<&str>) -> ApiConfig {
         ApiConfig {

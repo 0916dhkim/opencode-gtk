@@ -265,23 +265,31 @@ pub fn launch(
     password: Option<String>,
     cf_access_client_id: Option<String>,
     cf_access_client_secret: Option<String>,
+    preview: bool,
 ) {
     register_icons();
     let state_path = default_path();
-    let (persisted, persistence_warning, persistence_error) =
+    let (persisted, persistence_warning, persistence_error) = if preview {
+        (PersistedState::default(), None, None)
+    } else {
         match PersistedState::load(&state_path) {
             Ok((persisted, warning)) => (persisted, warning, None),
             Err(error) => (PersistedState::default(), None, Some(error.to_string())),
-        };
+        }
+    };
     let base_url = server.unwrap_or_else(|| persisted.connection.server.clone());
-    let load_stored_cloudflare = persisted.connection.cloudflare_access
-        && base_url.trim_end_matches('/') == persisted.connection.server.trim_end_matches('/');
-    let (cloudflare_access, credential_warning) = initial_cloudflare_credentials(
-        &base_url,
-        load_stored_cloudflare,
-        cf_access_client_id,
-        cf_access_client_secret,
-    );
+    let (cloudflare_access, credential_warning) = if preview {
+        (None, None)
+    } else {
+        let load_stored_cloudflare = persisted.connection.cloudflare_access
+            && base_url.trim_end_matches('/') == persisted.connection.server.trim_end_matches('/');
+        initial_cloudflare_credentials(
+            &base_url,
+            load_stored_cloudflare,
+            cf_access_client_id,
+            cf_access_client_secret,
+        )
+    };
     let config = ApiConfig {
         base_url,
         username: username.unwrap_or_else(|| persisted.connection.username.clone()),
@@ -290,23 +298,36 @@ pub fn launch(
     };
     install_css();
     let widgets = build_widgets(application);
-    let (api, events, server_key) = match ApiHandle::start(config.clone()) {
-        Ok(started) => started,
-        Err(error) => {
-            widgets.status.set_label(&error.to_string());
-            widgets.status.add_css_class("error");
-            widgets.window.present();
-            return;
+    if preview {
+        widgets.window.set_title(Some("OpenCode Preview"));
+    }
+    let (api, events, server_key) = if preview {
+        ApiHandle::preview()
+    } else {
+        match ApiHandle::start(config.clone()) {
+            Ok(started) => started,
+            Err(error) => {
+                widgets.status.set_label(&error.to_string());
+                widgets.status.add_css_class("error");
+                widgets.window.present();
+                return;
+            }
         }
     };
 
-    let persistence_writes_blocked = persistence_error.is_some();
-    let had_server_state = persisted.servers.contains_key(&server_key);
-    let server_state = persisted
-        .servers
-        .get(&server_key)
-        .cloned()
-        .unwrap_or_default();
+    let persistence_writes_blocked = preview || persistence_error.is_some();
+    let (had_server_state, server_state) = if preview {
+        (true, crate::preview::server_state())
+    } else {
+        (
+            persisted.servers.contains_key(&server_key),
+            persisted
+                .servers
+                .get(&server_key)
+                .cloned()
+                .unwrap_or_default(),
+        )
+    };
     let state = restored_state(server_state);
 
     let controller = Rc::new(RefCell::new(Controller {

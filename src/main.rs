@@ -3,6 +3,7 @@ mod credentials;
 mod markdown;
 mod model;
 mod persist;
+mod preview;
 mod ui;
 
 use clap::Parser;
@@ -30,12 +31,21 @@ struct Args {
     /// Cloudflare Access service-token secret. Prefer the system keyring or environment variable.
     #[arg(long, env = "OPENCODE_CF_ACCESS_CLIENT_SECRET")]
     cf_access_client_secret: Option<String>,
+
+    /// Show canned UI without contacting a server.
+    #[arg(long)]
+    preview: bool,
 }
 
 fn main() -> gtk::glib::ExitCode {
     let args = Args::parse();
+    let application_id = if args.preview {
+        "ai.opencode.Gtk.Preview"
+    } else {
+        "ai.opencode.Gtk"
+    };
     let application = gtk::Application::builder()
-        .application_id("ai.opencode.Gtk")
+        .application_id(application_id)
         .build();
 
     application.connect_activate(move |application| {
@@ -50,6 +60,7 @@ fn main() -> gtk::glib::ExitCode {
             args.password.clone(),
             args.cf_access_client_id.clone(),
             args.cf_access_client_secret.clone(),
+            args.preview,
         );
     });
 

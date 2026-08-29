@@ -137,6 +137,12 @@ cargo clippy --all-targets -- -D warnings
 cargo test --all-targets
 ```
 
+`--preview` opens the real connected UI with canned sessions and no network:
+
+```bash
+cargo run -- --preview
+```
+
 The included `Dockerfile` provides a reproducible Debian build environment when GTK development libraries are not installed locally:
 
 ```bash
