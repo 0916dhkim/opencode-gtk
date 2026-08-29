@@ -2316,12 +2316,19 @@ impl Controller {
                 }
             });
             let drag_tab = tab.clone();
-            drag.connect_drag_begin(move |_, _| {
+            drag.connect_drag_begin(move |source, _| {
+                let paintable = gtk::WidgetPaintable::new(Some(&drag_tab));
+                source.set_icon(
+                    Some(&paintable),
+                    drag_tab.width() / 2,
+                    drag_tab.height() / 2,
+                );
                 drag_tab.add_css_class("dragging");
             });
             let drag_tab = tab.clone();
             drag.connect_drag_end(move |_, _, _| {
                 drag_tab.remove_css_class("dragging");
+                clear_tab_drop_indicators(drag_tab.parent().as_ref());
             });
             tab.add_controller(drag);
 
@@ -2329,8 +2336,7 @@ impl Controller {
             drop_target.connect_motion(|target, _, y| {
                 if let Some(widget) = target.widget() {
                     let after = y >= f64::from(widget.height()) / 2.0;
-                    widget.remove_css_class(if after { "drop-before" } else { "drop-after" });
-                    widget.add_css_class(if after { "drop-after" } else { "drop-before" });
+                    set_tab_drop_indicator(&widget, after);
                 }
                 gdk::DragAction::MOVE
             });
@@ -5003,6 +5009,33 @@ fn session_notification_id(server_key: &str, session_id: &str) -> String {
 
 fn should_follow_transcript(update: TranscriptUpdate, at_bottom: bool) -> bool {
     update == TranscriptUpdate::Activate || at_bottom
+}
+
+fn clear_tab_drop_indicators(parent: Option<&gtk::Widget>) {
+    let Some(parent) = parent else {
+        return;
+    };
+    let mut child = parent.first_child();
+    while let Some(widget) = child {
+        widget.remove_css_class("drop-before");
+        widget.remove_css_class("drop-after");
+        child = widget.next_sibling();
+    }
+}
+
+fn set_tab_drop_indicator(widget: &gtk::Widget, after: bool) {
+    clear_tab_drop_indicators(widget.parent().as_ref());
+    if widget.has_css_class("dragging") {
+        return;
+    }
+    if after {
+        match widget.next_sibling() {
+            Some(next) if !next.has_css_class("dragging") => next.add_css_class("drop-before"),
+            _ => widget.add_css_class("drop-after"),
+        }
+    } else {
+        widget.add_css_class("drop-before");
+    }
 }
 
 fn move_tab(tabs: &mut Vec<String>, source_id: &str, target_id: &str, after: bool) -> bool {
