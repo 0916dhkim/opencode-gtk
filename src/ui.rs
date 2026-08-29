@@ -32,6 +32,7 @@ const ICON_SEND: &str = "opencode-send-symbolic";
 const ICON_STOP: &str = "opencode-stop-symbolic";
 const ICON_EDIT: &str = "opencode-edit-symbolic";
 const ICON_CLOSE: &str = "opencode-close-symbolic";
+const ICON_ADD: &str = "opencode-add-symbolic";
 const COMPOSER_ICON_PX: i32 = 22;
 const TAB_ICON_PX: i32 = 16;
 const BOTTOM_EPSILON: f64 = 2.0;
@@ -548,7 +549,18 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
     let session_button = gtk::Button::with_label("Sessions");
     session_button.set_tooltip_text(Some("Open sessions (Ctrl+P)"));
     session_button.add_css_class("flat");
-    let new_button = gtk::Button::with_label("New session");
+    let new_button = gtk::Button::new();
+    let new_row = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    let new_plus = icon_image(ICON_ADD, 12);
+    new_plus.add_css_class("session-tab-status");
+    new_plus.set_halign(gtk::Align::Center);
+    new_plus.set_valign(gtk::Align::Center);
+    let new_label = gtk::Label::new(Some("New session"));
+    new_label.set_xalign(0.0);
+    new_label.add_css_class("session-tab-title");
+    new_row.append(&new_plus);
+    new_row.append(&new_label);
+    new_button.set_child(Some(&new_row));
     new_button.set_tooltip_text(Some("New session (Ctrl+T)"));
     new_button.add_css_class("sidebar-new-session");
     let settings_button = gtk::Button::with_label("Settings");
@@ -575,12 +587,12 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
     new_button.set_margin_start(8);
     new_button.set_margin_end(8);
     new_button.set_margin_top(8);
-    new_button.set_margin_bottom(4);
+    new_button.set_margin_bottom(0);
     sidebar.append(&new_button);
     let tab_bar = gtk::Box::new(gtk::Orientation::Vertical, 2);
     tab_bar.set_margin_start(8);
     tab_bar.set_margin_end(8);
-    tab_bar.set_margin_top(4);
+    tab_bar.set_margin_top(2);
     tab_bar.set_margin_bottom(8);
     let tab_scroll = gtk::ScrolledWindow::builder()
         .hscrollbar_policy(gtk::PolicyType::Never)

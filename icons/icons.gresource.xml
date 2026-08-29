@@ -6,5 +6,6 @@
     <file alias="scalable/actions/opencode-stop-symbolic.svg">stop.svg</file>
     <file alias="scalable/actions/opencode-edit-symbolic.svg">edit.svg</file>
     <file alias="scalable/actions/opencode-close-symbolic.svg">close.svg</file>
+    <file alias="scalable/actions/opencode-add-symbolic.svg">add.svg</file>
   </gresource>
 </gresources>

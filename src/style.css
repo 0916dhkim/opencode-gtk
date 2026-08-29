@@ -30,7 +30,19 @@ headerbar {
 }
 
 .sidebar-new-session {
-  min-height: 34px;
+  min-height: 36px;
+  padding: 0;
+  color: #92999f;
+  background: transparent;
+  background-image: none;
+  box-shadow: none;
+  border: none;
+  border-radius: 7px;
+}
+
+.sidebar-new-session:hover {
+  background: #191d20;
+  background-image: none;
 }
 
 .modal-heading {

@@ -22,6 +22,14 @@ headerbar {
   border-right-color: #d8d4cc;
 }
 
+.sidebar-new-session {
+  color: #666b69;
+}
+
+.sidebar-new-session:hover {
+  background: #e5e2dc;
+}
+
 .session-tab button,
 .session-tab-title {
   color: #666b69;
