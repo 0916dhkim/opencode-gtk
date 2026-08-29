@@ -139,6 +139,17 @@ headerbar {
   margin-bottom: 38px;
 }
 
+.session-tab.drag-preview {
+  min-width: 220px;
+  padding-right: 10px;
+  background: #191d20;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.48);
+}
+
+.session-tab.drag-preview.active {
+  background: #22262a;
+}
+
 .session-tab-status {
   margin-left: 8px;
   margin-right: 3px;

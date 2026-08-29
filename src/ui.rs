@@ -2316,13 +2316,13 @@ impl Controller {
                 }
             });
             let drag_tab = tab.clone();
-            drag.connect_drag_begin(move |source, _| {
-                let paintable = gtk::WidgetPaintable::new(Some(&drag_tab));
-                source.set_icon(
-                    Some(&paintable),
-                    drag_tab.width() / 2,
-                    drag_tab.height() / 2,
-                );
+            let drag_title = title.clone();
+            let drag_active = active;
+            drag.connect_drag_begin(move |_, drag| {
+                let icon = gtk::DragIcon::for_drag(&drag);
+                let preview = tab_drag_preview(&drag_title, drag_active);
+                preview.set_size_request(drag_tab.width().max(180), drag_tab.height().max(36));
+                icon.set_child(Some(&preview));
                 drag_tab.add_css_class("dragging");
             });
             let drag_tab = tab.clone();
@@ -5036,6 +5036,23 @@ fn set_tab_drop_indicator(widget: &gtk::Widget, after: bool) {
     } else {
         widget.add_css_class("drop-before");
     }
+}
+
+fn tab_drag_preview(title: &str, active: bool) -> gtk::Box {
+    let preview = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    preview.add_css_class("session-tab");
+    preview.add_css_class("drag-preview");
+    if active {
+        preview.add_css_class("active");
+    }
+    let label = gtk::Label::new(Some(title));
+    label.set_xalign(0.0);
+    label.set_hexpand(true);
+    label.set_ellipsize(pango::EllipsizeMode::End);
+    label.set_max_width_chars(24);
+    label.add_css_class("session-tab-title");
+    preview.append(&label);
+    preview
 }
 
 fn move_tab(tabs: &mut Vec<String>, source_id: &str, target_id: &str, after: bool) -> bool {
