@@ -92,11 +92,13 @@ headerbar {
 }
 
 .session-tab button.session-tab-action {
-  min-width: 24px;
-  min-height: 24px;
+  min-width: 22px;
+  min-height: 22px;
+  max-width: 22px;
+  max-height: 22px;
   margin: 2px 1px;
   padding: 0;
-  border-radius: 999px;
+  border-radius: 50%;
   opacity: 0.45;
 }
 
