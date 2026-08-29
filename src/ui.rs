@@ -33,7 +33,6 @@ const ICON_STOP: &str = "opencode-stop-symbolic";
 const ICON_EDIT: &str = "opencode-edit-symbolic";
 const ICON_CLOSE: &str = "opencode-close-symbolic";
 const COMPOSER_ICON_PX: i32 = 22;
-const COMPOSER_ATTACH_ICON_PX: i32 = 28;
 const TAB_ICON_PX: i32 = 16;
 const BOTTOM_EPSILON: f64 = 2.0;
 const MAX_INLINE_IMAGE_BYTES: usize = 25 * 1024 * 1024;
@@ -668,7 +667,7 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
     let attachment_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
     attachment_box.set_visible(false);
     let attach_button = gtk::Button::new();
-    attach_button.set_child(Some(&paperclip_icon(COMPOSER_ATTACH_ICON_PX)));
+    attach_button.set_child(Some(&paperclip_icon(COMPOSER_ICON_PX)));
     attach_button.set_tooltip_text(Some("Attach files (Ctrl+U)"));
     attach_button.add_css_class("composer-action");
     let model_store = gtk::StringList::new(&["Loading models..."]);
