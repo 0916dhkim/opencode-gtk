@@ -2088,10 +2088,12 @@ impl Controller {
             title_label.add_css_class("session-tab-title");
             let rename = icon_button(ICON_EDIT, TAB_ICON_PX);
             rename.set_tooltip_text(Some("Rename session (F2)"));
+            rename.set_valign(gtk::Align::Center);
             rename.add_css_class("flat");
             rename.add_css_class("session-tab-action");
             let close = icon_button(ICON_CLOSE, TAB_ICON_PX);
             close.set_tooltip_text(Some("Close tab"));
+            close.set_valign(gtk::Align::Center);
             close.add_css_class("flat");
             close.add_css_class("session-tab-action");
             close.add_css_class("session-tab-close");
