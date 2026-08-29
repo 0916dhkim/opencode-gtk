@@ -305,6 +305,28 @@ listview.transcript > row:focus {
   min-width: 34px;
   min-height: 34px;
   padding: 0;
+  background: transparent;
+  background-image: none;
+  box-shadow: none;
+  border: none;
+  border-radius: 8px;
+}
+
+.composer-action:hover {
+  background: #22262a;
+  background-image: none;
+}
+
+.composer-frame button.composer-action.suggested-action {
+  background: #d29b52;
+  background-image: none;
+  color: #17130e;
+  border-radius: 999px;
+}
+
+.composer-frame button.composer-action.suggested-action:hover {
+  background: #c4923a;
+  background-image: none;
 }
 
 .composer-input {
@@ -316,6 +338,26 @@ listview.transcript > row:focus {
 .composer-frame dropdown,
 .composer-frame button {
   min-height: 32px;
+}
+
+.composer-frame dropdown.composer-menu {
+  background: transparent;
+  box-shadow: none;
+}
+
+.composer-frame dropdown.composer-menu > button {
+  min-height: 32px;
+  padding: 0 8px;
+  background: transparent;
+  background-image: none;
+  box-shadow: none;
+  border: none;
+  border-radius: 8px;
+}
+
+.composer-frame dropdown.composer-menu > button:hover {
+  background: #22262a;
+  background-image: none;
 }
 
 .attachment-chip {

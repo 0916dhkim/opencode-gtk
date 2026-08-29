@@ -704,10 +704,11 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
     attach_button.add_css_class("composer-action");
     let model_store = gtk::StringList::new(&["Loading models..."]);
     let model_dropdown = gtk::DropDown::new(Some(model_store.clone()), None::<gtk::Expression>);
-    model_dropdown.set_hexpand(true);
+    model_dropdown.add_css_class("composer-menu");
     model_dropdown.set_sensitive(false);
     let variant_store = gtk::StringList::new(&["Default"]);
     let variant_dropdown = gtk::DropDown::new(Some(variant_store.clone()), None::<gtk::Expression>);
+    variant_dropdown.add_css_class("composer-menu");
     variant_dropdown.set_sensitive(false);
     variant_dropdown.set_tooltip_text(Some("Reasoning level"));
     let send_button = icon_button(ICON_SEND, COMPOSER_ICON_PX);
@@ -716,10 +717,13 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
     send_button.set_tooltip_text(Some("Send prompt"));
     send_button.set_sensitive(false);
 
-    let controls = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    let controls = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    let controls_grow = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    controls_grow.set_hexpand(true);
     controls.append(&attach_button);
     controls.append(&model_dropdown);
     controls.append(&variant_dropdown);
+    controls.append(&controls_grow);
     controls.append(&send_button);
 
     let composer_box = gtk::Box::new(gtk::Orientation::Vertical, 8);

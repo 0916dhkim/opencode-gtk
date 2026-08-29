@@ -189,6 +189,23 @@ listview.transcript > row:focus {
   border-color: #cbc7bf;
 }
 
+.composer-action:hover {
+  background: #eeebe4;
+}
+
+.composer-frame button.composer-action.suggested-action {
+  background: #c4923a;
+  color: #1a1713;
+}
+
+.composer-frame button.composer-action.suggested-action:hover {
+  background: #b88732;
+}
+
+.composer-frame dropdown.composer-menu > button:hover {
+  background: #eeebe4;
+}
+
 .composer-input {
   color: #262421;
   caret-color: #9c641a;
