@@ -1541,6 +1541,7 @@ dependencies = [
  "anyhow",
  "async-channel",
  "base64",
+ "cairo-rs",
  "clap",
  "dark-light",
  "dirs",

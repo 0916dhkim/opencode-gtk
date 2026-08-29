@@ -28,7 +28,6 @@ const STREAM_FRAME: Duration = Duration::from_millis(33);
 const BOOTSTRAP_RETRY_MIN: Duration = Duration::from_secs(2);
 const BOOTSTRAP_RETRY_MAX: Duration = Duration::from_secs(30);
 const SESSION_PICKER_LIMIT: usize = 200;
-const ICON_ATTACH: &str = "opencode-attach-symbolic";
 const ICON_SEND: &str = "opencode-send-symbolic";
 const ICON_STOP: &str = "opencode-stop-symbolic";
 const ICON_EDIT: &str = "opencode-edit-symbolic";
@@ -208,6 +207,43 @@ fn icon_button(name: &str, pixel_size: i32) -> gtk::Button {
     let button = gtk::Button::new();
     button.set_child(Some(&icon_image(name, pixel_size)));
     button
+}
+
+fn paperclip_icon(pixel_size: i32) -> gtk::DrawingArea {
+    let area = gtk::DrawingArea::builder()
+        .content_width(pixel_size)
+        .content_height(pixel_size)
+        .can_target(false)
+        .build();
+    area.set_draw_func(|widget, cr, width, height| {
+        draw_paperclip(widget, cr, width, height);
+    });
+    area
+}
+
+fn draw_paperclip(widget: &gtk::DrawingArea, cr: &cairo::Context, width: i32, height: i32) {
+    let color = widget
+        .parent()
+        .map(|parent| parent.style_context().color())
+        .unwrap_or_else(|| widget.style_context().color());
+    cr.set_source_rgba(
+        f64::from(color.red()),
+        f64::from(color.green()),
+        f64::from(color.blue()),
+        f64::from(color.alpha()),
+    );
+    let size = f64::from(width.min(height));
+    let s = size / 24.0;
+    cr.set_line_width(1.7 * s);
+    cr.set_line_cap(cairo::LineCap::Round);
+    cr.set_line_join(cairo::LineJoin::Round);
+    cr.move_to(18.4 * s, 4.6 * s);
+    cr.line_to(18.4 * s, 15.2 * s);
+    cr.arc(12.0 * s, 15.2 * s, 6.4 * s, 0.0, std::f64::consts::PI);
+    cr.line_to(5.6 * s, 6.6 * s);
+    cr.arc(9.4 * s, 6.6 * s, 3.8 * s, std::f64::consts::PI, 0.0);
+    cr.line_to(13.2 * s, 15.0 * s);
+    let _ = cr.stroke();
 }
 
 fn set_button_icon(button: &gtk::Button, name: &str, pixel_size: i32) {
@@ -627,7 +663,8 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
 
     let attachment_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
     attachment_box.set_visible(false);
-    let attach_button = icon_button(ICON_ATTACH, COMPOSER_ATTACH_ICON_PX);
+    let attach_button = gtk::Button::new();
+    attach_button.set_child(Some(&paperclip_icon(COMPOSER_ATTACH_ICON_PX)));
     attach_button.set_tooltip_text(Some("Attach files (Ctrl+U)"));
     attach_button.add_css_class("composer-action");
     let model_store = gtk::StringList::new(&["Loading models..."]);
