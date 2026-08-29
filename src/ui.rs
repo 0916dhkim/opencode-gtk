@@ -134,6 +134,12 @@ struct Widgets {
     variant_dropdown: gtk::DropDown,
     send_button: gtk::Button,
     transcript_user_scrolling: Rc<Cell<bool>>,
+    tab_dnd: Rc<RefCell<TabDnd>>,
+}
+
+#[derive(Default)]
+struct TabDnd {
+    index: Option<usize>,
 }
 
 struct Controller {
@@ -788,6 +794,7 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
         variant_dropdown,
         send_button,
         transcript_user_scrolling,
+        tab_dnd: Rc::new(RefCell::new(TabDnd::default())),
     }
 }
 
@@ -2181,6 +2188,7 @@ impl Controller {
     }
 
     fn refresh_tabs(&mut self, weak: &Weak<RefCell<Self>>) {
+        self.widgets.tab_dnd.borrow_mut().index = None;
         clear_box(&self.widgets.tab_bar);
         let mut previous_inactive = false;
         for id in self.state.tabs.clone() {
@@ -2319,17 +2327,28 @@ impl Controller {
             let drag_tab = tab.clone();
             let drag_title = title.clone();
             let drag_active = active;
+            let dnd = self.widgets.tab_dnd.clone();
+            let weak_begin = weak.clone();
             drag.connect_drag_begin(move |_, drag| {
                 let icon = gtk::DragIcon::for_drag(&drag);
                 let preview = tab_drag_preview(&drag_title, drag_active);
                 preview.set_size_request(drag_tab.width().max(180), drag_tab.height().max(36));
                 icon.set_child(Some(&preview));
+                let index = visible_tab_index(&drag_tab).unwrap_or(0);
                 drag_tab.add_css_class("dragging");
+                drag_tab.set_visible(false);
+                if let Some(bar) = drag_tab
+                    .parent()
+                    .and_then(|parent| parent.downcast::<gtk::Box>().ok())
+                {
+                    place_drop_slot(&bar, index, &dnd, false, &weak_begin);
+                }
             });
             let drag_tab = tab.clone();
             let weak_end = weak.clone();
             drag.connect_drag_end(move |_, _, success| {
                 drag_tab.remove_css_class("dragging");
+                drag_tab.set_visible(true);
                 if !success {
                     if let Some(controller) = weak_end.upgrade() {
                         let mut this = controller.borrow_mut();
@@ -2341,22 +2360,35 @@ impl Controller {
             tab.add_controller(drag);
 
             let drop_target = gtk::DropTarget::new(String::static_type(), gdk::DragAction::MOVE);
-            drop_target.connect_motion(|target, _, y| {
+            let dnd = self.widgets.tab_dnd.clone();
+            let weak_motion = weak.clone();
+            drop_target.connect_motion(move |target, _, y| {
                 if let Some(widget) = target.widget() {
                     let after = y >= f64::from(widget.height()) / 2.0;
-                    slide_dragging_tab(&widget, after);
+                    if let Some(bar) = widget
+                        .parent()
+                        .and_then(|parent| parent.downcast::<gtk::Box>().ok())
+                    {
+                        place_drop_slot(
+                            &bar,
+                            insert_index_for_target(&widget, after),
+                            &dnd,
+                            true,
+                            &weak_motion,
+                        );
+                    }
                 }
                 gdk::DragAction::MOVE
             });
             let weak_drop = weak.clone();
             drop_target.connect_drop(move |_, value, _, _| {
-                if value.get::<String>().is_err() {
+                let Ok(source_id) = value.get::<String>() else {
                     return false;
-                }
+                };
                 let Some(controller) = weak_drop.upgrade() else {
                     return false;
                 };
-                Self::commit_tab_order(&controller)
+                Self::commit_tab_order(&controller, &source_id)
             });
             tab.add_controller(drop_target);
             self.widgets.tab_bar.append(&tab);
@@ -2428,9 +2460,19 @@ impl Controller {
         this.widgets.composer.grab_focus();
     }
 
-    fn commit_tab_order(controller: &Rc<RefCell<Self>>) -> bool {
+    fn commit_tab_order(controller: &Rc<RefCell<Self>>, source_id: &str) -> bool {
         let mut this = controller.borrow_mut();
-        let ids = tab_bar_ids(&this.widgets.tab_bar);
+        let mut ids = visible_tab_ids(&this.widgets.tab_bar);
+        let index = this
+            .widgets
+            .tab_dnd
+            .borrow()
+            .index
+            .unwrap_or(ids.len())
+            .min(ids.len());
+        if !ids.iter().any(|id| id == source_id) {
+            ids.insert(index, source_id.to_owned());
+        }
         if ids.is_empty() || ids == this.state.tabs {
             return false;
         }
@@ -5006,55 +5048,145 @@ fn should_follow_transcript(update: TranscriptUpdate, at_bottom: bool) -> bool {
     update == TranscriptUpdate::Activate || at_bottom
 }
 
-fn child_with_class(parent: &gtk::Widget, class: &str) -> Option<gtk::Widget> {
-    let mut child = parent.first_child();
-    while let Some(widget) = child {
-        if widget.has_css_class(class) {
-            return Some(widget);
-        }
-        child = widget.next_sibling();
-    }
-    None
+const TAB_SLOT_MS: u32 = 180;
+
+fn is_visible_session_tab(widget: &gtk::Widget) -> bool {
+    widget.has_css_class("session-tab") && widget.is_visible()
 }
 
-fn tab_bar_ids(bar: &gtk::Box) -> Vec<String> {
+fn visible_tab_ids(bar: &gtk::Box) -> Vec<String> {
     let mut ids = Vec::new();
     let mut child = bar.first_child();
     while let Some(widget) = child {
-        let name = widget.widget_name();
-        if !name.is_empty() {
-            ids.push(name.to_string());
+        if is_visible_session_tab(&widget) {
+            let name = widget.widget_name();
+            if !name.is_empty() {
+                ids.push(name.to_string());
+            }
         }
         child = widget.next_sibling();
     }
     ids
 }
 
-fn slide_dragging_tab(target: &gtk::Widget, after: bool) {
-    if target.has_css_class("dragging") {
-        return;
+fn visible_tab_index(tab: &impl IsA<gtk::Widget>) -> Option<usize> {
+    let tab = tab.upcast_ref::<gtk::Widget>();
+    let parent = tab.parent()?;
+    let mut index = 0;
+    let mut child = parent.first_child();
+    while let Some(widget) = child {
+        if &widget == tab {
+            return Some(index);
+        }
+        if is_visible_session_tab(&widget) {
+            index += 1;
+        }
+        child = widget.next_sibling();
     }
-    let Some(parent) = target.parent() else {
-        return;
-    };
-    let Some(dragging) = child_with_class(&parent, "dragging") else {
-        return;
-    };
-    let desired_prev = if after {
-        Some(target.clone())
+    None
+}
+
+fn insert_index_for_target(target: &gtk::Widget, after: bool) -> usize {
+    let index = visible_tab_index(target).unwrap_or(0);
+    if after {
+        index + 1
     } else {
-        target.prev_sibling()
-    };
-    if desired_prev.as_ref() == Some(&dragging) || dragging.prev_sibling() == desired_prev {
+        index
+    }
+}
+
+fn tab_drop_slot() -> gtk::Revealer {
+    let child = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    child.add_css_class("tab-drop-slot");
+    child.set_hexpand(true);
+    child.set_size_request(-1, 36);
+    let slot = gtk::Revealer::new();
+    slot.add_css_class("tab-drop-slot");
+    slot.set_transition_type(gtk::RevealerTransitionType::SlideDown);
+    slot.set_transition_duration(TAB_SLOT_MS);
+    slot.set_child(Some(&child));
+    slot
+}
+
+fn close_drop_slots(bar: &gtk::Box) {
+    let mut child = bar.first_child();
+    while let Some(widget) = child {
+        let next = widget.next_sibling();
+        if let Ok(slot) = widget.downcast::<gtk::Revealer>() {
+            if slot.has_css_class("tab-drop-slot") {
+                if slot.reveals_child() {
+                    let bar = bar.clone();
+                    let slot_rm = slot.clone();
+                    glib::timeout_add_local_once(
+                        Duration::from_millis(u64::from(TAB_SLOT_MS)),
+                        move || {
+                            if slot_rm.parent().is_some() && !slot_rm.reveals_child() {
+                                bar.remove(&slot_rm);
+                            }
+                        },
+                    );
+                    slot.set_reveal_child(false);
+                } else if slot.parent().is_some() {
+                    bar.remove(&slot);
+                }
+            }
+        }
+        child = next;
+    }
+}
+
+fn insert_slot_at(bar: &gtk::Box, index: usize, slot: &gtk::Revealer) {
+    let mut tab_index = 0;
+    let mut child = bar.first_child();
+    while let Some(widget) = child {
+        if is_visible_session_tab(&widget) {
+            if tab_index == index {
+                match widget.prev_sibling() {
+                    Some(sibling) => bar.insert_child_after(slot, Some(&sibling)),
+                    None => bar.insert_child_after(slot, None::<&gtk::Widget>),
+                }
+                return;
+            }
+            tab_index += 1;
+        }
+        child = widget.next_sibling();
+    }
+    bar.append(slot);
+}
+
+fn place_drop_slot(
+    bar: &gtk::Box,
+    index: usize,
+    dnd: &Rc<RefCell<TabDnd>>,
+    animate: bool,
+    weak: &Weak<RefCell<Controller>>,
+) {
+    if dnd.borrow().index == Some(index) {
         return;
     }
-    let Ok(bar) = parent.downcast::<gtk::Box>() else {
-        return;
-    };
-    match desired_prev {
-        Some(sibling) => bar.reorder_child_after(&dragging, Some(&sibling)),
-        None => bar.reorder_child_after(&dragging, None::<&gtk::Widget>),
+    close_drop_slots(bar);
+    let slot = tab_drop_slot();
+    let drop_target = gtk::DropTarget::new(String::static_type(), gdk::DragAction::MOVE);
+    let weak_drop = weak.clone();
+    drop_target.connect_drop(move |_, value, _, _| {
+        let Ok(source_id) = value.get::<String>() else {
+            return false;
+        };
+        let Some(controller) = weak_drop.upgrade() else {
+            return false;
+        };
+        Controller::commit_tab_order(&controller, &source_id)
+    });
+    drop_target.connect_motion(|_, _, _| gdk::DragAction::MOVE);
+    slot.add_controller(drop_target);
+    if animate {
+        insert_slot_at(bar, index, &slot);
+        slot.set_reveal_child(true);
+    } else {
+        slot.set_reveal_child(true);
+        insert_slot_at(bar, index, &slot);
     }
+    dnd.borrow_mut().index = Some(index);
 }
 
 fn tab_drag_preview(title: &str, active: bool) -> gtk::Box {

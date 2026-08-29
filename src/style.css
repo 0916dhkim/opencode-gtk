@@ -126,6 +126,13 @@ headerbar {
   opacity: 0;
 }
 
+.tab-drop-slot {
+  min-height: 36px;
+  border-radius: 7px;
+  background: alpha(#e5b567, 0.14);
+  box-shadow: inset 0 0 0 1px #e5b567;
+}
+
 .session-tab.drag-preview {
   min-width: 220px;
   padding-right: 10px;
