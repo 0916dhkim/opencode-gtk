@@ -317,6 +317,11 @@ listview.transcript > row:focus {
   background-image: none;
 }
 
+.composer-frame button.composer-action {
+  min-width: 34px;
+  min-height: 34px;
+}
+
 .composer-frame button.composer-action.suggested-action {
   background: #d29b52;
   background-image: none;
