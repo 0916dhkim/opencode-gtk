@@ -154,6 +154,7 @@ struct Controller {
     rendered_rows: Vec<String>,
     transcript_at_bottom: bool,
     transcript_scroll_generation: u64,
+    transcript_scroll_value: f64,
     transcript_edge_refresh_scheduled: bool,
     current_models: Vec<ModelOption>,
     current_variants: Vec<Option<String>>,
@@ -361,6 +362,7 @@ pub fn launch(
         rendered_rows: Vec::new(),
         transcript_at_bottom: true,
         transcript_scroll_generation: 0,
+        transcript_scroll_value: 0.0,
         transcript_edge_refresh_scheduled: false,
         current_models: Vec::new(),
         current_variants: Vec::new(),
@@ -966,23 +968,42 @@ fn wire_callbacks(controller: &Rc<RefCell<Controller>>) {
             }
         });
 
+    let transcript_adjustment = controller.borrow().widgets.transcript_scroll.vadjustment();
     let weak = Rc::downgrade(controller);
-    controller
-        .borrow()
-        .widgets
-        .transcript_scroll
-        .vadjustment()
-        .connect_value_changed(move |adjustment| {
-            let Some(controller) = weak.upgrade() else {
-                return;
-            };
-            let Ok(mut controller) = controller.try_borrow_mut() else {
-                return;
-            };
-            controller.transcript_at_bottom = adjustment_at_bottom(adjustment);
-            controller.refresh_load_earlier_visibility();
-            controller.queue_transcript_edge_refresh();
-        });
+    transcript_adjustment.connect_value_changed(move |adjustment| {
+        let Some(controller) = weak.upgrade() else {
+            return;
+        };
+        let Ok(mut controller) = controller.try_borrow_mut() else {
+            return;
+        };
+        let value = adjustment.value();
+        let (pinned, invalidate) = apply_bottom_pin(
+            controller.transcript_at_bottom,
+            adjustment_at_bottom(adjustment),
+            controller.transcript_scroll_value,
+            value,
+        );
+        controller.transcript_at_bottom = pinned;
+        if invalidate {
+            controller.transcript_scroll_generation += 1;
+        }
+        controller.transcript_scroll_value = value;
+        controller.refresh_load_earlier_visibility();
+        controller.queue_transcript_edge_refresh();
+    });
+    let weak = Rc::downgrade(controller);
+    transcript_adjustment.connect_changed(move |adjustment| {
+        let Some(controller) = weak.upgrade() else {
+            return;
+        };
+        let stick = controller
+            .try_borrow()
+            .is_ok_and(|controller| controller.transcript_at_bottom);
+        if stick {
+            scroll_adjustment_to_bottom(adjustment);
+        }
+    });
 
     let weak = Rc::downgrade(controller);
     controller
@@ -2332,8 +2353,7 @@ impl Controller {
             }
             let load_models = !this.state.catalogs.contains_key(&session.directory)
                 && this.state.loading_models.insert(session.directory.clone());
-            this.transcript_at_bottom = true;
-            this.transcript_scroll_generation += 1;
+            this.pin_transcript_to_bottom();
             if active_changed {
                 this.persist_state();
             }
@@ -2735,6 +2755,11 @@ impl Controller {
             }));
     }
 
+    fn pin_transcript_to_bottom(&mut self) {
+        self.transcript_at_bottom = true;
+        self.transcript_scroll_generation += 1;
+    }
+
     fn refresh_transcript(&mut self, update: TranscriptUpdate) {
         let active = self.state.active.clone();
         let rows = active
@@ -2746,8 +2771,7 @@ impl Controller {
         let old_upper = adjustment.upper();
         let old_value = adjustment.value();
         if transcript_session_changed(self.rendered_session.as_deref(), active.as_deref()) {
-            self.transcript_at_bottom = true;
-            self.transcript_scroll_generation += 1;
+            self.pin_transcript_to_bottom();
         }
         let follow_bottom = self.transcript_at_bottom;
         sync_transcript_list(
@@ -2808,33 +2832,29 @@ impl Controller {
                 }
             });
         } else if should_follow_transcript(update, follow_bottom) {
-            let force_bottom = update == TranscriptUpdate::Activate;
             glib::idle_add_local_once(move || {
                 let should_follow = weak.upgrade().is_some_and(|controller| {
                     let controller = controller.borrow();
                     controller.transcript_scroll_generation == generation
                         && controller.state.active == active
-                        && (force_bottom || controller.transcript_at_bottom)
                 });
                 if should_follow {
                     scroll_adjustment_to_bottom(&adjustment);
-                    if force_bottom {
-                        let adjustment = adjustment.clone();
-                        let weak = weak.clone();
-                        glib::timeout_add_local_once(Duration::from_millis(50), move || {
-                            let still_active = weak.upgrade().is_some_and(|controller| {
-                                let controller = controller.borrow();
-                                controller.transcript_scroll_generation == generation
-                                    && controller.state.active == active
-                            });
-                            if still_active {
-                                scroll_adjustment_to_bottom(&adjustment);
-                                if let Some(controller) = weak.upgrade() {
-                                    controller.borrow_mut().queue_transcript_edge_refresh();
-                                }
-                            }
+                    let adjustment = adjustment.clone();
+                    let weak = weak.clone();
+                    glib::timeout_add_local_once(Duration::from_millis(50), move || {
+                        let still_active = weak.upgrade().is_some_and(|controller| {
+                            let controller = controller.borrow();
+                            controller.transcript_scroll_generation == generation
+                                && controller.state.active == active
                         });
-                    }
+                        if still_active {
+                            scroll_adjustment_to_bottom(&adjustment);
+                            if let Some(controller) = weak.upgrade() {
+                                controller.borrow_mut().queue_transcript_edge_refresh();
+                            }
+                        }
+                    });
                 }
             });
         }
@@ -3140,6 +3160,7 @@ impl Controller {
                     this.refresh_tabs(&weak);
                 }
                 this.refresh_composer();
+                this.pin_transcript_to_bottom();
                 this.refresh_transcript(TranscriptUpdate::Content);
                 Some(command)
             }
@@ -3654,8 +3675,7 @@ impl Controller {
             this.state = restored_state(server_state);
             this.rendered_session = None;
             this.rendered_rows.clear();
-            this.transcript_at_bottom = true;
-            this.transcript_scroll_generation += 1;
+            this.pin_transcript_to_bottom();
             this.current_models.clear();
             this.current_variants.clear();
             this.pending_events.clear();
@@ -4846,6 +4866,16 @@ fn viewport_at_top(value: f64, lower: f64) -> bool {
     value <= lower + BOTTOM_EPSILON
 }
 
+fn apply_bottom_pin(pinned: bool, at_bottom: bool, old_value: f64, new_value: f64) -> (bool, bool) {
+    if at_bottom {
+        (true, false)
+    } else if pinned && new_value + BOTTOM_EPSILON < old_value {
+        (false, true)
+    } else {
+        (pinned, false)
+    }
+}
+
 fn clamp_adjustment(adjustment: &gtk::Adjustment, value: f64) -> f64 {
     let lower = adjustment.lower();
     let upper = (adjustment.upper() - adjustment.page_size()).max(lower);
@@ -5352,6 +5382,20 @@ mod tests {
         assert!(should_follow_transcript(TranscriptUpdate::Activate, false));
         assert!(should_follow_transcript(TranscriptUpdate::Content, true));
         assert!(!should_follow_transcript(TranscriptUpdate::Content, false));
+    }
+
+    #[test]
+    fn content_growth_keeps_a_bottom_pin() {
+        assert_eq!(apply_bottom_pin(true, false, 700.0, 700.0), (true, false));
+        assert_eq!(apply_bottom_pin(true, true, 700.0, 850.0), (true, false));
+        assert_eq!(apply_bottom_pin(false, false, 200.0, 200.0), (false, false));
+    }
+
+    #[test]
+    fn scrolling_up_clears_a_bottom_pin() {
+        assert_eq!(apply_bottom_pin(true, false, 700.0, 640.0), (false, true));
+        assert_eq!(apply_bottom_pin(true, false, 700.0, 699.0), (true, false));
+        assert_eq!(apply_bottom_pin(false, false, 200.0, 100.0), (false, false));
     }
 
     #[test]
