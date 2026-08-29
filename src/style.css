@@ -54,9 +54,6 @@ headerbar {
   background: transparent;
   border-radius: 7px;
   min-height: 36px;
-  overflow: hidden;
-  transition: margin 160ms cubic-bezier(0.22, 1, 0.36, 1),
-    opacity 140ms ease;
 }
 
 .session-tab.inactive.divided {
@@ -127,16 +124,6 @@ headerbar {
 
 .session-tab.dragging {
   opacity: 0;
-  margin-top: -19px;
-  margin-bottom: -19px;
-}
-
-.session-tab.drop-before {
-  margin-top: 38px;
-}
-
-.session-tab.drop-after {
-  margin-bottom: 38px;
 }
 
 .session-tab.drag-preview {

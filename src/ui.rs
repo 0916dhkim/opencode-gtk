@@ -2190,6 +2190,7 @@ impl Controller {
                 .unwrap_or_else(|| "Unknown session".to_owned());
             let tab = gtk::Box::new(gtk::Orientation::Horizontal, 0);
             tab.add_css_class("session-tab");
+            tab.set_widget_name(&id);
             let active = self.state.active.as_deref() == Some(id.as_str());
             let unread = self.state.unread.contains(&id);
             if active {
@@ -2326,9 +2327,16 @@ impl Controller {
                 drag_tab.add_css_class("dragging");
             });
             let drag_tab = tab.clone();
-            drag.connect_drag_end(move |_, _, _| {
+            let weak_end = weak.clone();
+            drag.connect_drag_end(move |_, _, success| {
                 drag_tab.remove_css_class("dragging");
-                clear_tab_drop_indicators(drag_tab.parent().as_ref());
+                if !success {
+                    if let Some(controller) = weak_end.upgrade() {
+                        let mut this = controller.borrow_mut();
+                        let restore = this.self_weak.clone();
+                        this.refresh_tabs(&restore);
+                    }
+                }
             });
             tab.add_controller(drag);
 
@@ -2336,29 +2344,19 @@ impl Controller {
             drop_target.connect_motion(|target, _, y| {
                 if let Some(widget) = target.widget() {
                     let after = y >= f64::from(widget.height()) / 2.0;
-                    set_tab_drop_indicator(&widget, after);
+                    slide_dragging_tab(&widget, after);
                 }
                 gdk::DragAction::MOVE
             });
-            drop_target.connect_leave(|target| {
-                if let Some(widget) = target.widget() {
-                    widget.remove_css_class("drop-before");
-                    widget.remove_css_class("drop-after");
-                }
-            });
             let weak_drop = weak.clone();
-            let target_id = id.clone();
-            drop_target.connect_drop(move |target, value, _, y| {
-                let Ok(source_id) = value.get::<String>() else {
+            drop_target.connect_drop(move |_, value, _, _| {
+                if value.get::<String>().is_err() {
                     return false;
-                };
+                }
                 let Some(controller) = weak_drop.upgrade() else {
                     return false;
                 };
-                let after = target
-                    .widget()
-                    .is_some_and(|widget| y >= f64::from(widget.height()) / 2.0);
-                Self::reorder_tab(&controller, &source_id, &target_id, after)
+                Self::commit_tab_order(&controller)
             });
             tab.add_controller(drop_target);
             self.widgets.tab_bar.append(&tab);
@@ -2430,16 +2428,13 @@ impl Controller {
         this.widgets.composer.grab_focus();
     }
 
-    fn reorder_tab(
-        controller: &Rc<RefCell<Self>>,
-        source_id: &str,
-        target_id: &str,
-        after: bool,
-    ) -> bool {
+    fn commit_tab_order(controller: &Rc<RefCell<Self>>) -> bool {
         let mut this = controller.borrow_mut();
-        if !move_tab(&mut this.state.tabs, source_id, target_id, after) {
+        let ids = tab_bar_ids(&this.widgets.tab_bar);
+        if ids.is_empty() || ids == this.state.tabs {
             return false;
         }
+        this.state.tabs = ids;
         this.persist_state();
         let weak = this.self_weak.clone();
         this.refresh_tabs(&weak);
@@ -5011,30 +5006,54 @@ fn should_follow_transcript(update: TranscriptUpdate, at_bottom: bool) -> bool {
     update == TranscriptUpdate::Activate || at_bottom
 }
 
-fn clear_tab_drop_indicators(parent: Option<&gtk::Widget>) {
-    let Some(parent) = parent else {
-        return;
-    };
+fn child_with_class(parent: &gtk::Widget, class: &str) -> Option<gtk::Widget> {
     let mut child = parent.first_child();
     while let Some(widget) = child {
-        widget.remove_css_class("drop-before");
-        widget.remove_css_class("drop-after");
+        if widget.has_css_class(class) {
+            return Some(widget);
+        }
         child = widget.next_sibling();
     }
+    None
 }
 
-fn set_tab_drop_indicator(widget: &gtk::Widget, after: bool) {
-    clear_tab_drop_indicators(widget.parent().as_ref());
-    if widget.has_css_class("dragging") {
+fn tab_bar_ids(bar: &gtk::Box) -> Vec<String> {
+    let mut ids = Vec::new();
+    let mut child = bar.first_child();
+    while let Some(widget) = child {
+        let name = widget.widget_name();
+        if !name.is_empty() {
+            ids.push(name.to_string());
+        }
+        child = widget.next_sibling();
+    }
+    ids
+}
+
+fn slide_dragging_tab(target: &gtk::Widget, after: bool) {
+    if target.has_css_class("dragging") {
         return;
     }
-    if after {
-        match widget.next_sibling() {
-            Some(next) if !next.has_css_class("dragging") => next.add_css_class("drop-before"),
-            _ => widget.add_css_class("drop-after"),
-        }
+    let Some(parent) = target.parent() else {
+        return;
+    };
+    let Some(dragging) = child_with_class(&parent, "dragging") else {
+        return;
+    };
+    let desired_prev = if after {
+        Some(target.clone())
     } else {
-        widget.add_css_class("drop-before");
+        target.prev_sibling()
+    };
+    if desired_prev.as_ref() == Some(&dragging) || dragging.prev_sibling() == desired_prev {
+        return;
+    }
+    let Ok(bar) = parent.downcast::<gtk::Box>() else {
+        return;
+    };
+    match desired_prev {
+        Some(sibling) => bar.reorder_child_after(&dragging, Some(&sibling)),
+        None => bar.reorder_child_after(&dragging, None::<&gtk::Widget>),
     }
 }
 
@@ -5055,6 +5074,7 @@ fn tab_drag_preview(title: &str, active: bool) -> gtk::Box {
     preview
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 fn move_tab(tabs: &mut Vec<String>, source_id: &str, target_id: &str, after: bool) -> bool {
     if source_id == target_id {
         return false;
