@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<gresources>
+  <gresource prefix="/ai/opencode/gtk/icons">
+    <file alias="scalable/actions/opencode-attach-symbolic.svg">attach.svg</file>
+    <file alias="scalable/actions/opencode-send-symbolic.svg">send.svg</file>
+    <file alias="scalable/actions/opencode-stop-symbolic.svg">stop.svg</file>
+    <file alias="scalable/actions/opencode-edit-symbolic.svg">edit.svg</file>
+    <file alias="scalable/actions/opencode-close-symbolic.svg">close.svg</file>
+  </gresource>
+</gresources>
