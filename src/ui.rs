@@ -33,6 +33,8 @@ const ICON_SEND: &str = "opencode-send-symbolic";
 const ICON_STOP: &str = "opencode-stop-symbolic";
 const ICON_EDIT: &str = "opencode-edit-symbolic";
 const ICON_CLOSE: &str = "opencode-close-symbolic";
+const COMPOSER_ICON_PX: i32 = 22;
+const TAB_ICON_PX: i32 = 16;
 const BOTTOM_EPSILON: f64 = 2.0;
 const MAX_INLINE_IMAGE_BYTES: usize = 25 * 1024 * 1024;
 
@@ -193,6 +195,27 @@ fn register_icons() {
     if let Some(display) = gdk::Display::default() {
         gtk::IconTheme::for_display(&display).add_resource_path("/ai/opencode/gtk/icons");
     }
+}
+
+fn icon_image(name: &str, pixel_size: i32) -> gtk::Image {
+    let image = gtk::Image::from_icon_name(name);
+    image.set_pixel_size(pixel_size);
+    image
+}
+
+fn icon_button(name: &str, pixel_size: i32) -> gtk::Button {
+    let button = gtk::Button::new();
+    button.set_child(Some(&icon_image(name, pixel_size)));
+    button
+}
+
+fn set_button_icon(button: &gtk::Button, name: &str, pixel_size: i32) {
+    if let Some(image) = button.child().and_downcast::<gtk::Image>() {
+        image.set_icon_name(Some(name));
+        image.set_pixel_size(pixel_size);
+        return;
+    }
+    button.set_child(Some(&icon_image(name, pixel_size)));
 }
 
 pub fn launch(
@@ -603,7 +626,7 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
 
     let attachment_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
     attachment_box.set_visible(false);
-    let attach_button = gtk::Button::from_icon_name(ICON_ATTACH);
+    let attach_button = icon_button(ICON_ATTACH, COMPOSER_ICON_PX);
     attach_button.set_tooltip_text(Some("Attach files (Ctrl+U)"));
     attach_button.add_css_class("composer-action");
     let model_store = gtk::StringList::new(&["Loading models..."]);
@@ -614,7 +637,7 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
     let variant_dropdown = gtk::DropDown::new(Some(variant_store.clone()), None::<gtk::Expression>);
     variant_dropdown.set_sensitive(false);
     variant_dropdown.set_tooltip_text(Some("Reasoning level"));
-    let send_button = gtk::Button::from_icon_name(ICON_SEND);
+    let send_button = icon_button(ICON_SEND, COMPOSER_ICON_PX);
     send_button.add_css_class("suggested-action");
     send_button.add_css_class("composer-action");
     send_button.set_tooltip_text(Some("Send prompt"));
@@ -2063,11 +2086,11 @@ impl Controller {
             title_label.set_ellipsize(pango::EllipsizeMode::End);
             title_label.set_max_width_chars(24);
             title_label.add_css_class("session-tab-title");
-            let rename = gtk::Button::from_icon_name(ICON_EDIT);
+            let rename = icon_button(ICON_EDIT, TAB_ICON_PX);
             rename.set_tooltip_text(Some("Rename session (F2)"));
             rename.add_css_class("flat");
             rename.add_css_class("session-tab-action");
-            let close = gtk::Button::from_icon_name(ICON_CLOSE);
+            let close = icon_button(ICON_CLOSE, TAB_ICON_PX);
             close.set_tooltip_text(Some("Close tab"));
             close.add_css_class("flat");
             close.add_css_class("session-tab-action");
@@ -2547,7 +2570,7 @@ impl Controller {
 
     fn refresh_send_button(&mut self) {
         let Some(active) = self.state.active.as_ref() else {
-            self.widgets.send_button.set_icon_name(ICON_SEND);
+            set_button_icon(&self.widgets.send_button, ICON_SEND, COMPOSER_ICON_PX);
             self.widgets
                 .send_button
                 .set_tooltip_text(Some("Send prompt"));
@@ -2555,9 +2578,11 @@ impl Controller {
             return;
         };
         let busy = self.state.statuses.get(active) == Some(&RunStatus::Busy);
-        self.widgets
-            .send_button
-            .set_icon_name(if busy { ICON_STOP } else { ICON_SEND });
+        set_button_icon(
+            &self.widgets.send_button,
+            if busy { ICON_STOP } else { ICON_SEND },
+            COMPOSER_ICON_PX,
+        );
         self.widgets.send_button.set_tooltip_text(Some(if busy {
             "Stop generation"
         } else {
