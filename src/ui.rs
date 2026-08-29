@@ -212,15 +212,23 @@ fn paperclip_icon(pixel_size: i32) -> gtk::DrawingArea {
     let area = gtk::DrawingArea::builder()
         .content_width(pixel_size)
         .content_height(pixel_size)
+        .halign(gtk::Align::Center)
+        .valign(gtk::Align::Center)
         .can_target(false)
         .build();
-    area.set_draw_func(|widget, cr, width, height| {
-        draw_paperclip(widget, cr, width, height);
+    area.set_draw_func(move |widget, cr, width, height| {
+        draw_paperclip(widget, cr, width, height, pixel_size);
     });
     area
 }
 
-fn draw_paperclip(widget: &gtk::DrawingArea, cr: &cairo::Context, width: i32, height: i32) {
+fn draw_paperclip(
+    widget: &gtk::DrawingArea,
+    cr: &cairo::Context,
+    width: i32,
+    height: i32,
+    pixel_size: i32,
+) {
     let color = widget
         .parent()
         .map(|parent| parent.style_context().color())
@@ -231,12 +239,15 @@ fn draw_paperclip(widget: &gtk::DrawingArea, cr: &cairo::Context, width: i32, he
         f64::from(color.blue()),
         f64::from(color.alpha()),
     );
-    let size = f64::from(width.min(height));
-    let path_scale = 1.35;
+    let size = f64::from(pixel_size);
+    let path_scale = 0.85;
     let s = size / 24.0 * path_scale;
     cr.save().ok();
-    cr.translate(size / 2.0 - 12.2 * s, size / 2.0 - 12.0 * s);
-    cr.set_line_width(1.35 * (size / 24.0));
+    cr.translate(
+        f64::from(width) / 2.0 - 12.2 * s,
+        f64::from(height) / 2.0 - 12.0 * s,
+    );
+    cr.set_line_width(1.7 * (size / 24.0));
     cr.set_line_cap(cairo::LineCap::Round);
     cr.set_line_join(cairo::LineJoin::Round);
     cr.move_to(16.6 * s, 5.8 * s);
