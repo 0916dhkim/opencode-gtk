@@ -233,17 +233,21 @@ fn draw_paperclip(widget: &gtk::DrawingArea, cr: &cairo::Context, width: i32, he
         f64::from(color.alpha()),
     );
     let size = f64::from(width.min(height));
-    let s = size / 24.0;
-    cr.set_line_width(1.7 * s);
+    let path_scale = 1.35;
+    let s = size / 24.0 * path_scale;
+    cr.save().ok();
+    cr.translate(size / 2.0 - 12.2 * s, size / 2.0 - 12.0 * s);
+    cr.set_line_width(1.35 * (size / 24.0));
     cr.set_line_cap(cairo::LineCap::Round);
     cr.set_line_join(cairo::LineJoin::Round);
-    cr.move_to(18.4 * s, 4.6 * s);
-    cr.line_to(18.4 * s, 15.2 * s);
-    cr.arc(12.0 * s, 15.2 * s, 6.4 * s, 0.0, std::f64::consts::PI);
-    cr.line_to(5.6 * s, 6.6 * s);
-    cr.arc(9.4 * s, 6.6 * s, 3.8 * s, std::f64::consts::PI, 0.0);
-    cr.line_to(13.2 * s, 15.0 * s);
+    cr.move_to(16.6 * s, 5.8 * s);
+    cr.line_to(16.6 * s, 15.0 * s);
+    cr.arc(12.2 * s, 15.0 * s, 4.4 * s, 0.0, std::f64::consts::PI);
+    cr.line_to(7.8 * s, 7.4 * s);
+    cr.arc(10.0 * s, 7.4 * s, 2.2 * s, std::f64::consts::PI, 0.0);
+    cr.line_to(12.2 * s, 14.8 * s);
     let _ = cr.stroke();
+    cr.restore().ok();
 }
 
 fn set_button_icon(button: &gtk::Button, name: &str, pixel_size: i32) {
