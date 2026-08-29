@@ -133,6 +133,7 @@ struct Widgets {
     variant_store: gtk::StringList,
     variant_dropdown: gtk::DropDown,
     send_button: gtk::Button,
+    transcript_user_scrolling: Rc<Cell<bool>>,
 }
 
 struct Controller {
@@ -154,7 +155,6 @@ struct Controller {
     rendered_rows: Vec<String>,
     transcript_at_bottom: bool,
     transcript_scroll_generation: u64,
-    transcript_scroll_value: f64,
     transcript_edge_refresh_scheduled: bool,
     current_models: Vec<ModelOption>,
     current_variants: Vec<Option<String>>,
@@ -362,7 +362,6 @@ pub fn launch(
         rendered_rows: Vec::new(),
         transcript_at_bottom: true,
         transcript_scroll_generation: 0,
-        transcript_scroll_value: 0.0,
         transcript_edge_refresh_scheduled: false,
         current_models: Vec::new(),
         current_variants: Vec::new(),
@@ -668,13 +667,16 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
         .child(&sticky_message_body)
         .build();
     sticky_message_scroll.add_css_class("sticky-message-scroll");
+    let transcript_user_scrolling = Rc::new(Cell::new(false));
     let sticky_scroll_controller =
         gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::VERTICAL);
     sticky_scroll_controller.set_propagation_phase(gtk::PropagationPhase::Capture);
     let sticky_adjustment = sticky_message_scroll.vadjustment();
     let transcript_adjustment = transcript_scroll.vadjustment();
+    let user_scrolling = transcript_user_scrolling.clone();
     sticky_scroll_controller.connect_scroll(move |_, _, delta| {
         if !scroll_adjustment_by(&sticky_adjustment, delta) {
+            user_scrolling.set(true);
             scroll_adjustment_by(&transcript_adjustment, delta);
         }
         glib::Propagation::Stop
@@ -785,6 +787,7 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
         variant_store,
         variant_dropdown,
         send_button,
+        transcript_user_scrolling,
     }
 }
 
@@ -969,6 +972,38 @@ fn wire_callbacks(controller: &Rc<RefCell<Controller>>) {
         });
 
     let transcript_adjustment = controller.borrow().widgets.transcript_scroll.vadjustment();
+    let user_scrolling = controller
+        .borrow()
+        .widgets
+        .transcript_user_scrolling
+        .clone();
+    let scroll = gtk::EventControllerScroll::new(
+        gtk::EventControllerScrollFlags::VERTICAL | gtk::EventControllerScrollFlags::KINETIC,
+    );
+    scroll.set_propagation_phase(gtk::PropagationPhase::Capture);
+    let flag = user_scrolling.clone();
+    scroll.connect_scroll(move |_, _, _| {
+        flag.set(true);
+        glib::Propagation::Proceed
+    });
+    controller
+        .borrow()
+        .widgets
+        .transcript_scroll
+        .add_controller(scroll);
+    if let Ok(range) = controller
+        .borrow()
+        .widgets
+        .transcript_scroll
+        .vscrollbar()
+        .downcast::<gtk::Range>()
+    {
+        let flag = user_scrolling.clone();
+        range.connect_change_value(move |_, _, _| {
+            flag.set(true);
+            glib::Propagation::Proceed
+        });
+    }
     let weak = Rc::downgrade(controller);
     transcript_adjustment.connect_value_changed(move |adjustment| {
         let Some(controller) = weak.upgrade() else {
@@ -977,18 +1012,23 @@ fn wire_callbacks(controller: &Rc<RefCell<Controller>>) {
         let Ok(mut controller) = controller.try_borrow_mut() else {
             return;
         };
-        let value = adjustment.value();
-        let (pinned, invalidate) = apply_bottom_pin(
-            controller.transcript_at_bottom,
-            adjustment_at_bottom(adjustment),
-            controller.transcript_scroll_value,
-            value,
-        );
-        controller.transcript_at_bottom = pinned;
-        if invalidate {
-            controller.transcript_scroll_generation += 1;
+        let at_bottom = adjustment_at_bottom(adjustment);
+        if controller.widgets.transcript_user_scrolling.get() {
+            let (pinned, invalidate) =
+                apply_user_bottom_pin(controller.transcript_at_bottom, at_bottom);
+            controller.transcript_at_bottom = pinned;
+            if invalidate {
+                controller.transcript_scroll_generation += 1;
+            }
+            let flag = controller.widgets.transcript_user_scrolling.clone();
+            glib::idle_add_local_once(move || {
+                flag.set(false);
+            });
+        } else if controller.transcript_at_bottom && !at_bottom {
+            scroll_adjustment_to_bottom(adjustment);
+        } else if at_bottom {
+            controller.transcript_at_bottom = true;
         }
-        controller.transcript_scroll_value = value;
         controller.refresh_load_earlier_visibility();
         controller.queue_transcript_edge_refresh();
     });
@@ -2758,6 +2798,7 @@ impl Controller {
     fn pin_transcript_to_bottom(&mut self) {
         self.transcript_at_bottom = true;
         self.transcript_scroll_generation += 1;
+        self.widgets.transcript_user_scrolling.set(false);
     }
 
     fn refresh_transcript(&mut self, update: TranscriptUpdate) {
@@ -4866,13 +4907,13 @@ fn viewport_at_top(value: f64, lower: f64) -> bool {
     value <= lower + BOTTOM_EPSILON
 }
 
-fn apply_bottom_pin(pinned: bool, at_bottom: bool, old_value: f64, new_value: f64) -> (bool, bool) {
+fn apply_user_bottom_pin(pinned: bool, at_bottom: bool) -> (bool, bool) {
     if at_bottom {
         (true, false)
-    } else if pinned && new_value + BOTTOM_EPSILON < old_value {
+    } else if pinned {
         (false, true)
     } else {
-        (pinned, false)
+        (false, false)
     }
 }
 
@@ -5386,16 +5427,15 @@ mod tests {
 
     #[test]
     fn content_growth_keeps_a_bottom_pin() {
-        assert_eq!(apply_bottom_pin(true, false, 700.0, 700.0), (true, false));
-        assert_eq!(apply_bottom_pin(true, true, 700.0, 850.0), (true, false));
-        assert_eq!(apply_bottom_pin(false, false, 200.0, 200.0), (false, false));
+        assert_eq!(apply_user_bottom_pin(true, true), (true, false));
+        assert_eq!(apply_user_bottom_pin(false, true), (true, false));
+        assert_eq!(apply_user_bottom_pin(false, false), (false, false));
     }
 
     #[test]
     fn scrolling_up_clears_a_bottom_pin() {
-        assert_eq!(apply_bottom_pin(true, false, 700.0, 640.0), (false, true));
-        assert_eq!(apply_bottom_pin(true, false, 700.0, 699.0), (true, false));
-        assert_eq!(apply_bottom_pin(false, false, 200.0, 100.0), (false, false));
+        assert_eq!(apply_user_bottom_pin(true, false), (false, true));
+        assert_eq!(apply_user_bottom_pin(false, false), (false, false));
     }
 
     #[test]
