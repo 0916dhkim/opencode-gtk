@@ -114,8 +114,8 @@ struct Widgets {
     settings_button: gtk::Button,
     status: gtk::Label,
     tab_bar: gtk::Box,
-    transcript_model: gtk::StringList,
-    transcript: gtk::ListView,
+    transcript: gtk::Box,
+    transcript_spacer: gtk::Box,
     transcript_scroll: gtk::ScrolledWindow,
     sticky_message: gtk::Box,
     sticky_message_scroll: gtk::ScrolledWindow,
@@ -622,16 +622,19 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
     load_earlier.add_css_class("flat");
     load_earlier.set_visible(false);
 
-    let transcript_model = gtk::StringList::new(&[]);
-    let selection = gtk::NoSelection::new(Some(transcript_model.clone()));
-    let factory = transcript_factory();
-    let transcript = gtk::ListView::new(Some(selection), Some(factory));
-    transcript.add_css_class("transcript");
+    let transcript_spacer = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    transcript_spacer.set_hexpand(true);
+    transcript_spacer.set_can_target(false);
+    let transcript = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    let transcript_column = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    transcript_column.add_css_class("transcript");
+    transcript_column.append(&transcript_spacer);
+    transcript_column.append(&transcript);
     let transcript_scroll = gtk::ScrolledWindow::builder()
         .hscrollbar_policy(gtk::PolicyType::Never)
         .vscrollbar_policy(gtk::PolicyType::Automatic)
         .vexpand(true)
-        .child(&transcript)
+        .child(&transcript_column)
         .build();
     let transcript_spinner = gtk::Spinner::new();
     let transcript_status_label = gtk::Label::new(Some("Open a session to begin"));
@@ -777,8 +780,8 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
         settings_button,
         status,
         tab_bar,
-        transcript_model,
         transcript,
+        transcript_spacer,
         transcript_scroll,
         sticky_message,
         sticky_message_scroll,
@@ -801,113 +804,95 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
     }
 }
 
-fn transcript_factory() -> gtk::SignalListItemFactory {
-    let factory = gtk::SignalListItemFactory::new();
-    factory.connect_setup(|_, item| {
-        let Some(item) = item.downcast_ref::<gtk::ListItem>() else {
-            return;
-        };
-        let row = gtk::Box::new(gtk::Orientation::Vertical, 6);
-        row.add_css_class("message-row");
-        let header = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        header.add_css_class("message-header");
-        let role = gtk::Label::new(None);
-        role.set_xalign(0.0);
-        role.set_hexpand(true);
-        role.add_css_class("message-role");
-        let time = gtk::Label::new(None);
-        time.set_xalign(1.0);
-        time.add_css_class("message-time");
-        header.append(&role);
-        header.append(&time);
-        let content = gtk::Box::new(gtk::Orientation::Vertical, 10);
-        content.set_hexpand(true);
-        content.add_css_class("message-content");
-        row.append(&header);
-        row.append(&content);
-        item.set_activatable(false);
-        item.set_selectable(false);
-        item.set_child(Some(&row));
-    });
-    factory.connect_bind(|_, item| {
-        let Some(item) = item.downcast_ref::<gtk::ListItem>() else {
-            return;
-        };
-        let Some(object) = item.item().and_downcast::<gtk::StringObject>() else {
-            return;
-        };
-        let Some(row) = item.child().and_downcast::<gtk::Box>() else {
-            return;
-        };
-        let Some(header) = row.first_child().and_downcast::<gtk::Box>() else {
-            return;
-        };
-        let Some(role) = header.first_child().and_downcast::<gtk::Label>() else {
-            return;
-        };
-        let Some(time) = header.last_child().and_downcast::<gtk::Label>() else {
-            return;
-        };
-        let Some(content) = row.last_child().and_downcast::<gtk::Box>() else {
-            return;
-        };
-        let value = object.string();
-        let parsed = serde_json::from_str::<TranscriptRow>(&value).ok();
-        let (role_text, body, images, timestamp) = parsed
-            .as_ref()
-            .map(|row| {
-                (
-                    row.role.as_str(),
-                    row.body.as_str(),
-                    row.images.as_slice(),
-                    row.time,
-                )
-            })
-            .unwrap_or_else(|| {
-                let (role, body) = value.split_once('\n').unwrap_or(("AGENT", value.as_str()));
-                (role, body, &[], 0)
-            });
-        role.set_label(role_text);
-        let time_text = display_local_timestamp(timestamp).unwrap_or_default();
-        time.set_label(&time_text);
-        time.set_visible(!time_text.is_empty());
-        clear_box(&content);
-        if role_text == "YOU" {
-            let label = gtk::Label::new(Some(body));
-            label.set_xalign(0.0);
-            label.set_yalign(0.0);
-            label.set_wrap(true);
-            label.set_wrap_mode(pango::WrapMode::WordChar);
-            label.set_selectable(true);
-            label.add_css_class("message-plain-text");
-            content.append(&label);
-        } else {
-            markdown::render_into(&content, body);
-        }
-        for image in images {
-            if let Some(texture) = inline_image_texture(image) {
-                let picture = gtk::Picture::for_paintable(&texture);
-                picture.set_size_request(320, 220);
-                picture.set_can_shrink(true);
-                picture.set_halign(gtk::Align::Start);
-                picture.add_css_class("message-image");
-                content.append(&picture);
-            }
-        }
-        row.remove_css_class("user-message");
-        row.remove_css_class("assistant-message");
-        row.remove_css_class("message-reasoning");
-        row.add_css_class(if role_text == "YOU" {
-            "user-message"
-        } else {
-            "assistant-message"
+fn transcript_row_widget() -> gtk::Box {
+    let row = gtk::Box::new(gtk::Orientation::Vertical, 6);
+    row.add_css_class("message-row");
+    let header = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    header.add_css_class("message-header");
+    let role = gtk::Label::new(None);
+    role.set_xalign(0.0);
+    role.set_hexpand(true);
+    role.add_css_class("message-role");
+    let time = gtk::Label::new(None);
+    time.set_xalign(1.0);
+    time.add_css_class("message-time");
+    header.append(&role);
+    header.append(&time);
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 10);
+    content.set_hexpand(true);
+    content.add_css_class("message-content");
+    row.append(&header);
+    row.append(&content);
+    row
+}
+
+fn bind_transcript_row(row: &gtk::Box, value: &str, index: u32) {
+    let Some(header) = row.first_child().and_downcast::<gtk::Box>() else {
+        return;
+    };
+    let Some(role) = header.first_child().and_downcast::<gtk::Label>() else {
+        return;
+    };
+    let Some(time) = header.last_child().and_downcast::<gtk::Label>() else {
+        return;
+    };
+    let Some(content) = row.last_child().and_downcast::<gtk::Box>() else {
+        return;
+    };
+    let parsed = serde_json::from_str::<TranscriptRow>(value).ok();
+    let (role_text, body, images, timestamp) = parsed
+        .as_ref()
+        .map(|row| {
+            (
+                row.role.as_str(),
+                row.body.as_str(),
+                row.images.as_slice(),
+                row.time,
+            )
+        })
+        .unwrap_or_else(|| {
+            let (role, body) = value.split_once('\n').unwrap_or(("AGENT", value));
+            (role, body, &[], 0)
         });
-        if parsed.as_ref().is_some_and(|row| row.kind == "reasoning") {
-            row.add_css_class("message-reasoning");
+    role.set_label(role_text);
+    let time_text = display_local_timestamp(timestamp).unwrap_or_default();
+    time.set_label(&time_text);
+    time.set_visible(!time_text.is_empty());
+    clear_box(&content);
+    if role_text == "YOU" {
+        let label = gtk::Label::new(Some(body));
+        label.set_xalign(0.0);
+        label.set_yalign(0.0);
+        label.set_wrap(true);
+        label.set_wrap_mode(pango::WrapMode::WordChar);
+        label.set_selectable(true);
+        label.add_css_class("message-plain-text");
+        content.append(&label);
+    } else {
+        markdown::render_into(&content, body);
+    }
+    for image in images {
+        if let Some(texture) = inline_image_texture(image) {
+            let picture = gtk::Picture::for_paintable(&texture);
+            picture.set_size_request(320, 220);
+            picture.set_can_shrink(true);
+            picture.set_halign(gtk::Align::Start);
+            picture.add_css_class("message-image");
+            content.append(&picture);
         }
-        row.set_widget_name(&format!("row-{}", item.position()));
+    }
+    row.remove_css_class("user-message");
+    row.remove_css_class("assistant-message");
+    row.remove_css_class("message-reasoning");
+    row.add_css_class(if role_text == "YOU" {
+        "user-message"
+    } else {
+        "assistant-message"
     });
-    factory
+    if parsed.as_ref().is_some_and(|row| row.kind == "reasoning") {
+        row.add_css_class("message-reasoning");
+    }
+    row.set_widget_name(&format!("row-{index}"));
 }
 
 fn inline_image_texture(url: &str) -> Option<gdk::Texture> {
@@ -1047,12 +1032,13 @@ fn wire_callbacks(controller: &Rc<RefCell<Controller>>) {
         let Some(controller) = weak.upgrade() else {
             return;
         };
-        let stick = controller
-            .try_borrow()
-            .is_ok_and(|controller| controller.transcript_at_bottom);
-        if stick {
+        let Ok(mut controller) = controller.try_borrow_mut() else {
+            return;
+        };
+        if controller.transcript_at_bottom {
             scroll_adjustment_to_bottom(adjustment);
         }
+        controller.queue_transcript_edge_refresh();
     });
 
     let weak = Rc::downgrade(controller);
@@ -2862,7 +2848,7 @@ impl Controller {
         }
         let follow_bottom = self.transcript_at_bottom;
         sync_transcript_list(
-            &self.widgets.transcript_model,
+            &self.widgets.transcript,
             &mut self.rendered_session,
             &mut self.rendered_rows,
             active.as_deref(),
@@ -2901,8 +2887,8 @@ impl Controller {
             self.refresh_transcript_status_margin();
         } else {
             self.refresh_load_earlier_visibility();
-            self.queue_transcript_edge_refresh();
         }
+        self.queue_transcript_edge_refresh();
 
         let generation = self.transcript_scroll_generation;
         let weak = self.self_weak.clone();
@@ -3042,9 +3028,41 @@ impl Controller {
             };
             let mut controller = controller.borrow_mut();
             controller.transcript_edge_refresh_scheduled = false;
+            controller.pack_transcript_to_bottom();
             controller.refresh_load_earlier_visibility();
             controller.refresh_sticky_message();
         });
+    }
+
+    fn pack_transcript_to_bottom(&self) {
+        let extra = if self.transcript_at_bottom {
+            let width = self
+                .widgets
+                .transcript_scroll
+                .width()
+                .max(self.widgets.transcript.width())
+                .max(1);
+            let (_, content, _, _) = self
+                .widgets
+                .transcript
+                .measure(gtk::Orientation::Vertical, width);
+            transcript_top_pad(
+                true,
+                f64::from(content),
+                self.widgets.transcript_scroll.vadjustment().page_size(),
+                transcript_bottom_reserve(
+                    self.widgets.transcript_status.is_visible(),
+                    self.widgets.transcript_status.valign() == gtk::Align::End,
+                    self.widgets.transcript_status.height(),
+                    self.widgets.transcript_status.margin_bottom(),
+                ),
+            )
+        } else {
+            0
+        };
+        if self.widgets.transcript_spacer.height_request() != extra {
+            self.widgets.transcript_spacer.set_size_request(-1, extra);
+        }
     }
 
     fn refresh_transcript_status_margin(&self) {
@@ -4695,37 +4713,46 @@ fn replace_string_list(model: &gtk::StringList, values: &[&str]) {
     model.splice(0, model.n_items(), values);
 }
 
-fn sync_string_list(model: &gtk::StringList, old: &mut Vec<String>, new: Vec<String>) {
-    let common = old.len().min(new.len());
-    for index in 0..common {
-        if old[index] != new[index] {
-            model.splice(index as u32, 1, &[new[index].as_str()]);
-        }
-    }
-    if new.len() > old.len() {
-        let additions: Vec<_> = new[old.len()..].iter().map(String::as_str).collect();
-        model.splice(old.len() as u32, 0, &additions);
-    } else if old.len() > new.len() {
-        model.splice(new.len() as u32, (old.len() - new.len()) as u32, &[]);
-    }
-    *old = new;
-}
-
 fn sync_transcript_list(
-    model: &gtk::StringList,
+    container: &gtk::Box,
     rendered_session: &mut Option<String>,
     rendered_rows: &mut Vec<String>,
     active_session: Option<&str>,
     new_rows: Vec<String>,
 ) {
     if transcript_session_changed(rendered_session.as_deref(), active_session) {
-        let values: Vec<_> = new_rows.iter().map(String::as_str).collect();
-        replace_string_list(model, &values);
+        clear_box(container);
+        rendered_rows.clear();
         *rendered_session = active_session.map(str::to_owned);
-        *rendered_rows = new_rows;
-        return;
     }
-    sync_string_list(model, rendered_rows, new_rows);
+    let common = rendered_rows.len().min(new_rows.len());
+    let mut child = container.first_child();
+    for index in 0..common {
+        let Some(widget) = child else {
+            break;
+        };
+        let next = widget.next_sibling();
+        if rendered_rows[index] != new_rows[index] {
+            if let Ok(row) = widget.downcast::<gtk::Box>() {
+                bind_transcript_row(&row, &new_rows[index], index as u32);
+            }
+        }
+        child = next;
+    }
+    if new_rows.len() > rendered_rows.len() {
+        for (offset, value) in new_rows[rendered_rows.len()..].iter().enumerate() {
+            let row = transcript_row_widget();
+            bind_transcript_row(&row, value, (rendered_rows.len() + offset) as u32);
+            container.append(&row);
+        }
+    } else if rendered_rows.len() > new_rows.len() {
+        for _ in 0..(rendered_rows.len() - new_rows.len()) {
+            if let Some(last) = container.last_child() {
+                container.remove(&last);
+            }
+        }
+    }
+    *rendered_rows = new_rows;
 }
 
 fn transcript_session_changed(
@@ -4951,6 +4978,21 @@ fn viewport_at_bottom(value: f64, page_size: f64, upper: f64) -> bool {
 
 fn viewport_at_top(value: f64, lower: f64) -> bool {
     value <= lower + BOTTOM_EPSILON
+}
+
+fn transcript_bottom_reserve(visible: bool, at_end: bool, height: i32, margin_bottom: i32) -> f64 {
+    if visible && at_end {
+        f64::from(height.max(0) + margin_bottom.max(0))
+    } else {
+        0.0
+    }
+}
+
+fn transcript_top_pad(pinned: bool, content_span: f64, page_size: f64, bottom_reserve: f64) -> i32 {
+    if !pinned {
+        return 0;
+    }
+    (page_size - content_span - bottom_reserve).floor().max(0.0) as i32
 }
 
 fn apply_user_bottom_pin(pinned: bool, at_bottom: bool) -> (bool, bool) {
@@ -5644,6 +5686,13 @@ mod tests {
     fn scrolling_up_clears_a_bottom_pin() {
         assert_eq!(apply_user_bottom_pin(true, false), (false, true));
         assert_eq!(apply_user_bottom_pin(false, false), (false, false));
+    }
+
+    #[test]
+    fn pinned_short_transcript_packs_above_the_working_chip() {
+        assert_eq!(transcript_top_pad(true, 140.0, 600.0, 44.0), 416);
+        assert_eq!(transcript_top_pad(true, 580.0, 600.0, 44.0), 0);
+        assert_eq!(transcript_top_pad(false, 140.0, 600.0, 44.0), 0);
     }
 
     #[test]
