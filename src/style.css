@@ -151,7 +151,7 @@ headerbar {
 
 .tab-drop-slot,
 .tab-drop-slot:drop(active) {
-  min-height: 36px;
+  min-height: 0;
   background: transparent;
   box-shadow: none;
   outline: none;

@@ -141,7 +141,7 @@ struct Widgets {
 struct TabDnd {
     index: Option<usize>,
     slot: Option<gtk::Revealer>,
-    slide_gen: u64,
+    gen: u64,
 }
 
 struct Controller {
@@ -2191,7 +2191,12 @@ impl Controller {
     }
 
     fn refresh_tabs(&mut self, weak: &Weak<RefCell<Self>>) {
-        *self.widgets.tab_dnd.borrow_mut() = TabDnd::default();
+        {
+            let mut dnd = self.widgets.tab_dnd.borrow_mut();
+            dnd.gen = dnd.gen.wrapping_add(1);
+            dnd.index = None;
+            dnd.slot = None;
+        }
         self.widgets.tab_bar.remove_css_class("reordering");
         clear_box(&self.widgets.tab_bar);
         let mut previous_inactive = false;
@@ -2348,17 +2353,12 @@ impl Controller {
                     place_drop_slot(&bar, index, &dnd, &weak_begin);
                 }
             });
-            let drag_tab = tab.clone();
             let weak_end = weak.clone();
-            drag.connect_drag_end(move |_, _, success| {
-                drag_tab.remove_css_class("dragging");
-                drag_tab.set_visible(true);
-                if !success {
-                    if let Some(controller) = weak_end.upgrade() {
-                        let mut this = controller.borrow_mut();
-                        let restore = this.self_weak.clone();
-                        this.refresh_tabs(&restore);
-                    }
+            drag.connect_drag_end(move |_, _, _| {
+                if let Some(controller) = weak_end.upgrade() {
+                    let mut this = controller.borrow_mut();
+                    let restore = this.self_weak.clone();
+                    this.refresh_tabs(&restore);
                 }
             });
             tab.add_controller(drag);
@@ -2476,13 +2476,13 @@ impl Controller {
         if !ids.iter().any(|id| id == source_id) {
             ids.insert(index, source_id.to_owned());
         }
-        if ids.is_empty() || ids == this.state.tabs {
+        if ids.is_empty() {
             return false;
         }
-        this.state.tabs = ids;
-        this.persist_state();
-        let weak = this.self_weak.clone();
-        this.refresh_tabs(&weak);
+        if ids != this.state.tabs {
+            this.state.tabs = ids;
+            this.persist_state();
+        }
         true
     }
 
@@ -5096,98 +5096,7 @@ fn insert_index_for_target(target: &gtk::Widget, after: bool) -> usize {
     }
 }
 
-const TAB_SLIDE_MS: u32 = 160;
-
-fn capture_tab_ys(bar: &gtk::Box) -> Vec<(gtk::Widget, f64)> {
-    let mut positions = Vec::new();
-    let mut child = bar.first_child();
-    while let Some(widget) = child {
-        if is_visible_session_tab(&widget) {
-            if let Some(bounds) = widget.compute_bounds(bar) {
-                positions.push((widget.clone(), f64::from(bounds.y())));
-            }
-        }
-        child = widget.next_sibling();
-    }
-    positions
-}
-
-fn set_translate_y(provider: &gtk::CssProvider, y: f64) {
-    provider.load_from_data(&format!("* {{ transform: translateY({y:.2}px); }}"));
-}
-
-fn start_tab_slides(bar: &gtk::Box, old: Vec<(gtk::Widget, f64)>, dnd: &Rc<RefCell<TabDnd>>) {
-    let gen = {
-        let mut dnd = dnd.borrow_mut();
-        dnd.slide_gen += 1;
-        dnd.slide_gen
-    };
-    struct Slide {
-        widget: gtk::Widget,
-        provider: gtk::CssProvider,
-        from: f64,
-    }
-    let mut slides = Vec::new();
-    for (widget, old_y) in old {
-        let Some(bounds) = widget.compute_bounds(bar) else {
-            continue;
-        };
-        let delta = old_y - f64::from(bounds.y());
-        if delta.abs() < 0.5 {
-            continue;
-        }
-        let provider = gtk::CssProvider::new();
-        widget
-            .style_context()
-            .add_provider(&provider, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION + 50);
-        set_translate_y(&provider, delta);
-        slides.push(Slide {
-            widget,
-            provider,
-            from: delta,
-        });
-    }
-    if slides.is_empty() {
-        return;
-    }
-    let dnd = dnd.clone();
-    let start = Rc::new(Cell::new(None::<i64>));
-    bar.add_tick_callback(move |_, clock| {
-        if dnd.borrow().slide_gen != gen {
-            for slide in &slides {
-                slide
-                    .widget
-                    .style_context()
-                    .remove_provider(&slide.provider);
-            }
-            return glib::ControlFlow::Break;
-        }
-        let now = clock.frame_time();
-        let start_t = match start.get() {
-            Some(time) => time,
-            None => {
-                start.set(Some(now));
-                now
-            }
-        };
-        let t = ((now - start_t) as f64 / 1000.0 / f64::from(TAB_SLIDE_MS)).clamp(0.0, 1.0);
-        let eased = 1.0 - (1.0 - t).powi(3);
-        for slide in &slides {
-            set_translate_y(&slide.provider, slide.from * (1.0 - eased));
-        }
-        if t >= 1.0 {
-            for slide in &slides {
-                slide
-                    .widget
-                    .style_context()
-                    .remove_provider(&slide.provider);
-            }
-            glib::ControlFlow::Break
-        } else {
-            glib::ControlFlow::Continue
-        }
-    });
-}
+const TAB_SLOT_MS: u64 = 140;
 
 fn tab_drop_slot(weak: &Weak<RefCell<Controller>>) -> gtk::Revealer {
     let child = gtk::Box::new(gtk::Orientation::Horizontal, 0);
@@ -5197,7 +5106,7 @@ fn tab_drop_slot(weak: &Weak<RefCell<Controller>>) -> gtk::Revealer {
     let slot = gtk::Revealer::new();
     slot.add_css_class("tab-drop-slot");
     slot.set_transition_type(gtk::RevealerTransitionType::SlideDown);
-    slot.set_transition_duration(160);
+    slot.set_transition_duration(TAB_SLOT_MS as u32);
     slot.set_child(Some(&child));
     let drop_target = gtk::DropTarget::new(String::static_type(), gdk::DragAction::MOVE);
     let weak_drop = weak.clone();
@@ -5212,7 +5121,6 @@ fn tab_drop_slot(weak: &Weak<RefCell<Controller>>) -> gtk::Revealer {
     });
     drop_target.connect_motion(|_, _, _| gdk::DragAction::MOVE);
     slot.add_controller(drop_target);
-    slot.set_reveal_child(true);
     slot
 }
 
@@ -5238,45 +5146,53 @@ fn insert_slot_at(bar: &gtk::Box, index: usize, slot: &gtk::Revealer) {
     bar.append(slot);
 }
 
+fn open_slot_at(bar: &gtk::Box, dnd: &Rc<RefCell<TabDnd>>, gen: u64) {
+    let (slot, index) = {
+        let dnd = dnd.borrow();
+        if dnd.gen != gen {
+            return;
+        }
+        match (dnd.slot.clone(), dnd.index) {
+            (Some(slot), Some(index)) => (slot, index),
+            _ => return,
+        }
+    };
+    insert_slot_at(bar, index, &slot);
+    slot.set_reveal_child(true);
+}
+
 fn place_drop_slot(
     bar: &gtk::Box,
     index: usize,
     dnd: &Rc<RefCell<TabDnd>>,
     weak: &Weak<RefCell<Controller>>,
 ) {
-    if dnd.borrow().index == Some(index) {
+    bar.add_css_class("reordering");
+    let mut dnd_mut = dnd.borrow_mut();
+    if dnd_mut.index == Some(index) && dnd_mut.slot.is_some() {
         return;
     }
-    let animate = dnd.borrow().slot.is_some();
-    let old = if animate {
-        capture_tab_ys(bar)
-    } else {
-        Vec::new()
-    };
-    {
-        let mut dnd = dnd.borrow_mut();
-        let slot = match &dnd.slot {
-            Some(slot) => slot.clone(),
-            None => {
-                let slot = tab_drop_slot(weak);
-                dnd.slot = Some(slot.clone());
-                slot
-            }
-        };
-        insert_slot_at(bar, index, &slot);
-        dnd.index = Some(index);
-    }
-    bar.add_css_class("reordering");
-    if animate {
-        let bar = bar.clone();
-        let dnd = dnd.clone();
-        glib::idle_add_local_once(move || {
-            bar.queue_allocate();
-            glib::idle_add_local_once(move || {
-                start_tab_slides(&bar, old, &dnd);
+    dnd_mut.index = Some(index);
+    if let Some(slot) = dnd_mut.slot.clone() {
+        let moving = slot.reveals_child();
+        let gen = dnd_mut.gen;
+        drop(dnd_mut);
+        if moving {
+            slot.set_reveal_child(false);
+            let bar = bar.clone();
+            let dnd = dnd.clone();
+            glib::timeout_add_local_once(Duration::from_millis(TAB_SLOT_MS), move || {
+                open_slot_at(&bar, &dnd, gen);
             });
-        });
+        }
+        return;
     }
+    let slot = tab_drop_slot(weak);
+    slot.set_transition_duration(0);
+    slot.set_reveal_child(true);
+    insert_slot_at(bar, index, &slot);
+    slot.set_transition_duration(TAB_SLOT_MS as u32);
+    dnd_mut.slot = Some(slot);
 }
 
 fn tab_drag_preview(title: &str, active: bool) -> gtk::Box {
