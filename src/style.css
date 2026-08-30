@@ -126,18 +126,34 @@ headerbar {
   opacity: 0;
 }
 
-.session-tab:drop(active) {
+.session-tabs.reordering .session-tab:hover,
+.session-tabs.reordering .session-tab.active:hover,
+.session-tabs.reordering .session-tab:drop(active),
+.session-tabs.reordering .session-tab *:drop(active) {
+  background-image: none;
   box-shadow: none;
   outline: none;
-  background-image: none;
+}
+
+.session-tabs.reordering .session-tab:hover {
+  background: transparent;
+}
+
+.session-tabs.reordering .session-tab.active,
+.session-tabs.reordering .session-tab.active:hover {
+  background: #22262a;
+}
+
+.session-tabs.reordering .session-tab button.session-tab-close:hover {
+  background: transparent;
+  color: #92999f;
 }
 
 .tab-drop-slot,
 .tab-drop-slot:drop(active) {
   min-height: 36px;
-  border-radius: 7px;
-  background: alpha(#e5b567, 0.14);
-  box-shadow: inset 0 0 0 1px #e5b567;
+  background: transparent;
+  box-shadow: none;
   outline: none;
 }
 
