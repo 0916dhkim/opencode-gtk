@@ -126,11 +126,19 @@ headerbar {
   opacity: 0;
 }
 
-.tab-drop-slot {
+.session-tab:drop(active) {
+  box-shadow: none;
+  outline: none;
+  background-image: none;
+}
+
+.tab-drop-slot,
+.tab-drop-slot:drop(active) {
   min-height: 36px;
   border-radius: 7px;
   background: alpha(#e5b567, 0.14);
   box-shadow: inset 0 0 0 1px #e5b567;
+  outline: none;
 }
 
 .session-tab.drag-preview {
