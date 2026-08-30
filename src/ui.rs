@@ -123,6 +123,7 @@ struct Widgets {
     tab_bar: gtk::Box,
     transcript: gtk::Box,
     transcript_spacer: gtk::Box,
+    transcript_footer: gtk::Box,
     transcript_scroll: gtk::ScrolledWindow,
     sticky_message: gtk::Box,
     sticky_message_scroll: gtk::ScrolledWindow,
@@ -169,6 +170,7 @@ struct Controller {
     rendered_session: Option<String>,
     rendered_rows: Vec<String>,
     transcript_at_bottom: bool,
+    transcript_scroll_value: f64,
     transcript_scroll_generation: u64,
     transcript_edge_refresh_scheduled: bool,
     current_models: Vec<ModelOption>,
@@ -376,6 +378,7 @@ pub fn launch(
         rendered_session: None,
         rendered_rows: Vec::new(),
         transcript_at_bottom: true,
+        transcript_scroll_value: 0.0,
         transcript_scroll_generation: 0,
         transcript_edge_refresh_scheduled: false,
         current_models: Vec::new(),
@@ -632,11 +635,15 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
     let transcript_spacer = gtk::Box::new(gtk::Orientation::Vertical, 0);
     transcript_spacer.set_hexpand(true);
     transcript_spacer.set_can_target(false);
+    let transcript_footer = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    transcript_footer.set_hexpand(true);
+    transcript_footer.set_can_target(false);
     let transcript = gtk::Box::new(gtk::Orientation::Vertical, 0);
     let transcript_column = gtk::Box::new(gtk::Orientation::Vertical, 0);
     transcript_column.add_css_class("transcript");
     transcript_column.append(&transcript_spacer);
     transcript_column.append(&transcript);
+    transcript_column.append(&transcript_footer);
     let transcript_scroll = gtk::ScrolledWindow::builder()
         .hscrollbar_policy(gtk::PolicyType::Never)
         .vscrollbar_policy(gtk::PolicyType::Automatic)
@@ -789,6 +796,7 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
         tab_bar,
         transcript,
         transcript_spacer,
+        transcript_footer,
         transcript_scroll,
         sticky_message,
         sticky_message_scroll,
@@ -1015,12 +1023,17 @@ fn wire_callbacks(controller: &Rc<RefCell<Controller>>) {
             return;
         };
         let at_bottom = adjustment_at_bottom(adjustment);
+        let scrolled_up = adjustment.value() + BOTTOM_EPSILON < controller.transcript_scroll_value;
+        controller.transcript_scroll_value = adjustment.value();
         if controller.widgets.transcript_user_scrolling.get() {
             let (pinned, invalidate) =
-                apply_user_bottom_pin(controller.transcript_at_bottom, at_bottom);
+                apply_user_bottom_pin(controller.transcript_at_bottom, at_bottom, scrolled_up);
             controller.transcript_at_bottom = pinned;
             if invalidate {
                 controller.transcript_scroll_generation += 1;
+            }
+            if pinned && !at_bottom {
+                scroll_adjustment_to_bottom(adjustment);
             }
             let flag = controller.widgets.transcript_user_scrolling.clone();
             glib::idle_add_local_once(move || {
@@ -3055,33 +3068,38 @@ impl Controller {
     }
 
     fn pack_transcript_to_bottom(&self) {
-        let extra = if self.transcript_at_bottom {
-            let width = self
+        let width = self
+            .widgets
+            .transcript_scroll
+            .width()
+            .max(self.widgets.transcript.width())
+            .max(1);
+        let (_, content, _, _) = self
+            .widgets
+            .transcript
+            .measure(gtk::Orientation::Vertical, width);
+        let reserve = if self.widgets.transcript_status.is_visible()
+            && self.widgets.transcript_status.valign() == gtk::Align::End
+        {
+            let (_, height, _, _) = self
                 .widgets
-                .transcript_scroll
-                .width()
-                .max(self.widgets.transcript.width())
-                .max(1);
-            let (_, content, _, _) = self
-                .widgets
-                .transcript
+                .transcript_status
                 .measure(gtk::Orientation::Vertical, width);
-            transcript_top_pad(
-                true,
-                f64::from(content),
-                self.widgets.transcript_scroll.vadjustment().page_size(),
-                transcript_bottom_reserve(
-                    self.widgets.transcript_status.is_visible(),
-                    self.widgets.transcript_status.valign() == gtk::Align::End,
-                    self.widgets.transcript_status.height(),
-                    self.widgets.transcript_status.margin_bottom(),
-                ),
-            )
+            height.max(0) + self.widgets.transcript_status.margin_bottom().max(0)
         } else {
             0
         };
+        let extra = transcript_top_pad(
+            self.transcript_at_bottom,
+            f64::from(content),
+            self.widgets.transcript_scroll.vadjustment().page_size(),
+            f64::from(reserve),
+        );
         if self.widgets.transcript_spacer.height_request() != extra {
             self.widgets.transcript_spacer.set_size_request(-1, extra);
+        }
+        if self.widgets.transcript_footer.height_request() != reserve {
+            self.widgets.transcript_footer.set_size_request(-1, reserve);
         }
     }
 
@@ -5082,14 +5100,6 @@ fn viewport_at_top(value: f64, lower: f64) -> bool {
     value <= lower + BOTTOM_EPSILON
 }
 
-fn transcript_bottom_reserve(visible: bool, at_end: bool, height: i32, margin_bottom: i32) -> f64 {
-    if visible && at_end {
-        f64::from(height.max(0) + margin_bottom.max(0))
-    } else {
-        0.0
-    }
-}
-
 fn transcript_top_pad(pinned: bool, content_span: f64, page_size: f64, bottom_reserve: f64) -> i32 {
     if !pinned {
         return 0;
@@ -5097,13 +5107,13 @@ fn transcript_top_pad(pinned: bool, content_span: f64, page_size: f64, bottom_re
     (page_size - content_span - bottom_reserve).floor().max(0.0) as i32
 }
 
-fn apply_user_bottom_pin(pinned: bool, at_bottom: bool) -> (bool, bool) {
+fn apply_user_bottom_pin(pinned: bool, at_bottom: bool, scrolled_up: bool) -> (bool, bool) {
     if at_bottom {
         (true, false)
-    } else if pinned {
+    } else if pinned && scrolled_up {
         (false, true)
     } else {
-        (false, false)
+        (pinned, false)
     }
 }
 
@@ -5779,15 +5789,16 @@ mod tests {
 
     #[test]
     fn content_growth_keeps_a_bottom_pin() {
-        assert_eq!(apply_user_bottom_pin(true, true), (true, false));
-        assert_eq!(apply_user_bottom_pin(false, true), (true, false));
-        assert_eq!(apply_user_bottom_pin(false, false), (false, false));
+        assert_eq!(apply_user_bottom_pin(true, true, false), (true, false));
+        assert_eq!(apply_user_bottom_pin(false, true, false), (true, false));
+        assert_eq!(apply_user_bottom_pin(true, false, false), (true, false));
+        assert_eq!(apply_user_bottom_pin(false, false, false), (false, false));
     }
 
     #[test]
     fn scrolling_up_clears_a_bottom_pin() {
-        assert_eq!(apply_user_bottom_pin(true, false), (false, true));
-        assert_eq!(apply_user_bottom_pin(false, false), (false, false));
+        assert_eq!(apply_user_bottom_pin(true, false, true), (false, true));
+        assert_eq!(apply_user_bottom_pin(false, false, true), (false, false));
     }
 
     #[test]
