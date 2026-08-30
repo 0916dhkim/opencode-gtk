@@ -906,11 +906,6 @@ fn transcript_factory() -> gtk::SignalListItemFactory {
             row.add_css_class("message-reasoning");
         }
         row.set_widget_name(&format!("row-{}", item.position()));
-        row.set_margin_top(0);
-        if let Some(parent) = row.parent() {
-            parent.set_margin_top(0);
-        }
-        row.queue_resize();
     });
     factory
 }
@@ -3047,51 +3042,9 @@ impl Controller {
             };
             let mut controller = controller.borrow_mut();
             controller.transcript_edge_refresh_scheduled = false;
-            controller.pack_transcript_to_bottom();
             controller.refresh_load_earlier_visibility();
             controller.refresh_sticky_message();
         });
-    }
-
-    fn pack_transcript_to_bottom(&self) {
-        let transcript = self.widgets.transcript.clone().upcast::<gtk::Widget>();
-        let Some(first) = find_message_row(&transcript, 0) else {
-            return;
-        };
-        if !self.transcript_at_bottom {
-            first.set_margin_top(0);
-            return;
-        }
-        let mut realized = Vec::new();
-        inspect_realized_rows(&transcript, &transcript, &mut realized);
-        if realized.is_empty() {
-            return;
-        }
-        let top = realized
-            .iter()
-            .map(|row| row.top)
-            .fold(f64::INFINITY, f64::min);
-        let bottom = realized
-            .iter()
-            .map(|row| row.bottom)
-            .fold(f64::NEG_INFINITY, f64::max);
-        let extra = transcript_top_pad(
-            true,
-            (bottom - top).max(0.0),
-            self.widgets.transcript_scroll.vadjustment().page_size(),
-            transcript_bottom_reserve(
-                self.widgets.transcript_status.is_visible(),
-                self.widgets.transcript_status.valign() == gtk::Align::End,
-                self.widgets.transcript_status.height(),
-                self.widgets.transcript_status.margin_bottom(),
-            ),
-        );
-        if first.margin_top() != extra {
-            first.set_margin_top(extra);
-        }
-        if self.transcript_at_bottom {
-            scroll_adjustment_to_bottom(&self.widgets.transcript_scroll.vadjustment());
-        }
     }
 
     fn refresh_transcript_status_margin(&self) {
@@ -5000,35 +4953,6 @@ fn viewport_at_top(value: f64, lower: f64) -> bool {
     value <= lower + BOTTOM_EPSILON
 }
 
-fn transcript_bottom_reserve(visible: bool, at_end: bool, height: i32, margin_bottom: i32) -> f64 {
-    if visible && at_end {
-        f64::from(height.max(0) + margin_bottom.max(0))
-    } else {
-        0.0
-    }
-}
-
-fn transcript_top_pad(pinned: bool, content_span: f64, page_size: f64, bottom_reserve: f64) -> i32 {
-    if !pinned {
-        return 0;
-    }
-    (page_size - content_span - bottom_reserve).floor().max(0.0) as i32
-}
-
-fn find_message_row(widget: &gtk::Widget, index: usize) -> Option<gtk::Widget> {
-    let mut child = widget.first_child();
-    while let Some(current) = child {
-        if current.has_css_class("message-row") && transcript_row_index(&current) == Some(index) {
-            return Some(current);
-        }
-        if let Some(found) = find_message_row(&current, index) {
-            return Some(found);
-        }
-        child = current.next_sibling();
-    }
-    None
-}
-
 fn apply_user_bottom_pin(pinned: bool, at_bottom: bool) -> (bool, bool) {
     if at_bottom {
         (true, false)
@@ -5720,13 +5644,6 @@ mod tests {
     fn scrolling_up_clears_a_bottom_pin() {
         assert_eq!(apply_user_bottom_pin(true, false), (false, true));
         assert_eq!(apply_user_bottom_pin(false, false), (false, false));
-    }
-
-    #[test]
-    fn pinned_short_transcript_packs_above_the_working_chip() {
-        assert_eq!(transcript_top_pad(true, 140.0, 600.0, 44.0), 416);
-        assert_eq!(transcript_top_pad(true, 580.0, 600.0, 44.0), 0);
-        assert_eq!(transcript_top_pad(false, 140.0, 600.0, 44.0), 0);
     }
 
     #[test]
