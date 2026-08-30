@@ -80,6 +80,12 @@ struct PendingPrompt {
     draft: Draft,
 }
 
+#[derive(Clone, Debug)]
+struct OptimisticPrompt {
+    row: String,
+    baseline_you: usize,
+}
+
 #[derive(Clone)]
 struct QuestionInputs {
     options: Vec<(gtk::CheckButton, String)>,
@@ -100,6 +106,7 @@ struct State {
     unread: HashSet<String>,
     drafts: HashMap<String, Draft>,
     pending_prompts: HashMap<String, PendingPrompt>,
+    optimistic_prompts: HashMap<String, OptimisticPrompt>,
     server_busy: HashSet<String>,
     abort_requested: HashSet<String>,
     loading_messages: HashSet<String>,
@@ -1509,6 +1516,7 @@ impl Controller {
                                 .remove(&session_id)
                                 .expect("matching pending prompt")
                                 .draft;
+                            this.state.optimistic_prompts.remove(&session_id);
                             let draft = this.state.drafts.entry(session_id.clone()).or_default();
                             if draft.text.trim().is_empty() {
                                 draft.text = pending.text;
@@ -1782,6 +1790,9 @@ impl Controller {
                 this.state
                     .pending_prompts
                     .retain(|id, _| known.contains(id));
+                this.state
+                    .optimistic_prompts
+                    .retain(|id, _| known.contains(id));
                 this.state.statuses.retain(|id, _| known.contains(id));
                 this.state.server_busy.retain(|id| known.contains(id));
                 this.state.abort_requested.retain(|id| known.contains(id));
@@ -2024,6 +2035,7 @@ impl Controller {
                     RunStatus::Idle => {
                         this.state.server_busy.remove(&session_id);
                         this.state.abort_requested.remove(&session_id);
+                        this.state.optimistic_prompts.remove(&session_id);
                         remove_pending_clipboard_attachments(
                             this.state.pending_prompts.remove(&session_id),
                         );
@@ -2835,11 +2847,19 @@ impl Controller {
 
     fn refresh_transcript(&mut self, update: TranscriptUpdate) {
         let active = self.state.active.clone();
-        let rows = active
+        let mut rows = active
             .as_ref()
             .and_then(|active| self.state.conversations.get(active))
             .map(Conversation::transcript_rows)
             .unwrap_or_default();
+        if let Some(session_id) = active.as_ref() {
+            let optimistic = self.state.optimistic_prompts.get(session_id);
+            let (next, superseded) = apply_optimistic_row(rows, optimistic);
+            rows = next;
+            if superseded {
+                self.state.optimistic_prompts.remove(session_id);
+            }
+        }
         let adjustment = self.widgets.transcript_scroll.vadjustment();
         let old_upper = adjustment.upper();
         let old_value = adjustment.value();
@@ -3252,6 +3272,22 @@ impl Controller {
                     agent: session.agent,
                     attachments: pending.attachments.clone(),
                 };
+                let baseline_you = this
+                    .state
+                    .conversations
+                    .get(&active)
+                    .map(Conversation::transcript_rows)
+                    .unwrap_or_default()
+                    .iter()
+                    .filter(|row| transcript_row_is_user(row))
+                    .count();
+                this.state.optimistic_prompts.insert(
+                    active.clone(),
+                    OptimisticPrompt {
+                        row: optimistic_transcript_row(&pending, unix_millis()),
+                        baseline_you,
+                    },
+                );
                 this.state.pending_prompts.insert(
                     active.clone(),
                     PendingPrompt {
@@ -4577,6 +4613,7 @@ impl Controller {
         self.state.abort_requested.remove(id);
         self.state.drafts.remove(id);
         self.state.pending_prompts.remove(id);
+        self.state.optimistic_prompts.remove(id);
         self.message_load_errors.remove(id);
         if self.state.active.as_deref() == Some(id) {
             self.state.active = self.state.tabs.last().cloned();
@@ -4760,6 +4797,71 @@ fn transcript_session_changed(
     active_session: Option<&str>,
 ) -> bool {
     rendered_session != active_session
+}
+
+fn unix_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+fn transcript_row_is_user(row: &str) -> bool {
+    serde_json::from_str::<TranscriptRow>(row).is_ok_and(|row| row.role == "YOU")
+}
+
+fn apply_optimistic_row(
+    mut rows: Vec<String>,
+    optimistic: Option<&OptimisticPrompt>,
+) -> (Vec<String>, bool) {
+    let Some(optimistic) = optimistic else {
+        return (rows, false);
+    };
+    let you = rows
+        .iter()
+        .filter(|row| transcript_row_is_user(row))
+        .count();
+    if you > optimistic.baseline_you {
+        (rows, true)
+    } else {
+        rows.push(optimistic.row.clone());
+        (rows, false)
+    }
+}
+
+fn optimistic_transcript_row(draft: &Draft, created: u64) -> String {
+    let mut blocks = Vec::new();
+    let mut images = Vec::new();
+    if !draft.text.is_empty() {
+        blocks.push(draft.text.clone());
+    }
+    for path in &draft.attachments {
+        let filename = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("attachment");
+        let mime = mime_guess::from_path(path).first_or_octet_stream();
+        blocks.push(format!("Attached: {filename} ({mime})"));
+        if mime.as_ref().starts_with("image/") {
+            if let Some(url) = attachment_data_url(path, mime.as_ref()) {
+                images.push(url);
+            }
+        }
+    }
+    serde_json::json!({
+        "role": "YOU",
+        "body": blocks.join("\n\n"),
+        "images": images,
+        "time": created,
+        "kind": "",
+    })
+    .to_string()
+}
+
+fn attachment_data_url(path: &PathBuf, mime: &str) -> Option<String> {
+    let bytes = fs::read(path).ok()?;
+    (bytes.len() <= MAX_INLINE_IMAGE_BYTES)
+        .then(|| format!("data:{mime};base64,{}", BASE64.encode(bytes)))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -5693,6 +5795,75 @@ mod tests {
         assert_eq!(transcript_top_pad(true, 140.0, 600.0, 44.0), 416);
         assert_eq!(transcript_top_pad(true, 580.0, 600.0, 44.0), 0);
         assert_eq!(transcript_top_pad(false, 140.0, 600.0, 44.0), 0);
+    }
+
+    #[test]
+    fn optimistic_user_row_stays_until_a_new_you_row_arrives() {
+        let existing = vec![optimistic_transcript_row(
+            &Draft {
+                text: "old".into(),
+                attachments: Vec::new(),
+            },
+            1,
+        )];
+        let pending = OptimisticPrompt {
+            row: optimistic_transcript_row(
+                &Draft {
+                    text: "new".into(),
+                    attachments: Vec::new(),
+                },
+                2,
+            ),
+            baseline_you: 1,
+        };
+        let (rows, superseded) = apply_optimistic_row(existing.clone(), Some(&pending));
+        assert!(!superseded);
+        assert_eq!(rows.len(), 2);
+        let mut arrived = existing;
+        arrived.push(pending.row.clone());
+        let (rows, superseded) = apply_optimistic_row(arrived, Some(&pending));
+        assert!(superseded);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(
+            rows.iter()
+                .filter(|row| transcript_row_is_user(row))
+                .count(),
+            2
+        );
+    }
+
+    #[test]
+    fn agent_rows_do_not_replace_an_optimistic_user_row() {
+        let pending = OptimisticPrompt {
+            row: optimistic_transcript_row(
+                &Draft {
+                    text: "hello".into(),
+                    attachments: Vec::new(),
+                },
+                2,
+            ),
+            baseline_you: 1,
+        };
+        let rows = vec![
+            optimistic_transcript_row(
+                &Draft {
+                    text: "old".into(),
+                    attachments: Vec::new(),
+                },
+                1,
+            ),
+            serde_json::json!({
+                "role": "AGENT",
+                "body": "working",
+                "images": [],
+                "time": 3,
+                "kind": "",
+            })
+            .to_string(),
+        ];
+        let (rows, superseded) = apply_optimistic_row(rows, Some(&pending));
+        assert!(!superseded);
+        assert_eq!(rows.len(), 3);
     }
 
     #[test]
