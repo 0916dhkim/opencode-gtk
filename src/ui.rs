@@ -37,6 +37,8 @@ const COMPOSER_ICON_PX: i32 = 22;
 const TAB_ICON_PX: i32 = 16;
 const BOTTOM_EPSILON: f64 = 2.0;
 const MAX_INLINE_IMAGE_BYTES: usize = 25 * 1024 * 1024;
+const ROW_ESTIMATE: i32 = 88;
+const ROW_OVERSCAN: usize = 2;
 
 #[derive(Deserialize)]
 struct TranscriptRow {
@@ -66,6 +68,13 @@ enum TranscriptIndicator {
     Working,
     Error,
     Empty,
+}
+
+struct TranscriptVisible {
+    index: usize,
+    bound: String,
+    row: gtk::Box,
+    css: gtk::CssProvider,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -121,9 +130,8 @@ struct Widgets {
     settings_button: gtk::Button,
     status: gtk::Label,
     tab_bar: gtk::Box,
-    transcript: gtk::Box,
+    transcript: gtk::Overlay,
     transcript_spacer: gtk::Box,
-    transcript_footer: gtk::Box,
     transcript_scroll: gtk::ScrolledWindow,
     sticky_message: gtk::Box,
     sticky_message_scroll: gtk::ScrolledWindow,
@@ -169,6 +177,9 @@ struct Controller {
     widgets: Widgets,
     rendered_session: Option<String>,
     rendered_rows: Vec<String>,
+    transcript_heights: Vec<i32>,
+    transcript_visible: Vec<TranscriptVisible>,
+    transcript_pool: Vec<TranscriptVisible>,
     transcript_at_bottom: bool,
     transcript_scroll_value: f64,
     transcript_scroll_generation: u64,
@@ -377,6 +388,9 @@ pub fn launch(
         widgets,
         rendered_session: None,
         rendered_rows: Vec::new(),
+        transcript_heights: Vec::new(),
+        transcript_visible: Vec::new(),
+        transcript_pool: Vec::new(),
         transcript_at_bottom: true,
         transcript_scroll_value: 0.0,
         transcript_scroll_generation: 0,
@@ -635,27 +649,21 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
     let transcript_spacer = gtk::Box::new(gtk::Orientation::Vertical, 0);
     transcript_spacer.set_hexpand(true);
     transcript_spacer.set_can_target(false);
-    let transcript_footer = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    transcript_footer.set_hexpand(true);
-    transcript_footer.set_can_target(false);
-    let transcript = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    let transcript_column = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    transcript_column.add_css_class("transcript");
-    transcript_column.append(&transcript_spacer);
-    transcript_column.append(&transcript);
-    transcript_column.append(&transcript_footer);
+    let transcript = gtk::Overlay::new();
+    transcript.add_css_class("transcript");
+    transcript.set_child(Some(&transcript_spacer));
     let transcript_scroll = gtk::ScrolledWindow::builder()
         .hscrollbar_policy(gtk::PolicyType::Never)
         .vscrollbar_policy(gtk::PolicyType::Automatic)
         .vexpand(true)
-        .child(&transcript_column)
+        .child(&transcript)
         .build();
     let transcript_spinner = gtk::Spinner::new();
     let transcript_status_label = gtk::Label::new(Some("Open a session to begin"));
     let transcript_status = gtk::Box::new(gtk::Orientation::Horizontal, 10);
     transcript_status.add_css_class("transcript-status");
     transcript_status.set_halign(gtk::Align::Center);
-    transcript_status.set_valign(gtk::Align::Center);
+    transcript_status.set_hexpand(true);
     transcript_status.set_can_target(false);
     transcript_status.append(&transcript_spinner);
     transcript_status.append(&transcript_status_label);
@@ -713,12 +721,12 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
     let overlay = gtk::Overlay::new();
     overlay.set_vexpand(true);
     overlay.set_child(Some(&transcript_scroll));
-    overlay.add_overlay(&transcript_status);
     overlay.add_overlay(&sticky_message);
     let conversation = gtk::Box::new(gtk::Orientation::Vertical, 0);
     conversation.set_vexpand(true);
     conversation.append(&load_earlier);
     conversation.append(&overlay);
+    conversation.append(&transcript_status);
     main.append(&conversation);
 
     let composer = gtk::TextView::new();
@@ -796,7 +804,6 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
         tab_bar,
         transcript,
         transcript_spacer,
-        transcript_footer,
         transcript_scroll,
         sticky_message,
         sticky_message_scroll,
@@ -2880,13 +2887,7 @@ impl Controller {
             self.pin_transcript_to_bottom();
         }
         let follow_bottom = self.transcript_at_bottom;
-        sync_transcript_list(
-            &self.widgets.transcript,
-            &mut self.rendered_session,
-            &mut self.rendered_rows,
-            active.as_deref(),
-            rows,
-        );
+        self.sync_transcript_data(active.as_deref(), rows);
         let loading = active
             .as_ref()
             .is_some_and(|active| self.state.loading_messages.contains(active));
@@ -2917,7 +2918,6 @@ impl Controller {
         if update == TranscriptUpdate::Activate {
             self.widgets.load_earlier.set_visible(false);
             self.widgets.sticky_message.set_visible(false);
-            self.refresh_transcript_status_margin();
         } else {
             self.refresh_load_earlier_visibility();
         }
@@ -2988,37 +2988,29 @@ impl Controller {
     }
 
     fn refresh_sticky_message(&self) {
-        if adjustment_at_top(&self.widgets.transcript_scroll.vadjustment()) {
+        let adjustment = self.widgets.transcript_scroll.vadjustment();
+        if adjustment_at_top(&adjustment) {
             self.widgets.sticky_message.set_visible(false);
-            self.refresh_transcript_status_margin();
             return;
         }
         let user_indices: Vec<usize> = self
             .rendered_rows
             .iter()
             .enumerate()
-            .filter_map(|(index, row)| {
-                serde_json::from_str::<TranscriptRow>(row)
-                    .ok()
-                    .filter(|row| row.role == "YOU")
-                    .map(|_| index)
-            })
+            .filter_map(|(index, row)| transcript_row_is_user(row).then_some(index))
             .collect();
-        let transcript = self.widgets.transcript.clone().upcast::<gtk::Widget>();
-        let viewport = self
-            .widgets
-            .transcript_scroll
-            .clone()
-            .upcast::<gtk::Widget>();
-        let viewport_bottom = f64::from(viewport.height());
+        let viewport_bottom = adjustment.page_size();
         if viewport_bottom <= 0.0 {
             self.widgets.sticky_message.set_visible(false);
-            self.refresh_transcript_status_margin();
             return;
         }
-        let mut realized = Vec::new();
-        inspect_realized_rows(&transcript, &viewport, &mut realized);
-        let sticky_index = sticky_user_index(&user_indices, &realized, 0.0, viewport_bottom);
+        let realized = row_layout_bounds(&self.rendered_rows, &self.transcript_heights);
+        let sticky_index = sticky_user_index(
+            &user_indices,
+            &realized,
+            adjustment.value(),
+            adjustment.value() + viewport_bottom,
+        );
         match sticky_index.and_then(|index| {
             self.rendered_rows
                 .get(index)
@@ -3046,7 +3038,6 @@ impl Controller {
                 self.widgets.sticky_message.set_visible(false);
             }
         }
-        self.refresh_transcript_status_margin();
     }
 
     fn queue_transcript_edge_refresh(&mut self) {
@@ -3061,71 +3052,105 @@ impl Controller {
             };
             let mut controller = controller.borrow_mut();
             controller.transcript_edge_refresh_scheduled = false;
-            controller.pack_transcript_to_bottom();
+            controller.relayout_transcript();
             controller.refresh_load_earlier_visibility();
             controller.refresh_sticky_message();
         });
     }
 
-    fn pack_transcript_to_bottom(&self) {
+    fn relayout_transcript(&mut self) {
         let width = self
             .widgets
             .transcript_scroll
             .width()
             .max(self.widgets.transcript.width())
             .max(1);
-        let (_, content, _, _) = self
-            .widgets
-            .transcript
-            .measure(gtk::Orientation::Vertical, width);
-        let reserve = if self.widgets.transcript_status.is_visible()
-            && self.widgets.transcript_status.valign() == gtk::Align::End
-        {
-            let (_, height, _, _) = self
-                .widgets
-                .transcript_status
-                .measure(gtk::Orientation::Vertical, width);
-            height.max(0) + self.widgets.transcript_status.margin_bottom().max(0)
-        } else {
-            0
-        };
-        let extra = transcript_top_pad(
-            self.transcript_at_bottom,
-            f64::from(content),
-            self.widgets.transcript_scroll.vadjustment().page_size(),
-            f64::from(reserve),
+        let adjustment = self.widgets.transcript_scroll.vadjustment();
+        let (start, end) = visible_row_range(
+            &self.transcript_heights,
+            adjustment.value(),
+            adjustment.page_size(),
+            ROW_OVERSCAN,
         );
-        if self.widgets.transcript_spacer.height_request() != extra {
-            self.widgets.transcript_spacer.set_size_request(-1, extra);
+        self.sync_visible_rows(start, end);
+        let mut changed = false;
+        for slot in &self.transcript_visible {
+            set_row_translate(&slot.css, row_offset(&self.transcript_heights, slot.index));
+            let (_, natural, _, _) = slot.row.measure(gtk::Orientation::Vertical, width);
+            let height = natural.max(1);
+            if let Some(stored) = self.transcript_heights.get_mut(slot.index) {
+                if *stored != height {
+                    *stored = height;
+                    changed = true;
+                }
+            }
         }
-        if self.widgets.transcript_footer.height_request() != reserve {
-            self.widgets.transcript_footer.set_size_request(-1, reserve);
+        let total = self.transcript_heights.iter().copied().sum::<i32>().max(0);
+        if self.widgets.transcript_spacer.height_request() != total {
+            self.widgets.transcript_spacer.set_size_request(-1, total);
+            changed = true;
+        }
+        if changed {
+            self.queue_transcript_edge_refresh();
         }
     }
 
-    fn refresh_transcript_status_margin(&self) {
-        let compact = self
-            .widgets
-            .transcript_status
-            .has_css_class("transcript-status-compact");
-        let sticky_offset = if self.widgets.sticky_message.is_visible()
-            && self.widgets.transcript_status.valign() == gtk::Align::Start
-        {
-            let width = self.widgets.transcript_scroll.width().max(1);
-            let (_, natural_height, _, _) = self
-                .widgets
-                .sticky_message
-                .measure(gtk::Orientation::Vertical, width);
-            natural_height
-        } else {
-            0
-        };
-        self.widgets
-            .transcript_status
-            .set_margin_top(if compact { 12 + sticky_offset } else { 0 });
-        self.widgets
-            .transcript_status
-            .set_margin_bottom(if compact { 12 } else { 0 });
+    fn sync_transcript_data(&mut self, active_session: Option<&str>, new_rows: Vec<String>) {
+        if transcript_session_changed(self.rendered_session.as_deref(), active_session) {
+            self.recycle_visible_rows();
+            self.transcript_heights.clear();
+            self.rendered_rows.clear();
+            self.rendered_session = active_session.map(str::to_owned);
+        }
+        self.transcript_heights =
+            reuse_row_heights(&self.rendered_rows, &self.transcript_heights, &new_rows);
+        self.rendered_rows = new_rows;
+    }
+
+    fn recycle_visible_rows(&mut self) {
+        for slot in self.transcript_visible.drain(..) {
+            self.widgets.transcript.remove_overlay(&slot.row);
+            self.transcript_pool.push(slot);
+        }
+    }
+
+    fn sync_visible_rows(&mut self, start: usize, end: usize) {
+        let needed: HashSet<usize> = (start..end).collect();
+        let mut keep = Vec::new();
+        for slot in self.transcript_visible.drain(..) {
+            if needed.contains(&slot.index) {
+                keep.push(slot);
+            } else {
+                self.widgets.transcript.remove_overlay(&slot.row);
+                self.transcript_pool.push(slot);
+            }
+        }
+        let have: HashSet<usize> = keep.iter().map(|slot| slot.index).collect();
+        for index in start..end {
+            if have.contains(&index) {
+                continue;
+            }
+            let mut slot = self
+                .transcript_pool
+                .pop()
+                .unwrap_or_else(new_transcript_slot);
+            slot.index = index;
+            slot.bound.clear();
+            slot.row.set_halign(gtk::Align::Fill);
+            slot.row.set_valign(gtk::Align::Start);
+            self.widgets.transcript.add_overlay(&slot.row);
+            keep.push(slot);
+        }
+        for slot in &mut keep {
+            let Some(value) = self.rendered_rows.get(slot.index) else {
+                continue;
+            };
+            if slot.bound != *value {
+                bind_transcript_row(&slot.row, value, slot.index as u32);
+                slot.bound = value.clone();
+            }
+        }
+        self.transcript_visible = keep;
     }
 
     fn refresh_transcript_indicator(
@@ -3134,14 +3159,12 @@ impl Controller {
         has_rows: bool,
         error: Option<&str>,
     ) {
-        let (label, spinning, alignment) = match indicator {
-            TranscriptIndicator::Hidden => ("", false, gtk::Align::Center),
-            TranscriptIndicator::NoSession => {
-                ("Open a session to begin", false, gtk::Align::Center)
-            }
-            TranscriptIndicator::Loading => ("Loading conversation", true, gtk::Align::Center),
-            TranscriptIndicator::Refreshing => ("Refreshing conversation", true, gtk::Align::Start),
-            TranscriptIndicator::Working => ("OpenCode is working", true, gtk::Align::End),
+        let (label, spinning) = match indicator {
+            TranscriptIndicator::Hidden => ("", false),
+            TranscriptIndicator::NoSession => ("Open a session to begin", false),
+            TranscriptIndicator::Loading => ("Loading conversation", true),
+            TranscriptIndicator::Refreshing => ("Refreshing conversation", true),
+            TranscriptIndicator::Working => ("OpenCode is working", true),
             TranscriptIndicator::Error => (
                 if has_rows {
                     "Could not refresh conversation"
@@ -3149,18 +3172,20 @@ impl Controller {
                     "Could not load conversation"
                 },
                 false,
-                if has_rows {
-                    gtk::Align::Start
-                } else {
-                    gtk::Align::Center
-                },
             ),
-            TranscriptIndicator::Empty => ("No messages yet", false, gtk::Align::Center),
+            TranscriptIndicator::Empty => ("No messages yet", false),
         };
         let visible = indicator != TranscriptIndicator::Hidden;
         let compact = visible && has_rows;
+        self.widgets.transcript_scroll.set_visible(has_rows);
+        if let Some(pane) = self.widgets.transcript_scroll.parent() {
+            pane.set_visible(has_rows);
+            pane.set_vexpand(has_rows);
+        }
         self.widgets.transcript_status.set_visible(visible);
-        self.widgets.transcript_status.set_valign(alignment);
+        self.widgets
+            .transcript_status
+            .set_vexpand(!has_rows && visible);
         if compact {
             self.widgets
                 .transcript_status
@@ -3170,7 +3195,6 @@ impl Controller {
                 .transcript_status
                 .remove_css_class("transcript-status-compact");
         }
-        self.refresh_transcript_status_margin();
         self.widgets.transcript_status_label.set_label(label);
         self.widgets.transcript_status.set_tooltip_text(error);
         self.widgets.transcript_spinner.set_visible(spinning);
@@ -4768,46 +4792,87 @@ fn replace_string_list(model: &gtk::StringList, values: &[&str]) {
     model.splice(0, model.n_items(), values);
 }
 
-fn sync_transcript_list(
-    container: &gtk::Box,
-    rendered_session: &mut Option<String>,
-    rendered_rows: &mut Vec<String>,
-    active_session: Option<&str>,
-    new_rows: Vec<String>,
-) {
-    if transcript_session_changed(rendered_session.as_deref(), active_session) {
-        clear_box(container);
-        rendered_rows.clear();
-        *rendered_session = active_session.map(str::to_owned);
+fn new_transcript_slot() -> TranscriptVisible {
+    let row = transcript_row_widget();
+    row.set_hexpand(true);
+    row.set_halign(gtk::Align::Fill);
+    row.set_valign(gtk::Align::Start);
+    row.set_vexpand(false);
+    let css = gtk::CssProvider::new();
+    row.style_context()
+        .add_provider(&css, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
+    TranscriptVisible {
+        index: usize::MAX,
+        bound: String::new(),
+        row,
+        css,
     }
-    let common = rendered_rows.len().min(new_rows.len());
-    let mut child = container.first_child();
-    for index in 0..common {
-        let Some(widget) = child else {
+}
+
+fn set_row_translate(provider: &gtk::CssProvider, y: i32) {
+    provider.load_from_data(&format!(
+        "* {{ transform: translateY({y}px); transform-origin: top left; }}"
+    ));
+}
+
+fn reuse_row_heights(old_rows: &[String], old_heights: &[i32], new_rows: &[String]) -> Vec<i32> {
+    if old_rows.is_empty() {
+        return vec![ROW_ESTIMATE; new_rows.len()];
+    }
+    if new_rows.len() > old_rows.len() {
+        let inserted = new_rows.len() - old_rows.len();
+        if new_rows[inserted..] == *old_rows {
+            let mut heights = vec![ROW_ESTIMATE; inserted];
+            heights.extend_from_slice(old_heights);
+            return heights;
+        }
+    }
+    new_rows
+        .iter()
+        .enumerate()
+        .map(|(index, row)| {
+            if old_rows.get(index) == Some(row) {
+                old_heights.get(index).copied().unwrap_or(ROW_ESTIMATE)
+            } else {
+                ROW_ESTIMATE
+            }
+        })
+        .collect()
+}
+
+fn row_offset(heights: &[i32], index: usize) -> i32 {
+    heights.iter().take(index).copied().sum()
+}
+
+fn visible_row_range(heights: &[i32], scroll: f64, page: f64, overscan: usize) -> (usize, usize) {
+    if heights.is_empty() {
+        return (0, 0);
+    }
+    let top = scroll.max(0.0);
+    let bottom = top + page.max(1.0);
+    let mut y = 0.0;
+    let mut start = 0;
+    let mut end = heights.len();
+    for (index, height) in heights.iter().enumerate() {
+        let next = y + f64::from(*height);
+        if next > top {
+            start = index;
             break;
-        };
-        let next = widget.next_sibling();
-        if rendered_rows[index] != new_rows[index] {
-            if let Ok(row) = widget.downcast::<gtk::Box>() {
-                bind_transcript_row(&row, &new_rows[index], index as u32);
-            }
         }
-        child = next;
+        y = next;
     }
-    if new_rows.len() > rendered_rows.len() {
-        for (offset, value) in new_rows[rendered_rows.len()..].iter().enumerate() {
-            let row = transcript_row_widget();
-            bind_transcript_row(&row, value, (rendered_rows.len() + offset) as u32);
-            container.append(&row);
-        }
-    } else if rendered_rows.len() > new_rows.len() {
-        for _ in 0..(rendered_rows.len() - new_rows.len()) {
-            if let Some(last) = container.last_child() {
-                container.remove(&last);
-            }
+    y = 0.0;
+    for (index, height) in heights.iter().enumerate() {
+        y += f64::from(*height);
+        if y >= bottom {
+            end = index + 1;
+            break;
         }
     }
-    *rendered_rows = new_rows;
+    (
+        start.saturating_sub(overscan),
+        (end + overscan).min(heights.len()),
+    )
 }
 
 fn transcript_session_changed(
@@ -4890,35 +4955,22 @@ struct RealizedRowBounds {
     user: bool,
 }
 
-fn inspect_realized_rows(
-    widget: &gtk::Widget,
-    transcript: &gtk::Widget,
-    realized: &mut Vec<RealizedRowBounds>,
-) {
-    let mut child = widget.first_child();
-    while let Some(current) = child {
-        if current.has_css_class("message-row") {
-            if let Some(index) = transcript_row_index(&current) {
-                if let Some(bounds) = current.compute_bounds(transcript) {
-                    realized.push(RealizedRowBounds {
-                        index,
-                        top: f64::from(bounds.y()),
-                        bottom: f64::from(bounds.y() + bounds.height()),
-                        user: current.has_css_class("user-message"),
-                    });
-                }
+fn row_layout_bounds(rows: &[String], heights: &[i32]) -> Vec<RealizedRowBounds> {
+    let mut y = 0.0;
+    rows.iter()
+        .zip(heights)
+        .enumerate()
+        .map(|(index, (row, height))| {
+            let top = y;
+            y += f64::from(*height);
+            RealizedRowBounds {
+                index,
+                top,
+                bottom: y,
+                user: transcript_row_is_user(row),
             }
-        }
-        inspect_realized_rows(&current, transcript, realized);
-        child = current.next_sibling();
-    }
-}
-
-fn transcript_row_index(widget: &gtk::Widget) -> Option<usize> {
-    widget
-        .widget_name()
-        .strip_prefix("row-")
-        .and_then(|index| index.parse().ok())
+        })
+        .collect()
 }
 
 fn sticky_user_index(
@@ -5098,13 +5150,6 @@ fn viewport_at_bottom(value: f64, page_size: f64, upper: f64) -> bool {
 
 fn viewport_at_top(value: f64, lower: f64) -> bool {
     value <= lower + BOTTOM_EPSILON
-}
-
-fn transcript_top_pad(pinned: bool, content_span: f64, page_size: f64, bottom_reserve: f64) -> i32 {
-    if !pinned {
-        return 0;
-    }
-    (page_size - content_span - bottom_reserve).floor().max(0.0) as i32
 }
 
 fn apply_user_bottom_pin(pinned: bool, at_bottom: bool, scrolled_up: bool) -> (bool, bool) {
@@ -5802,10 +5847,44 @@ mod tests {
     }
 
     #[test]
-    fn pinned_short_transcript_packs_above_the_working_chip() {
-        assert_eq!(transcript_top_pad(true, 140.0, 600.0, 44.0), 416);
-        assert_eq!(transcript_top_pad(true, 580.0, 600.0, 44.0), 0);
-        assert_eq!(transcript_top_pad(false, 140.0, 600.0, 44.0), 0);
+    fn visible_range_covers_the_viewport_plus_overscan() {
+        let heights = [80, 80, 80, 80, 80, 80];
+        assert_eq!(visible_row_range(&heights, 0.0, 100.0, 1), (0, 3));
+        assert_eq!(visible_row_range(&heights, 160.0, 80.0, 1), (1, 4));
+        assert_eq!(visible_row_range(&[], 0.0, 100.0, 1), (0, 0));
+    }
+
+    #[test]
+    fn reused_heights_keep_unchanged_rows_and_prepend() {
+        let old = vec!["a".into(), "b".into()];
+        let heights = vec![10, 20];
+        assert_eq!(
+            reuse_row_heights(&old, &heights, &["a".into(), "b".into(), "c".into()]),
+            vec![10, 20, ROW_ESTIMATE]
+        );
+        assert_eq!(
+            reuse_row_heights(&old, &heights, &["z".into(), "a".into(), "b".into()]),
+            vec![ROW_ESTIMATE, 10, 20]
+        );
+        assert_eq!(
+            reuse_row_heights(&old, &heights, &["a".into(), "x".into()]),
+            vec![10, ROW_ESTIMATE]
+        );
+    }
+
+    #[test]
+    fn layout_bounds_stack_from_the_top() {
+        let rows = vec![
+            r#"{"role":"YOU","body":"hi","images":[],"time":1,"kind":""}"#.into(),
+            r#"{"role":"AGENT","body":"ok","images":[],"time":2,"kind":""}"#.into(),
+        ];
+        let bounds = row_layout_bounds(&rows, &[40, 60]);
+        assert_eq!(bounds[0].top, 0.0);
+        assert_eq!(bounds[0].bottom, 40.0);
+        assert!(bounds[0].user);
+        assert_eq!(bounds[1].top, 40.0);
+        assert_eq!(bounds[1].bottom, 100.0);
+        assert!(!bounds[1].user);
     }
 
     #[test]

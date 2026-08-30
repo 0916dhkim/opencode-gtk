@@ -333,6 +333,7 @@ listview.transcript > row:focus {
 }
 
 .transcript-status-compact {
+  margin: 8px 0 10px;
   padding: 7px 12px;
   border: 1px solid #34393e;
   border-radius: 999px;
