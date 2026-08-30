@@ -140,6 +140,7 @@ struct Widgets {
 #[derive(Default)]
 struct TabDnd {
     index: Option<usize>,
+    slot: Option<gtk::Revealer>,
 }
 
 struct Controller {
@@ -2188,7 +2189,7 @@ impl Controller {
     }
 
     fn refresh_tabs(&mut self, weak: &Weak<RefCell<Self>>) {
-        self.widgets.tab_dnd.borrow_mut().index = None;
+        *self.widgets.tab_dnd.borrow_mut() = TabDnd::default();
         clear_box(&self.widgets.tab_bar);
         let mut previous_inactive = false;
         for id in self.state.tabs.clone() {
@@ -2341,7 +2342,7 @@ impl Controller {
                     .parent()
                     .and_then(|parent| parent.downcast::<gtk::Box>().ok())
                 {
-                    place_drop_slot(&bar, index, &dnd, false, &weak_begin);
+                    place_drop_slot(&bar, index, &dnd, &weak_begin);
                 }
             });
             let drag_tab = tab.clone();
@@ -2373,7 +2374,6 @@ impl Controller {
                             &bar,
                             insert_index_for_target(&widget, after),
                             &dnd,
-                            true,
                             &weak_motion,
                         );
                     }
@@ -5048,8 +5048,6 @@ fn should_follow_transcript(update: TranscriptUpdate, at_bottom: bool) -> bool {
     update == TranscriptUpdate::Activate || at_bottom
 }
 
-const TAB_SLOT_MS: u32 = 180;
-
 fn is_visible_session_tab(widget: &gtk::Widget) -> bool {
     widget.has_css_class("session-tab") && widget.is_visible()
 }
@@ -5095,7 +5093,7 @@ fn insert_index_for_target(target: &gtk::Widget, after: bool) -> usize {
     }
 }
 
-fn tab_drop_slot() -> gtk::Revealer {
+fn tab_drop_slot(weak: &Weak<RefCell<Controller>>) -> gtk::Revealer {
     let child = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     child.add_css_class("tab-drop-slot");
     child.set_hexpand(true);
@@ -5103,39 +5101,29 @@ fn tab_drop_slot() -> gtk::Revealer {
     let slot = gtk::Revealer::new();
     slot.add_css_class("tab-drop-slot");
     slot.set_transition_type(gtk::RevealerTransitionType::SlideDown);
-    slot.set_transition_duration(TAB_SLOT_MS);
+    slot.set_transition_duration(160);
     slot.set_child(Some(&child));
+    let drop_target = gtk::DropTarget::new(String::static_type(), gdk::DragAction::MOVE);
+    let weak_drop = weak.clone();
+    drop_target.connect_drop(move |_, value, _, _| {
+        let Ok(source_id) = value.get::<String>() else {
+            return false;
+        };
+        let Some(controller) = weak_drop.upgrade() else {
+            return false;
+        };
+        Controller::commit_tab_order(&controller, &source_id)
+    });
+    drop_target.connect_motion(|_, _, _| gdk::DragAction::MOVE);
+    slot.add_controller(drop_target);
+    slot.set_reveal_child(true);
     slot
 }
 
-fn close_drop_slots(bar: &gtk::Box) {
-    let mut child = bar.first_child();
-    while let Some(widget) = child {
-        let next = widget.next_sibling();
-        if let Ok(slot) = widget.downcast::<gtk::Revealer>() {
-            if slot.has_css_class("tab-drop-slot") {
-                if slot.reveals_child() {
-                    let bar = bar.clone();
-                    let slot_rm = slot.clone();
-                    glib::timeout_add_local_once(
-                        Duration::from_millis(u64::from(TAB_SLOT_MS)),
-                        move || {
-                            if slot_rm.parent().is_some() && !slot_rm.reveals_child() {
-                                bar.remove(&slot_rm);
-                            }
-                        },
-                    );
-                    slot.set_reveal_child(false);
-                } else if slot.parent().is_some() {
-                    bar.remove(&slot);
-                }
-            }
-        }
-        child = next;
-    }
-}
-
 fn insert_slot_at(bar: &gtk::Box, index: usize, slot: &gtk::Revealer) {
+    if slot.parent().is_some() {
+        bar.remove(slot);
+    }
     let mut tab_index = 0;
     let mut child = bar.first_child();
     while let Some(widget) = child {
@@ -5158,35 +5146,22 @@ fn place_drop_slot(
     bar: &gtk::Box,
     index: usize,
     dnd: &Rc<RefCell<TabDnd>>,
-    animate: bool,
     weak: &Weak<RefCell<Controller>>,
 ) {
     if dnd.borrow().index == Some(index) {
         return;
     }
-    close_drop_slots(bar);
-    let slot = tab_drop_slot();
-    let drop_target = gtk::DropTarget::new(String::static_type(), gdk::DragAction::MOVE);
-    let weak_drop = weak.clone();
-    drop_target.connect_drop(move |_, value, _, _| {
-        let Ok(source_id) = value.get::<String>() else {
-            return false;
-        };
-        let Some(controller) = weak_drop.upgrade() else {
-            return false;
-        };
-        Controller::commit_tab_order(&controller, &source_id)
-    });
-    drop_target.connect_motion(|_, _, _| gdk::DragAction::MOVE);
-    slot.add_controller(drop_target);
-    if animate {
-        insert_slot_at(bar, index, &slot);
-        slot.set_reveal_child(true);
-    } else {
-        slot.set_reveal_child(true);
-        insert_slot_at(bar, index, &slot);
-    }
-    dnd.borrow_mut().index = Some(index);
+    let mut dnd = dnd.borrow_mut();
+    let slot = match &dnd.slot {
+        Some(slot) => slot.clone(),
+        None => {
+            let slot = tab_drop_slot(weak);
+            dnd.slot = Some(slot.clone());
+            slot
+        }
+    };
+    insert_slot_at(bar, index, &slot);
+    dnd.index = Some(index);
 }
 
 fn tab_drag_preview(title: &str, active: bool) -> gtk::Box {
