@@ -76,7 +76,6 @@ struct TranscriptVisible {
     index: usize,
     bound: String,
     row: gtk::Box,
-    css: gtk::CssProvider,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -132,7 +131,7 @@ struct Widgets {
     settings_button: gtk::Button,
     status: gtk::Label,
     tab_bar: gtk::Box,
-    transcript: gtk::Overlay,
+    transcript: gtk::Fixed,
     transcript_spacer: gtk::Box,
     transcript_scroll: gtk::ScrolledWindow,
     sticky_message: gtk::Box,
@@ -693,9 +692,10 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
     let transcript_spacer = gtk::Box::new(gtk::Orientation::Vertical, 0);
     transcript_spacer.set_hexpand(true);
     transcript_spacer.set_can_target(false);
-    let transcript = gtk::Overlay::new();
+    let transcript = gtk::Fixed::new();
     transcript.add_css_class("transcript");
-    transcript.set_child(Some(&transcript_spacer));
+    transcript.set_hexpand(true);
+    transcript.put(&transcript_spacer, 0.0, 0.0);
     let transcript_scroll = gtk::ScrolledWindow::builder()
         .hscrollbar_policy(gtk::PolicyType::Never)
         .vscrollbar_policy(gtk::PolicyType::Automatic)
@@ -3200,7 +3200,11 @@ impl Controller {
             if slot.row.width_request() != width {
                 slot.row.set_size_request(width, -1);
             }
-            set_row_translate(&slot.css, row_offset(&self.transcript_heights, slot.index));
+            self.widgets.transcript.move_(
+                &slot.row,
+                0.0,
+                f64::from(row_offset(&self.transcript_heights, slot.index)),
+            );
             let (_, natural, _, _) = slot.row.measure(gtk::Orientation::Vertical, width);
             let height = natural.max(1);
             if let Some(stored) = self.transcript_heights.get_mut(slot.index) {
@@ -3211,8 +3215,12 @@ impl Controller {
             }
         }
         let total = self.transcript_heights.iter().copied().sum::<i32>().max(0);
-        if self.widgets.transcript_spacer.height_request() != total {
-            self.widgets.transcript_spacer.set_size_request(-1, total);
+        if self.widgets.transcript_spacer.width_request() != width
+            || self.widgets.transcript_spacer.height_request() != total
+        {
+            self.widgets
+                .transcript_spacer
+                .set_size_request(width, total);
             changed = true;
         }
         if changed {
@@ -3234,7 +3242,7 @@ impl Controller {
 
     fn recycle_visible_rows(&mut self) {
         for slot in self.transcript_visible.drain(..) {
-            self.widgets.transcript.remove_overlay(&slot.row);
+            self.widgets.transcript.remove(&slot.row);
             self.transcript_pool.push(slot);
         }
     }
@@ -3246,7 +3254,7 @@ impl Controller {
             if needed.contains(&slot.index) {
                 keep.push(slot);
             } else {
-                self.widgets.transcript.remove_overlay(&slot.row);
+                self.widgets.transcript.remove(&slot.row);
                 self.transcript_pool.push(slot);
             }
         }
@@ -3263,7 +3271,7 @@ impl Controller {
             slot.bound.clear();
             slot.row.set_halign(gtk::Align::Fill);
             slot.row.set_valign(gtk::Align::Start);
-            self.widgets.transcript.add_overlay(&slot.row);
+            self.widgets.transcript.put(&slot.row, 0.0, 0.0);
             keep.push(slot);
         }
         for slot in &mut keep {
@@ -4923,21 +4931,11 @@ fn new_transcript_slot() -> TranscriptVisible {
     row.set_halign(gtk::Align::Fill);
     row.set_valign(gtk::Align::Start);
     row.set_vexpand(false);
-    let css = gtk::CssProvider::new();
-    row.style_context()
-        .add_provider(&css, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
     TranscriptVisible {
         index: usize::MAX,
         bound: String::new(),
         row,
-        css,
     }
-}
-
-fn set_row_translate(provider: &gtk::CssProvider, y: i32) {
-    provider.load_from_data(&format!(
-        "* {{ transform: translateY({y}px); transform-origin: top left; }}"
-    ));
 }
 
 fn reuse_row_heights(old_rows: &[String], old_heights: &[i32], new_rows: &[String]) -> Vec<i32> {
@@ -5278,6 +5276,9 @@ fn pointer_hits_widget(
     x: f64,
     y: f64,
 ) -> bool {
+    if widget.parent().is_none() || origin.parent().is_none() {
+        return false;
+    }
     widget.compute_bounds(origin).is_some_and(|bounds| {
         let x = x as f32;
         let y = y as f32;
