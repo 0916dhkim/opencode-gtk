@@ -243,8 +243,8 @@ fn icon_button(name: &str, pixel_size: i32) -> gtk::Button {
 fn sidebar_nav_button(icon: &str, label: &str, tooltip: &str) -> gtk::Button {
     let button = gtk::Button::new();
     let row = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-    let image = icon_image(icon, 12);
-    image.add_css_class("session-tab-status");
+    let image = icon_image(icon, 16);
+    image.add_css_class("sidebar-nav-icon");
     image.set_halign(gtk::Align::Center);
     image.set_valign(gtk::Align::Center);
     let text = gtk::Label::new(Some(label));

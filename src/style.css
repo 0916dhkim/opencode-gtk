@@ -57,6 +57,11 @@ headerbar {
   min-height: 1px;
 }
 
+.sidebar-nav-icon {
+  margin-left: 8px;
+  margin-right: 6px;
+}
+
 .modal-heading {
   font-size: 1.15em;
   font-weight: 700;
