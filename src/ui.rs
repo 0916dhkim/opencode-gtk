@@ -2148,7 +2148,7 @@ impl Controller {
                         this.state.unread.remove(&session_id)
                     };
                     tab_status_changed |= unread_changed;
-                    if open && unread && !window_active {
+                    if open && unread {
                         this.notify_session_idle(&session_id);
                     }
                 }
