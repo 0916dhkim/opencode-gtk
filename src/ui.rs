@@ -240,6 +240,21 @@ fn icon_button(name: &str, pixel_size: i32) -> gtk::Button {
     button
 }
 
+fn tab_index_from_key(key: gdk::Key) -> Option<usize> {
+    match key {
+        gdk::Key::_1 | gdk::Key::KP_1 => Some(0),
+        gdk::Key::_2 | gdk::Key::KP_2 => Some(1),
+        gdk::Key::_3 | gdk::Key::KP_3 => Some(2),
+        gdk::Key::_4 | gdk::Key::KP_4 => Some(3),
+        gdk::Key::_5 | gdk::Key::KP_5 => Some(4),
+        gdk::Key::_6 | gdk::Key::KP_6 => Some(5),
+        gdk::Key::_7 | gdk::Key::KP_7 => Some(6),
+        gdk::Key::_8 | gdk::Key::KP_8 => Some(7),
+        gdk::Key::_9 | gdk::Key::KP_9 => Some(8),
+        _ => None,
+    }
+}
+
 fn sidebar_nav_button(icon: &str, label: &str, tooltip: &str) -> gtk::Button {
     let button = gtk::Button::new();
     let row = gtk::Box::new(gtk::Orientation::Horizontal, 0);
@@ -1291,6 +1306,15 @@ fn wire_callbacks(controller: &Rc<RefCell<Controller>>) {
             Controller::rename_active_session(&controller);
             return glib::Propagation::Stop;
         }
+        if modifiers.contains(gdk::ModifierType::ALT_MASK)
+            && !modifiers.contains(gdk::ModifierType::CONTROL_MASK)
+        {
+            if let Some(index) = tab_index_from_key(key) {
+                Controller::select_tab_number(&controller, index);
+                return glib::Propagation::Stop;
+            }
+            return glib::Propagation::Proceed;
+        }
         if !modifiers.contains(gdk::ModifierType::CONTROL_MASK) {
             return glib::Propagation::Proceed;
         }
@@ -1309,16 +1333,13 @@ fn wire_callbacks(controller: &Rc<RefCell<Controller>>) {
                 },
             ),
             gdk::Key::ISO_Left_Tab => Controller::cycle_tab(&controller, -1),
-            gdk::Key::_1 => Controller::select_tab_number(&controller, 0),
-            gdk::Key::_2 => Controller::select_tab_number(&controller, 1),
-            gdk::Key::_3 => Controller::select_tab_number(&controller, 2),
-            gdk::Key::_4 => Controller::select_tab_number(&controller, 3),
-            gdk::Key::_5 => Controller::select_tab_number(&controller, 4),
-            gdk::Key::_6 => Controller::select_tab_number(&controller, 5),
-            gdk::Key::_7 => Controller::select_tab_number(&controller, 6),
-            gdk::Key::_8 => Controller::select_tab_number(&controller, 7),
-            gdk::Key::_9 => Controller::select_tab_number(&controller, 8),
-            _ => return glib::Propagation::Proceed,
+            _ => {
+                if let Some(index) = tab_index_from_key(key) {
+                    Controller::select_tab_number(&controller, index);
+                } else {
+                    return glib::Propagation::Proceed;
+                }
+            }
         }
         glib::Propagation::Stop
     });
@@ -5560,6 +5581,14 @@ mod tests {
                 CloudflareAccessCredentials::new("client.access".into(), "secret".into()).unwrap(),
             ),
         }
+    }
+
+    #[test]
+    fn number_keys_map_to_tab_indexes() {
+        assert_eq!(tab_index_from_key(gdk::Key::_1), Some(0));
+        assert_eq!(tab_index_from_key(gdk::Key::_9), Some(8));
+        assert_eq!(tab_index_from_key(gdk::Key::KP_3), Some(2));
+        assert_eq!(tab_index_from_key(gdk::Key::_0), None);
     }
 
     #[test]
