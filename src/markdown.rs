@@ -460,8 +460,9 @@ fn table_widget(table: TableBlock) -> gtk::Widget {
         .vscrollbar_policy(gtk::PolicyType::Never)
         .overlay_scrolling(false)
         .propagate_natural_height(true)
-        .propagate_natural_width(false)
-        .hexpand(true)
+        .propagate_natural_width(true)
+        .hexpand(false)
+        .halign(gtk::Align::Start)
         .child(&grid)
         .build();
     scroll.add_css_class("markdown-table-scroll");

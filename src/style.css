@@ -294,6 +294,7 @@ listview.transcript > row:focus {
 }
 
 .markdown-table-scroll {
+  max-width: 100%;
   border: 1px solid #30353a;
   border-radius: 8px;
 }
