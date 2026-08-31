@@ -185,6 +185,21 @@ listview.transcript > row:focus {
   color: #2f2d29;
 }
 
+.markdown-table-scroll {
+  border-color: #d0ccc4;
+}
+
+.markdown-table-header,
+.markdown-table-cell {
+  border-right-color: #d0ccc4;
+  border-bottom-color: #d0ccc4;
+}
+
+.markdown-table-header {
+  color: #1f1e1c;
+  background: #eeece7;
+}
+
 .message-content link {
   color: #8f5d1c;
 }
@@ -207,7 +222,9 @@ listview.transcript > row:focus {
 .message-reasoning .message-time,
 .message-reasoning .message-content,
 .message-reasoning .markdown-paragraph,
-.message-reasoning .markdown-heading {
+.message-reasoning .markdown-heading,
+.message-reasoning .markdown-table-header,
+.message-reasoning .markdown-table-cell {
   color: #9a9e9b;
 }
 

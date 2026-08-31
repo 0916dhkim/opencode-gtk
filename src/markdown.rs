@@ -1,5 +1,5 @@
 use gtk::{glib, pango, prelude::*};
-use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
+use pulldown_cmark::{Alignment, CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use url::Url;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -8,6 +8,22 @@ enum BlockKind {
     Heading(u8),
     Code(Option<String>),
     Rule,
+    Table(TableBlock),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CellAlign {
+    Default,
+    Left,
+    Center,
+    Right,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TableBlock {
+    alignments: Vec<CellAlign>,
+    header: Vec<String>,
+    rows: Vec<Vec<String>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -38,10 +54,19 @@ struct MarkdownParser {
     blocks: Vec<Block>,
     current: Option<OpenBlock>,
     code: Option<OpenBlock>,
+    table: Option<OpenTable>,
     lists: Vec<ListState>,
     pending_marker: Option<String>,
     quote_depth: usize,
     link_markup: Vec<bool>,
+}
+
+#[derive(Clone, Debug)]
+struct OpenTable {
+    alignments: Vec<CellAlign>,
+    header: Vec<String>,
+    rows: Vec<Vec<String>>,
+    current_row: Vec<String>,
 }
 
 pub fn render_into(container: &gtk::Box, source: &str) {
@@ -56,7 +81,8 @@ pub fn render_into(container: &gtk::Box, source: &str) {
 
 fn parse(source: &str) -> Vec<Block> {
     let mut options = Options::empty();
-    options.insert(Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS);
+    options
+        .insert(Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS | Options::ENABLE_TABLES);
     let mut state = MarkdownParser::default();
 
     for event in Parser::new_ext(source, options) {
@@ -112,6 +138,7 @@ fn parse(source: &str) -> Vec<Block> {
     }
 
     state.finish_code();
+    state.finish_table();
     state.finish_current();
     state.blocks
 }
@@ -171,6 +198,19 @@ impl MarkdownParser {
                 self.link_markup.push(safe);
             }
             Tag::Image { .. } => self.append_markup("Image: "),
+            Tag::Table(alignments) => {
+                self.finish_current();
+                self.table = Some(OpenTable {
+                    alignments: alignments.iter().copied().map(cell_align).collect(),
+                    header: Vec::new(),
+                    rows: Vec::new(),
+                    current_row: Vec::new(),
+                });
+            }
+            Tag::TableHead | Tag::TableRow => {}
+            Tag::TableCell => {
+                self.current = Some(self.open_block(BlockKind::Paragraph));
+            }
             _ => {}
         }
     }
@@ -200,6 +240,9 @@ impl MarkdownParser {
                     self.append_markup("</a>");
                 }
             }
+            TagEnd::TableCell => self.finish_table_cell(),
+            TagEnd::TableRow | TagEnd::TableHead => self.finish_table_row(),
+            TagEnd::Table => self.finish_table(),
             _ => {}
         }
     }
@@ -268,6 +311,59 @@ impl MarkdownParser {
             marker: code.marker,
             list_depth: code.list_depth,
             quote_depth: code.quote_depth,
+        });
+    }
+
+    fn finish_table_cell(&mut self) {
+        let content = self
+            .current
+            .take()
+            .map(|block| block.content)
+            .unwrap_or_default();
+        if let Some(table) = &mut self.table {
+            table.current_row.push(content);
+        }
+    }
+
+    fn finish_table_row(&mut self) {
+        if self.current.is_some() {
+            self.finish_table_cell();
+        }
+        let Some(table) = &mut self.table else {
+            return;
+        };
+        let row = std::mem::take(&mut table.current_row);
+        if row.is_empty() {
+            return;
+        }
+        if table.header.is_empty() {
+            table.header = row;
+        } else {
+            table.rows.push(row);
+        }
+    }
+
+    fn finish_table(&mut self) {
+        if self.table.is_none() {
+            return;
+        }
+        self.finish_table_row();
+        let Some(table) = self.table.take() else {
+            return;
+        };
+        if table.header.is_empty() && table.rows.is_empty() {
+            return;
+        }
+        self.blocks.push(Block {
+            kind: BlockKind::Table(TableBlock {
+                alignments: table.alignments,
+                header: table.header,
+                rows: table.rows,
+            }),
+            content: String::new(),
+            marker: None,
+            list_depth: self.lists.len(),
+            quote_depth: self.quote_depth,
         });
     }
 }
@@ -340,6 +436,86 @@ fn block_widget(block: Block) -> gtk::Widget {
             code_block.upcast()
         }
         BlockKind::Rule => gtk::Separator::new(gtk::Orientation::Horizontal).upcast(),
+        BlockKind::Table(table) => table_widget(table),
+    }
+}
+
+fn table_widget(table: TableBlock) -> gtk::Widget {
+    let columns = table_column_count(&table);
+    let grid = gtk::Grid::new();
+    grid.add_css_class("markdown-table");
+    grid.set_column_spacing(0);
+    grid.set_row_spacing(0);
+    let mut row_index = 0;
+    if !table.header.is_empty() {
+        attach_table_row(&grid, &table.header, &table.alignments, columns, 0, true);
+        row_index = 1;
+    }
+    for row in table.rows {
+        attach_table_row(&grid, &row, &table.alignments, columns, row_index, false);
+        row_index += 1;
+    }
+    let scroll = gtk::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Automatic)
+        .vscrollbar_policy(gtk::PolicyType::Never)
+        .child(&grid)
+        .build();
+    scroll.add_css_class("markdown-table-scroll");
+    scroll.upcast()
+}
+
+fn attach_table_row(
+    grid: &gtk::Grid,
+    cells: &[String],
+    alignments: &[CellAlign],
+    columns: usize,
+    row: i32,
+    header: bool,
+) {
+    for column in 0..columns {
+        let markup = cells.get(column).map(String::as_str).unwrap_or("");
+        let class = if header {
+            "markdown-table-header"
+        } else {
+            "markdown-table-cell"
+        };
+        let label = rich_label(markup, class);
+        label.set_wrap(false);
+        label.set_xalign(cell_xalign(
+            alignments
+                .get(column)
+                .copied()
+                .unwrap_or(CellAlign::Default),
+        ));
+        if column + 1 == columns {
+            label.add_css_class("markdown-table-last");
+        }
+        grid.attach(&label, column as i32, row, 1, 1);
+    }
+}
+
+fn table_column_count(table: &TableBlock) -> usize {
+    table
+        .alignments
+        .len()
+        .max(table.header.len())
+        .max(table.rows.iter().map(Vec::len).max().unwrap_or(0))
+}
+
+fn cell_align(alignment: Alignment) -> CellAlign {
+    match alignment {
+        Alignment::None => CellAlign::Default,
+        Alignment::Left => CellAlign::Left,
+        Alignment::Center => CellAlign::Center,
+        Alignment::Right => CellAlign::Right,
+    }
+}
+
+fn cell_xalign(align: CellAlign) -> f32 {
+    match align {
+        CellAlign::Default | CellAlign::Left => 0.0,
+        CellAlign::Center => 0.5,
+        CellAlign::Right => 1.0,
     }
 }
 
@@ -422,5 +598,24 @@ mod tests {
         assert!(!safe_link("file:///etc/passwd"));
         assert!(!safe_link("javascript:alert(1)"));
         assert!(!safe_link("not a url"));
+    }
+
+    #[test]
+    fn parses_markdown_tables_with_alignment_and_inline_markup() {
+        let blocks = parse("| Name | Count |\n| :--- | ---: |\n| *alpha* | 2 |\n| beta | 3 |\n");
+        let BlockKind::Table(table) = &blocks[0].kind else {
+            panic!("expected table, got {:?}", blocks[0].kind);
+        };
+        assert_eq!(table.alignments, vec![CellAlign::Left, CellAlign::Right]);
+        assert_eq!(table.header, ["Name", "Count"]);
+        assert_eq!(table.rows.len(), 2);
+        assert_eq!(table.rows[0][0], "<i>alpha</i>");
+        assert_eq!(table.rows[0][1], "2");
+        assert_eq!(table.rows[1], ["beta", "3"]);
+    }
+
+    #[test]
+    fn incomplete_table_stays_renderable() {
+        assert!(!parse("| Name | Count |\n| ---").is_empty());
     }
 }
