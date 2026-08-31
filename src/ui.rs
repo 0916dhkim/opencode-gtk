@@ -2429,8 +2429,12 @@ impl Controller {
             let drag_rename = rename.clone();
             let drag_close = close.clone();
             let drag_id = id.clone();
+            let weak_prepare = weak.clone();
             drag.connect_prepare(move |_, x, y| {
-                if pointer_hits_widget(&drag_rename, &drag_tab, x, y)
+                if weak_prepare
+                    .upgrade()
+                    .is_some_and(|controller| controller.borrow().tab_shortcut_hint)
+                    || pointer_hits_widget(&drag_rename, &drag_tab, x, y)
                     || pointer_hits_widget(&drag_close, &drag_tab, x, y)
                 {
                     None
@@ -2472,6 +2476,12 @@ impl Controller {
             let dnd = self.widgets.tab_dnd.clone();
             let weak_motion = weak.clone();
             drop_target.connect_motion(move |target, _, y| {
+                if weak_motion
+                    .upgrade()
+                    .is_some_and(|controller| controller.borrow().tab_shortcut_hint)
+                {
+                    return gdk::DragAction::empty();
+                }
                 if let Some(widget) = target.widget() {
                     let after = y >= f64::from(widget.height()) / 2.0;
                     if let Some(bar) = widget
@@ -2496,6 +2506,9 @@ impl Controller {
                 let Some(controller) = weak_drop.upgrade() else {
                     return false;
                 };
+                if controller.borrow().tab_shortcut_hint {
+                    return false;
+                }
                 Self::commit_tab_order(&controller, &source_id)
             });
             tab.add_controller(drop_target);
@@ -2669,6 +2682,14 @@ impl Controller {
         this.tab_shortcut_hint = held;
         if held {
             this.widgets.tab_bar.add_css_class("shortcut-hint");
+            let dragging = {
+                let dnd = this.widgets.tab_dnd.borrow();
+                dnd.index.is_some() || dnd.slot.is_some()
+            };
+            if dragging {
+                let restore = this.self_weak.clone();
+                this.refresh_tabs(&restore);
+            }
         } else {
             this.widgets.tab_bar.remove_css_class("shortcut-hint");
         }
