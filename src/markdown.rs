@@ -442,31 +442,40 @@ fn block_widget(block: Block) -> gtk::Widget {
 
 fn table_widget(table: TableBlock) -> gtk::Widget {
     let columns = table_column_count(&table);
-    let table_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    table_box.add_css_class("markdown-table");
-    table_box.set_hexpand(true);
+    let grid = gtk::Grid::new();
+    grid.add_css_class("markdown-table");
+    grid.set_column_spacing(0);
+    grid.set_row_spacing(0);
+    let mut row_index = 0;
     if !table.header.is_empty() {
-        table_box.append(&table_row_widget(
-            &table.header,
-            &table.alignments,
-            columns,
-            true,
-        ));
+        attach_table_row(&grid, &table.header, &table.alignments, columns, 0, true);
+        row_index = 1;
     }
     for row in table.rows {
-        table_box.append(&table_row_widget(&row, &table.alignments, columns, false));
+        attach_table_row(&grid, &row, &table.alignments, columns, row_index, false);
+        row_index += 1;
     }
-    table_box.upcast()
+    let scroll = gtk::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Automatic)
+        .vscrollbar_policy(gtk::PolicyType::Never)
+        .overlay_scrolling(false)
+        .propagate_natural_height(true)
+        .propagate_natural_width(false)
+        .hexpand(true)
+        .child(&grid)
+        .build();
+    scroll.add_css_class("markdown-table-scroll");
+    scroll.upcast()
 }
 
-fn table_row_widget(
+fn attach_table_row(
+    grid: &gtk::Grid,
     cells: &[String],
     alignments: &[CellAlign],
     columns: usize,
+    row: i32,
     header: bool,
-) -> gtk::Box {
-    let row = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-    row.set_hexpand(true);
+) {
     for column in 0..columns {
         let markup = cells.get(column).map(String::as_str).unwrap_or("");
         let class = if header {
@@ -475,8 +484,7 @@ fn table_row_widget(
             "markdown-table-cell"
         };
         let label = rich_label(markup, class);
-        label.set_hexpand(true);
-        label.set_width_request(0);
+        label.set_wrap(false);
         label.set_xalign(cell_xalign(
             alignments
                 .get(column)
@@ -486,9 +494,8 @@ fn table_row_widget(
         if column + 1 == columns {
             label.add_css_class("markdown-table-last");
         }
-        row.append(&label);
+        grid.attach(&label, column as i32, row, 1, 1);
     }
-    row
 }
 
 fn table_column_count(table: &TableBlock) -> usize {

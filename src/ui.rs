@@ -3075,6 +3075,9 @@ impl Controller {
         self.sync_visible_rows(start, end);
         let mut changed = false;
         for slot in &self.transcript_visible {
+            if slot.row.width_request() != width {
+                slot.row.set_size_request(width, -1);
+            }
             set_row_translate(&slot.css, row_offset(&self.transcript_heights, slot.index));
             let (_, natural, _, _) = slot.row.measure(gtk::Orientation::Vertical, width);
             let height = natural.max(1);
