@@ -58,11 +58,13 @@ headerbar {
 }
 
 .session-tab.active .session-tab-title,
+.session-tab.active .session-tab-index,
 .session-tab.active button {
   color: #242321;
 }
 
-.session-tab.unread .session-tab-title {
+.session-tab.unread .session-tab-title,
+.session-tab.unread .session-tab-index {
   color: #135d83;
 }
 

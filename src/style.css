@@ -111,11 +111,13 @@ headerbar {
 }
 
 .session-tab.active .session-tab-title,
+.session-tab.active .session-tab-index,
 .session-tab.active button {
   color: #f2efe9;
 }
 
-.session-tab.unread .session-tab-title {
+.session-tab.unread .session-tab-title,
+.session-tab.unread .session-tab-index {
   color: #d9efff;
   font-weight: 700;
 }
@@ -190,6 +192,35 @@ headerbar {
   margin-right: 3px;
   min-width: 9px;
   min-height: 9px;
+}
+
+.session-tab-hint {
+  margin-left: 8px;
+  margin-right: 3px;
+  min-width: 14px;
+  min-height: 14px;
+}
+
+.session-tab-hint .session-tab-status {
+  margin-left: 0;
+  margin-right: 0;
+}
+
+.session-tab-index {
+  min-width: 14px;
+  min-height: 14px;
+  font-size: 0.78em;
+  font-weight: 700;
+  color: #92999f;
+  opacity: 0;
+}
+
+.session-tabs.shortcut-hint .session-tab-index {
+  opacity: 1;
+}
+
+.session-tabs.shortcut-hint .session-tab-status {
+  opacity: 0;
 }
 
 .session-tab-status.idle {

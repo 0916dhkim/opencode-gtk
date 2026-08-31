@@ -219,6 +219,7 @@ struct Controller {
     next_prompt_request_id: u64,
     connected_once: bool,
     event_connected: bool,
+    tab_shortcut_hint: bool,
 }
 
 fn register_icons() {
@@ -253,6 +254,10 @@ fn tab_index_from_key(key: gdk::Key) -> Option<usize> {
         gdk::Key::_9 | gdk::Key::KP_9 => Some(8),
         _ => None,
     }
+}
+
+fn is_alt_key(key: gdk::Key) -> bool {
+    key == gdk::Key::Alt_L || key == gdk::Key::Alt_R
 }
 
 fn sidebar_nav_button(icon: &str, label: &str, tooltip: &str) -> gtk::Button {
@@ -463,6 +468,7 @@ pub fn launch(
         next_prompt_request_id: 0,
         connected_once: false,
         event_connected: false,
+        tab_shortcut_hint: false,
     }));
     controller.borrow_mut().self_weak = Rc::downgrade(&controller);
     {
@@ -1306,9 +1312,12 @@ fn wire_callbacks(controller: &Rc<RefCell<Controller>>) {
             Controller::rename_active_session(&controller);
             return glib::Propagation::Stop;
         }
-        if modifiers.contains(gdk::ModifierType::ALT_MASK)
-            && !modifiers.contains(gdk::ModifierType::CONTROL_MASK)
-        {
+        let alt = modifiers.contains(gdk::ModifierType::ALT_MASK)
+            && !modifiers.contains(gdk::ModifierType::CONTROL_MASK);
+        if is_alt_key(key) || alt {
+            Controller::set_tab_shortcut_hint(&controller, true);
+        }
+        if alt {
             if let Some(index) = tab_index_from_key(key) {
                 Controller::select_tab_number(&controller, index);
                 return glib::Propagation::Stop;
@@ -1343,7 +1352,30 @@ fn wire_callbacks(controller: &Rc<RefCell<Controller>>) {
         }
         glib::Propagation::Stop
     });
+    let weak = Rc::downgrade(controller);
+    shortcuts.connect_key_released(move |_, key, _, _| {
+        if !is_alt_key(key) {
+            return;
+        }
+        if let Some(controller) = weak.upgrade() {
+            Controller::set_tab_shortcut_hint(&controller, false);
+        }
+    });
     controller.borrow().widgets.window.add_controller(shortcuts);
+
+    let weak = Rc::downgrade(controller);
+    controller
+        .borrow()
+        .widgets
+        .window
+        .connect_notify_local(Some("is-active"), move |window, _| {
+            if window.is_active() {
+                return;
+            }
+            if let Some(controller) = weak.upgrade() {
+                Controller::set_tab_shortcut_hint(&controller, false);
+            }
+        });
 }
 
 impl Controller {
@@ -2262,7 +2294,7 @@ impl Controller {
         self.widgets.tab_bar.remove_css_class("reordering");
         clear_box(&self.widgets.tab_bar);
         let mut previous_inactive = false;
-        for id in self.state.tabs.clone() {
+        for (index, id) in self.state.tabs.clone().into_iter().enumerate() {
             let title = self
                 .session(&id)
                 .map(|session| session.title.clone())
@@ -2310,6 +2342,17 @@ impl Controller {
             } else {
                 "Session is idle"
             }));
+            let hint = gtk::Overlay::new();
+            hint.add_css_class("session-tab-hint");
+            hint.set_child(Some(&status));
+            if index < 9 {
+                let number = gtk::Label::new(Some(&(index + 1).to_string()));
+                number.add_css_class("session-tab-index");
+                number.set_halign(gtk::Align::Center);
+                number.set_valign(gtk::Align::Center);
+                number.set_can_target(false);
+                hint.add_overlay(&number);
+            }
             let title_label = gtk::Label::new(Some(&title));
             title_label.set_xalign(0.0);
             title_label.set_hexpand(true);
@@ -2332,7 +2375,7 @@ impl Controller {
                     .map(|session| format!("{}\nOpen session", session.directory))
                     .as_deref(),
             );
-            tab.append(&status);
+            tab.append(&hint);
             tab.append(&title_label);
             tab.append(&rename);
             tab.append(&close);
@@ -2457,6 +2500,9 @@ impl Controller {
             });
             tab.add_controller(drop_target);
             self.widgets.tab_bar.append(&tab);
+        }
+        if self.tab_shortcut_hint {
+            self.widgets.tab_bar.add_css_class("shortcut-hint");
         }
     }
 
@@ -2612,6 +2658,19 @@ impl Controller {
         let id = controller.borrow().state.tabs.get(index).cloned();
         if let Some(id) = id {
             Self::activate_tab(controller, &id);
+        }
+    }
+
+    fn set_tab_shortcut_hint(controller: &Rc<RefCell<Self>>, held: bool) {
+        let mut this = controller.borrow_mut();
+        if this.tab_shortcut_hint == held {
+            return;
+        }
+        this.tab_shortcut_hint = held;
+        if held {
+            this.widgets.tab_bar.add_css_class("shortcut-hint");
+        } else {
+            this.widgets.tab_bar.remove_css_class("shortcut-hint");
         }
     }
 
