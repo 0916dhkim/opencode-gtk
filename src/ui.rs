@@ -3183,8 +3183,10 @@ impl Controller {
             .widgets
             .transcript_scroll
             .width()
-            .max(self.widgets.transcript.width())
-            .max(1);
+            .max(self.widgets.transcript.width());
+        if width <= 1 {
+            return;
+        }
         let adjustment = self.widgets.transcript_scroll.vadjustment();
         let (start, end) = visible_row_range(
             &self.transcript_heights,
