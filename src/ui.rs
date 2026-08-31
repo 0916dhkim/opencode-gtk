@@ -41,6 +41,7 @@ const BOTTOM_EPSILON: f64 = 2.0;
 const MAX_INLINE_IMAGE_BYTES: usize = 25 * 1024 * 1024;
 const ROW_ESTIMATE: i32 = 88;
 const ROW_OVERSCAN: usize = 2;
+const ROW_PADDING_X: i32 = 56;
 
 #[derive(Deserialize)]
 struct TranscriptRow {
@@ -3184,7 +3185,7 @@ impl Controller {
             .transcript_scroll
             .width()
             .max(self.widgets.transcript.width());
-        if width <= 1 {
+        if width <= ROW_PADDING_X {
             return;
         }
         let adjustment = self.widgets.transcript_scroll.vadjustment();
