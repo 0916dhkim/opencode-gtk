@@ -2342,16 +2342,18 @@ impl Controller {
             } else {
                 "Session is idle"
             }));
-            let hint = gtk::Overlay::new();
+            let show_index = self.tab_shortcut_hint && index < 9;
+            let hint = gtk::Box::new(gtk::Orientation::Horizontal, 0);
             hint.add_css_class("session-tab-hint");
-            hint.set_child(Some(&status));
+            status.set_visible(!show_index);
+            hint.append(&status);
             if index < 9 {
                 let number = gtk::Label::new(Some(&(index + 1).to_string()));
                 number.add_css_class("session-tab-index");
                 number.set_halign(gtk::Align::Center);
                 number.set_valign(gtk::Align::Center);
-                number.set_can_target(false);
-                hint.add_overlay(&number);
+                number.set_visible(show_index);
+                hint.append(&number);
             }
             let title_label = gtk::Label::new(Some(&title));
             title_label.set_xalign(0.0);
@@ -2513,9 +2515,6 @@ impl Controller {
             });
             tab.add_controller(drop_target);
             self.widgets.tab_bar.append(&tab);
-        }
-        if self.tab_shortcut_hint {
-            self.widgets.tab_bar.add_css_class("shortcut-hint");
         }
     }
 
@@ -2680,19 +2679,16 @@ impl Controller {
             return;
         }
         this.tab_shortcut_hint = held;
-        if held {
-            this.widgets.tab_bar.add_css_class("shortcut-hint");
-            let dragging = {
-                let dnd = this.widgets.tab_dnd.borrow();
-                dnd.index.is_some() || dnd.slot.is_some()
-            };
-            if dragging {
-                let restore = this.self_weak.clone();
-                this.refresh_tabs(&restore);
-            }
-        } else {
-            this.widgets.tab_bar.remove_css_class("shortcut-hint");
+        let dragging = {
+            let dnd = this.widgets.tab_dnd.borrow();
+            dnd.index.is_some() || dnd.slot.is_some()
+        };
+        if held && dragging {
+            let restore = this.self_weak.clone();
+            this.refresh_tabs(&restore);
+            return;
         }
+        apply_tab_shortcut_hint(&this.widgets.tab_bar, held);
     }
 
     fn refresh_composer(&mut self) {
@@ -5241,6 +5237,37 @@ fn display_local_timestamp(timestamp: u64) -> Option<String> {
     (seconds >= 1_000_000_000)
         .then(|| format_local_timestamp(timestamp))
         .filter(|formatted| !formatted.is_empty())
+}
+
+fn apply_tab_shortcut_hint(bar: &gtk::Box, held: bool) {
+    let mut child = bar.first_child();
+    while let Some(tab) = child {
+        let next = tab.next_sibling();
+        if tab.has_css_class("session-tab") {
+            if let Some(slot) = tab
+                .first_child()
+                .and_then(|widget| widget.downcast::<gtk::Box>().ok())
+            {
+                if slot.has_css_class("session-tab-hint") {
+                    let status = slot.first_child();
+                    let number = status.as_ref().and_then(gtk::Widget::next_sibling);
+                    let show_index = held && number.is_some();
+                    if let Some(status) = status {
+                        status.set_visible(!show_index);
+                        if !show_index {
+                            if let Ok(spinner) = status.downcast::<gtk::Spinner>() {
+                                spinner.start();
+                            }
+                        }
+                    }
+                    if let Some(number) = number {
+                        number.set_visible(show_index);
+                    }
+                }
+            }
+        }
+        child = next;
+    }
 }
 
 fn pointer_hits_widget(

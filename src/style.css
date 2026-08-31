@@ -212,15 +212,6 @@ headerbar {
   font-size: 0.78em;
   font-weight: 700;
   color: #92999f;
-  opacity: 0;
-}
-
-.session-tabs.shortcut-hint .session-tab-index {
-  opacity: 1;
-}
-
-.session-tabs.shortcut-hint .session-tab-status {
-  opacity: 0;
 }
 
 .session-tab-status.idle {
