@@ -29,7 +29,8 @@ headerbar {
   border-right: 1px solid #24282c;
 }
 
-.sidebar-new-session {
+.sidebar-new-session,
+.sidebar-nav {
   min-height: 36px;
   padding: 0;
   color: #92999f;
@@ -40,9 +41,20 @@ headerbar {
   border-radius: 7px;
 }
 
-.sidebar-new-session:hover {
+.sidebar-new-session:hover,
+.sidebar-nav:hover {
   background: #191d20;
   background-image: none;
+}
+
+.sidebar-nav-footer {
+  margin: 0 8px 8px;
+}
+
+.sidebar-nav-separator {
+  margin: 4px 4px 6px;
+  background: #2b3034;
+  min-height: 1px;
 }
 
 .modal-heading {

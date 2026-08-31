@@ -22,12 +22,18 @@ headerbar {
   border-right-color: #d8d4cc;
 }
 
-.sidebar-new-session {
+.sidebar-new-session,
+.sidebar-nav {
   color: #666b69;
 }
 
-.sidebar-new-session:hover {
+.sidebar-new-session:hover,
+.sidebar-nav:hover {
   background: #e5e2dc;
+}
+
+.sidebar-nav-separator {
+  background: #d0ccc4;
 }
 
 .session-tab button,

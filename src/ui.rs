@@ -33,6 +33,8 @@ const ICON_STOP: &str = "opencode-stop-symbolic";
 const ICON_EDIT: &str = "opencode-edit-symbolic";
 const ICON_CLOSE: &str = "opencode-close-symbolic";
 const ICON_ADD: &str = "opencode-add-symbolic";
+const ICON_SESSIONS: &str = "opencode-sessions-symbolic";
+const ICON_SETTINGS: &str = "opencode-settings-symbolic";
 const COMPOSER_ICON_PX: i32 = 22;
 const TAB_ICON_PX: i32 = 16;
 const BOTTOM_EPSILON: f64 = 2.0;
@@ -235,6 +237,24 @@ fn icon_image(name: &str, pixel_size: i32) -> gtk::Image {
 fn icon_button(name: &str, pixel_size: i32) -> gtk::Button {
     let button = gtk::Button::new();
     button.set_child(Some(&icon_image(name, pixel_size)));
+    button
+}
+
+fn sidebar_nav_button(icon: &str, label: &str, tooltip: &str) -> gtk::Button {
+    let button = gtk::Button::new();
+    let row = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    let image = icon_image(icon, 12);
+    image.add_css_class("session-tab-status");
+    image.set_halign(gtk::Align::Center);
+    image.set_valign(gtk::Align::Center);
+    let text = gtk::Label::new(Some(label));
+    text.set_xalign(0.0);
+    text.add_css_class("session-tab-title");
+    row.append(&image);
+    row.append(&text);
+    button.set_child(Some(&row));
+    button.set_tooltip_text(Some(tooltip));
+    button.add_css_class("sidebar-nav");
     button
 }
 
@@ -579,9 +599,7 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
         .build();
 
     let header = gtk::HeaderBar::new();
-    let session_button = gtk::Button::with_label("Sessions");
-    session_button.set_tooltip_text(Some("Open sessions (Ctrl+P)"));
-    session_button.add_css_class("flat");
+    let session_button = sidebar_nav_button(ICON_SESSIONS, "Sessions", "Open sessions (Ctrl+P)");
     let new_button = gtk::Button::new();
     let new_row = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     let new_plus = icon_image(ICON_ADD, 12);
@@ -596,9 +614,8 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
     new_button.set_child(Some(&new_row));
     new_button.set_tooltip_text(Some("New session (Ctrl+T)"));
     new_button.add_css_class("sidebar-new-session");
-    let settings_button = gtk::Button::with_label("Settings");
-    settings_button.set_tooltip_text(Some("Server connection (Ctrl+,)"));
-    settings_button.add_css_class("flat");
+    let settings_button =
+        sidebar_nav_button(ICON_SETTINGS, "Settings", "Server connection (Ctrl+,)");
     let title = gtk::Label::new(Some("OpenCode"));
     title.add_css_class("app-title");
     let status = gtk::Label::new(Some("Connecting"));
@@ -607,8 +624,6 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
     title_box.append(&title);
     title_box.append(&status);
     header.set_title_widget(Some(&title_box));
-    header.pack_start(&session_button);
-    header.pack_end(&settings_button);
     window.set_titlebar(Some(&header));
 
     let root = gtk::Paned::new(gtk::Orientation::Horizontal);
@@ -638,6 +653,14 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
         .child(&tab_bar)
         .build();
     sidebar.append(&tab_scroll);
+    let nav = gtk::Box::new(gtk::Orientation::Vertical, 2);
+    nav.add_css_class("sidebar-nav-footer");
+    let nav_rule = gtk::Separator::new(gtk::Orientation::Horizontal);
+    nav_rule.add_css_class("sidebar-nav-separator");
+    nav.append(&nav_rule);
+    nav.append(&session_button);
+    nav.append(&settings_button);
+    sidebar.append(&nav);
     root.set_start_child(Some(&sidebar));
     let main = gtk::Box::new(gtk::Orientation::Vertical, 0);
     main.set_hexpand(true);
