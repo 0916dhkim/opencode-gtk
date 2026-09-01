@@ -232,6 +232,21 @@ fn json_u64(value: Option<&Value>) -> Option<u64> {
         })
 }
 
+fn message_context_tokens(info: &Value) -> Option<u64> {
+    let tokens = info.get("tokens")?;
+    json_u64(tokens.get("total"))
+        .or_else(|| {
+            Some(
+                json_u64(tokens.get("input")).unwrap_or(0)
+                    + json_u64(tokens.get("output")).unwrap_or(0)
+                    + json_u64(tokens.get("reasoning")).unwrap_or(0)
+                    + json_u64(tokens.pointer("/cache/read")).unwrap_or(0)
+                    + json_u64(tokens.pointer("/cache/write")).unwrap_or(0),
+            )
+        })
+        .filter(|total| *total > 0)
+}
+
 fn model_context_limit(model: &Value) -> Option<u64> {
     json_u64(model.pointer("/limit/context"))
         .or_else(|| json_u64(model.get("context")))
@@ -308,7 +323,7 @@ pub struct ChatMessage {
     pub created: u64,
     segments: Vec<Segment>,
     error: Option<String>,
-    input_tokens: Option<u64>,
+    context_tokens: Option<u64>,
 }
 
 impl ChatMessage {
@@ -319,7 +334,7 @@ impl ChatMessage {
             created: 0,
             segments: Vec::new(),
             error: None,
-            input_tokens: None,
+            context_tokens: None,
         }
     }
 
@@ -492,7 +507,7 @@ impl Conversation {
     pub fn context_tokens(&self) -> Option<u64> {
         self.messages.iter().rev().find_map(|message| {
             (message.role == Role::Assistant)
-                .then_some(message.input_tokens)
+                .then_some(message.context_tokens)
                 .flatten()
         })
     }
@@ -574,12 +589,14 @@ impl Conversation {
             .and_then(Value::as_u64)
             .unwrap_or_default();
         let error = error_text(info.get("error"));
-        let input_tokens = json_u64(info.pointer("/tokens/input"));
+        let context_tokens = message_context_tokens(info);
         if let Some(message) = self.messages.iter_mut().find(|message| message.id == id) {
             message.role = role;
             message.created = created;
             message.error = error;
-            message.input_tokens = input_tokens;
+            if context_tokens.is_some() {
+                message.context_tokens = context_tokens;
+            }
             return true;
         }
         self.messages.push(ChatMessage {
@@ -588,7 +605,7 @@ impl Conversation {
             created,
             segments: Vec::new(),
             error,
-            input_tokens,
+            context_tokens,
         });
         true
     }
@@ -832,7 +849,7 @@ fn message_from_api(envelope: &Value) -> Option<ChatMessage> {
             .unwrap_or_default(),
         segments: Vec::new(),
         error: error_text(info.get("error")),
-        input_tokens: json_u64(info.pointer("/tokens/input")),
+        context_tokens: message_context_tokens(info),
     };
     for part in envelope
         .get("parts")
@@ -1360,7 +1377,7 @@ mod tests {
     }
 
     #[test]
-    fn context_usage_uses_the_latest_assistant_input_tokens() {
+    fn context_usage_uses_the_latest_assistant_window_tokens() {
         let mut conversation = Conversation::default();
         conversation.replace_from_api(
             &[
@@ -1386,14 +1403,19 @@ mod tests {
                         "id": "msg_new",
                         "role": "assistant",
                         "time": { "created": 3 },
-                        "tokens": { "input": 12400 }
+                        "tokens": {
+                            "input": 124,
+                            "output": 40,
+                            "reasoning": 10,
+                            "cache": { "read": 48000, "write": 200 }
+                        }
                     },
                     "parts": []
                 }),
             ],
             None,
         );
-        assert_eq!(conversation.context_tokens(), Some(12_400));
+        assert_eq!(conversation.context_tokens(), Some(48_374));
         assert!(conversation.apply_event(&json!({
             "type": "message.updated",
             "properties": {
@@ -1401,11 +1423,15 @@ mod tests {
                     "id": "msg_new",
                     "role": "assistant",
                     "time": { "created": 3 },
-                    "tokens": { "input": 15600 }
+                    "tokens": {
+                        "input": 200,
+                        "output": 50,
+                        "cache": { "read": 50000, "write": 0 }
+                    }
                 }
             }
         })));
-        assert_eq!(conversation.context_tokens(), Some(15_600));
+        assert_eq!(conversation.context_tokens(), Some(50_250));
     }
 
     #[test]
