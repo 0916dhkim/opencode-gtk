@@ -151,7 +151,6 @@ struct Widgets {
     model_dropdown: gtk::DropDown,
     variant_store: gtk::StringList,
     variant_dropdown: gtk::DropDown,
-    composer_controls: gtk::Box,
     context_usage: gtk::Label,
     context_sizer: gtk::DrawingArea,
     send_button: gtk::Button,
@@ -896,7 +895,6 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
         model_dropdown,
         variant_store,
         variant_dropdown,
-        composer_controls,
         context_usage,
         context_sizer,
         send_button,
@@ -2777,6 +2775,7 @@ impl Controller {
             self.widgets.model_dropdown.set_sensitive(false);
             self.refresh_variant_control();
             self.controls_updating = false;
+            self.refresh_context_usage();
             return;
         };
         let Some(directory) = self
@@ -2784,6 +2783,7 @@ impl Controller {
             .map(|session| session.directory.clone())
         else {
             self.controls_updating = false;
+            self.refresh_context_usage();
             return;
         };
         let Some(catalog) = self.state.catalogs.get(&directory).cloned() else {
@@ -2807,6 +2807,7 @@ impl Controller {
             self.widgets.model_dropdown.set_sensitive(false);
             self.refresh_variant_control();
             self.controls_updating = false;
+            self.refresh_context_usage();
             return;
         };
 
@@ -2819,6 +2820,7 @@ impl Controller {
             self.widgets.model_dropdown.set_sensitive(false);
             self.refresh_variant_control();
             self.controls_updating = false;
+            self.refresh_context_usage();
             return;
         }
         let labels: Vec<_> = self
@@ -2871,6 +2873,7 @@ impl Controller {
         self.refresh_variant_control();
         self.refresh_attachment_control();
         self.controls_updating = false;
+        self.refresh_context_usage();
     }
 
     fn refresh_variant_control(&mut self) {
@@ -3034,26 +3037,7 @@ impl Controller {
 
     fn fit_context_usage(&self) {
         let usage = &self.widgets.context_usage;
-        if usage.text().is_empty() {
-            usage.set_visible(false);
-            return;
-        }
-        let width = self.widgets.composer_controls.width();
-        if width <= 0 {
-            usage.set_visible(true);
-            return;
-        }
-        let occupied = self.widgets.attach_button.width()
-            + self.widgets.model_dropdown.width()
-            + self.widgets.variant_dropdown.width()
-            + self.widgets.send_button.width()
-            + 30;
-        let natural = usage.measure(gtk::Orientation::Horizontal, -1).1;
-        usage.set_visible(context_usage_fits(
-            width - occupied,
-            natural,
-            usage.is_visible(),
-        ));
+        usage.set_visible(!usage.text().is_empty());
     }
 
     fn refresh_context_usage(&self) {
