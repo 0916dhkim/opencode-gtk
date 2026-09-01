@@ -3348,10 +3348,7 @@ impl Controller {
         let visible = indicator != TranscriptIndicator::Hidden;
         let compact = visible && has_rows;
         self.widgets.transcript_scroll.set_visible(has_rows);
-        if let Some(pane) = self.widgets.transcript_scroll.parent() {
-            pane.set_visible(has_rows);
-            pane.set_vexpand(has_rows);
-        }
+        self.widgets.transcript_scroll.set_vexpand(has_rows);
         self.widgets.transcript_status.set_visible(visible);
         self.widgets
             .transcript_status
