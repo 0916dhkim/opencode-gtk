@@ -2333,6 +2333,7 @@ impl Controller {
             }
             let status = if busy {
                 let spinner = gtk::Spinner::new();
+                spinner.set_size_request(14, 14);
                 spinner.start();
                 spinner.upcast::<gtk::Widget>()
             } else {
@@ -2358,6 +2359,8 @@ impl Controller {
             let show_index = self.tab_shortcut_hint && index < 9;
             let hint = gtk::Box::new(gtk::Orientation::Horizontal, 0);
             hint.add_css_class("session-tab-hint");
+            hint.set_halign(gtk::Align::Center);
+            hint.set_valign(gtk::Align::Center);
             status.set_visible(!show_index);
             hint.append(&status);
             if index < 9 {
