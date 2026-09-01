@@ -18,8 +18,8 @@ use crate::{
     markdown,
     model::{
         deleted_session_id, event_data, event_run_status, event_session, event_session_id,
-        Conversation, ModelCatalog, ModelOption, ModelSelection, Project, RunStatus, Session,
-        SessionTime,
+        format_context_usage, Conversation, ModelCatalog, ModelOption, ModelSelection, Project,
+        RunStatus, Session, SessionTime,
     },
     persist::{default_path, ConnectionSettings, PersistedState, PersistedTab, ServerState},
 };
@@ -151,6 +151,8 @@ struct Widgets {
     model_dropdown: gtk::DropDown,
     variant_store: gtk::StringList,
     variant_dropdown: gtk::DropDown,
+    context_usage: gtk::Label,
+    context_sizer: gtk::DrawingArea,
     send_button: gtk::Button,
     transcript_user_scrolling: Rc<Cell<bool>>,
     tab_dnd: Rc<RefCell<TabDnd>>,
@@ -820,6 +822,15 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
     variant_dropdown.add_css_class("composer-menu");
     variant_dropdown.set_sensitive(false);
     variant_dropdown.set_tooltip_text(Some("Reasoning level"));
+    let context_usage = gtk::Label::new(None);
+    context_usage.add_css_class("composer-usage");
+    context_usage.set_xalign(0.0);
+    context_usage.set_valign(gtk::Align::Center);
+    context_usage.set_visible(false);
+    let context_sizer = gtk::DrawingArea::new();
+    context_sizer.set_hexpand(true);
+    context_sizer.set_can_target(false);
+    context_sizer.set_valign(gtk::Align::Fill);
     let send_button = icon_button(ICON_SEND, COMPOSER_ICON_PX);
     send_button.add_css_class("suggested-action");
     send_button.add_css_class("composer-action");
@@ -827,12 +838,11 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
     send_button.set_sensitive(false);
 
     let controls = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-    let controls_grow = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-    controls_grow.set_hexpand(true);
     controls.append(&attach_button);
     controls.append(&model_dropdown);
     controls.append(&variant_dropdown);
-    controls.append(&controls_grow);
+    controls.append(&context_usage);
+    controls.append(&context_sizer);
     controls.append(&send_button);
 
     let composer_box = gtk::Box::new(gtk::Orientation::Vertical, 8);
@@ -883,6 +893,8 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
         model_dropdown,
         variant_store,
         variant_dropdown,
+        context_usage,
+        context_sizer,
         send_button,
         transcript_user_scrolling,
         tab_dnd: Rc::new(RefCell::new(TabDnd::default())),
@@ -1257,6 +1269,21 @@ fn wire_callbacks(controller: &Rc<RefCell<Controller>>) {
     controller
         .borrow()
         .widgets
+        .context_sizer
+        .connect_resize(move |_, _, _| {
+            let Some(controller) = weak.upgrade() else {
+                return;
+            };
+            let Ok(controller) = controller.try_borrow() else {
+                return;
+            };
+            controller.fit_context_usage();
+        });
+
+    let weak = Rc::downgrade(controller);
+    controller
+        .borrow()
+        .widgets
         .model_dropdown
         .connect_selected_notify(move |dropdown| {
             let Some(controller) = weak.upgrade() else {
@@ -1288,6 +1315,7 @@ fn wire_callbacks(controller: &Rc<RefCell<Controller>>) {
             );
             controller.refresh_variant_control();
             controller.refresh_attachment_control();
+            controller.refresh_context_usage();
             controller.persist_state();
             controller.refresh_send_button();
         });
@@ -2271,6 +2299,7 @@ impl Controller {
         }
         if transcript_changed {
             this.refresh_transcript(TranscriptUpdate::Content);
+            this.refresh_context_usage();
         }
         this.refresh_send_button();
         let activate_fallback = tabs_changed
@@ -2728,6 +2757,7 @@ impl Controller {
         self.refresh_model_control();
         self.controls_updating = false;
         self.refresh_send_button();
+        self.refresh_context_usage();
     }
 
     fn refresh_model_control(&mut self) {
@@ -2976,6 +3006,57 @@ impl Controller {
                 && model.model_id == selection.model_id
                 && model.supports_attachments
         })
+    }
+
+    fn selected_context_limit(&self) -> Option<u64> {
+        let active = self.state.active.as_ref()?;
+        let selection = self.state.selections.get(active)?;
+        self.current_models
+            .iter()
+            .find(|model| {
+                model.provider_id == selection.provider_id && model.model_id == selection.model_id
+            })?
+            .context_limit
+            .filter(|limit| *limit > 0)
+    }
+
+    fn refresh_context_usage(&self) {
+        let Some(limit) = self.selected_context_limit() else {
+            self.widgets.context_usage.set_text("");
+            self.widgets.context_usage.set_tooltip_text(None);
+            self.widgets.context_usage.set_visible(false);
+            return;
+        };
+        let used = self
+            .state
+            .active
+            .as_ref()
+            .and_then(|id| self.state.conversations.get(id))
+            .and_then(Conversation::context_tokens)
+            .unwrap_or(0);
+        self.widgets
+            .context_usage
+            .set_text(&format_context_usage(used, limit));
+        self.widgets
+            .context_usage
+            .set_tooltip_text(Some(&format!("{used} / {limit} tokens")));
+        self.fit_context_usage();
+    }
+
+    fn fit_context_usage(&self) {
+        let usage = &self.widgets.context_usage;
+        if usage.text().is_empty() {
+            usage.set_visible(false);
+            return;
+        }
+        let grow = self.widgets.context_sizer.width();
+        let taken = if usage.is_visible() { usage.width() } else { 0 };
+        let natural = usage.measure(gtk::Orientation::Horizontal, -1).1;
+        usage.set_visible(context_usage_fits(
+            grow + taken,
+            natural,
+            usage.is_visible(),
+        ));
     }
 
     fn refresh_attachment_control(&self) {
@@ -5279,6 +5360,13 @@ fn display_local_timestamp(timestamp: u64) -> Option<String> {
         .filter(|formatted| !formatted.is_empty())
 }
 
+fn context_usage_fits(available: i32, natural: i32, visible: bool) -> bool {
+    if natural <= 0 || available <= 0 {
+        return false;
+    }
+    available >= natural + if visible { 8 } else { 32 }
+}
+
 fn apply_tab_shortcut_hint(bar: &gtk::Box, held: bool) {
     let mut child = bar.first_child();
     while let Some(tab) = child {
@@ -5894,6 +5982,15 @@ mod tests {
             resolved_variant_index(Some(&None), &variants, true),
             (0, false)
         );
+    }
+
+    #[test]
+    fn context_usage_hides_until_there_is_room() {
+        assert!(!context_usage_fits(0, 72, false));
+        assert!(!context_usage_fits(90, 72, false));
+        assert!(context_usage_fits(104, 72, false));
+        assert!(context_usage_fits(80, 72, true));
+        assert!(!context_usage_fits(79, 72, true));
     }
 
     #[test]

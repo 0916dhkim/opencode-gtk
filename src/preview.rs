@@ -213,6 +213,7 @@ fn catalog() -> ModelCatalog {
                 label: "OpenAI / GPT-5.6".into(),
                 variants: vec!["low".into(), "medium".into(), "high".into()],
                 supports_attachments: true,
+                context_limit: Some(200_000),
             },
             ModelOption {
                 provider_id: "anthropic".into(),
@@ -220,6 +221,7 @@ fn catalog() -> ModelCatalog {
                 label: "Anthropic / Claude Sonnet 4.6".into(),
                 variants: vec!["medium".into(), "high".into()],
                 supports_attachments: true,
+                context_limit: Some(200_000),
             },
         ],
         preferred: Some(ModelSelection {
@@ -284,7 +286,8 @@ fn active_messages() -> Vec<Value> {
                 "id": "msg_assistant",
                 "sessionID": ACTIVE_ID,
                 "role": "assistant",
-                "time": { "created": CREATED + 30_000 }
+                "time": { "created": CREATED + 30_000 },
+                "tokens": { "input": 12400, "output": 800, "reasoning": 200, "cache": { "read": 0, "write": 0 } }
             },
             "parts": [
                 {

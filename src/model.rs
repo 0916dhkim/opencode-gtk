@@ -65,6 +65,7 @@ pub struct ModelOption {
     pub label: String,
     pub variants: Vec<String>,
     pub supports_attachments: bool,
+    pub context_limit: Option<u64>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -133,6 +134,7 @@ impl ModelCatalog {
                     label: format!("{provider_name} / {model_name}"),
                     variants,
                     supports_attachments,
+                    context_limit: json_u64(model.pointer("/limit/context")),
                 });
             }
         }
@@ -218,6 +220,47 @@ fn variant_rank(value: &str) -> (usize, String) {
     (rank, value.to_ascii_lowercase())
 }
 
+fn json_u64(value: Option<&Value>) -> Option<u64> {
+    let value = value?;
+    value
+        .as_u64()
+        .or_else(|| value.as_i64().and_then(|n| u64::try_from(n).ok()))
+        .or_else(|| {
+            value
+                .as_f64()
+                .and_then(|n| (n.is_finite() && n >= 0.0).then_some(n as u64))
+        })
+}
+
+pub fn format_context_usage(used: u64, limit: u64) -> String {
+    format!("{} / {}", compact_tokens(used), compact_tokens(limit))
+}
+
+fn compact_tokens(n: u64) -> String {
+    if n < 1000 {
+        return n.to_string();
+    }
+    if n < 100_000 {
+        let tenths = (n + 50) / 100;
+        if tenths % 10 == 0 {
+            format!("{}k", tenths / 10)
+        } else {
+            format!("{}.{}k", tenths / 10, tenths % 10)
+        }
+    } else if n < 1_000_000 {
+        format!("{}k", (n + 500) / 1000)
+    } else if n < 10_000_000 {
+        let tenths = (n + 50_000) / 100_000;
+        if tenths % 10 == 0 {
+            format!("{}m", tenths / 10)
+        } else {
+            format!("{}.{}m", tenths / 10, tenths % 10)
+        }
+    } else {
+        format!("{}m", (n + 500_000) / 1_000_000)
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Role {
     User,
@@ -257,6 +300,7 @@ pub struct ChatMessage {
     pub created: u64,
     segments: Vec<Segment>,
     error: Option<String>,
+    input_tokens: Option<u64>,
 }
 
 impl ChatMessage {
@@ -267,6 +311,7 @@ impl ChatMessage {
             created: 0,
             segments: Vec::new(),
             error: None,
+            input_tokens: None,
         }
     }
 
@@ -436,6 +481,14 @@ impl Conversation {
             .collect()
     }
 
+    pub fn context_tokens(&self) -> Option<u64> {
+        self.messages.iter().rev().find_map(|message| {
+            (message.role == Role::Assistant)
+                .then_some(message.input_tokens)
+                .flatten()
+        })
+    }
+
     pub fn apply_event(&mut self, payload: &Value) -> bool {
         let Some(event_type) = payload.get("type").and_then(Value::as_str) else {
             return false;
@@ -513,10 +566,12 @@ impl Conversation {
             .and_then(Value::as_u64)
             .unwrap_or_default();
         let error = error_text(info.get("error"));
+        let input_tokens = json_u64(info.pointer("/tokens/input"));
         if let Some(message) = self.messages.iter_mut().find(|message| message.id == id) {
             message.role = role;
             message.created = created;
             message.error = error;
+            message.input_tokens = input_tokens;
             return true;
         }
         self.messages.push(ChatMessage {
@@ -525,6 +580,7 @@ impl Conversation {
             created,
             segments: Vec::new(),
             error,
+            input_tokens,
         });
         true
     }
@@ -768,6 +824,7 @@ fn message_from_api(envelope: &Value) -> Option<ChatMessage> {
             .unwrap_or_default(),
         segments: Vec::new(),
         error: error_text(info.get("error")),
+        input_tokens: json_u64(info.pointer("/tokens/input")),
     };
     for part in envelope
         .get("parts")
@@ -1018,6 +1075,7 @@ mod tests {
                         "name": "GPT 5.6",
                         "status": "active",
                         "capabilities": { "attachment": true },
+                        "limit": { "context": 200000, "output": 8192 },
                         "variants": { "high": {}, "low": {}, "medium": {} }
                     }
                 }
@@ -1029,6 +1087,7 @@ mod tests {
         assert_eq!(catalog.models.len(), 1);
         assert_eq!(catalog.models[0].variants, ["low", "medium", "high"]);
         assert!(catalog.models[0].supports_attachments);
+        assert_eq!(catalog.models[0].context_limit, Some(200_000));
         assert_eq!(
             catalog.preferred,
             Some(ModelSelection {
@@ -1290,5 +1349,62 @@ mod tests {
             })),
             Some(("ses_1".into(), RunStatus::Idle))
         );
+    }
+
+    #[test]
+    fn context_usage_uses_the_latest_assistant_input_tokens() {
+        let mut conversation = Conversation::default();
+        conversation.replace_from_api(
+            &[
+                json!({
+                    "info": {
+                        "id": "msg_user",
+                        "role": "user",
+                        "time": { "created": 1 }
+                    },
+                    "parts": []
+                }),
+                json!({
+                    "info": {
+                        "id": "msg_old",
+                        "role": "assistant",
+                        "time": { "created": 2 },
+                        "tokens": { "input": 800 }
+                    },
+                    "parts": []
+                }),
+                json!({
+                    "info": {
+                        "id": "msg_new",
+                        "role": "assistant",
+                        "time": { "created": 3 },
+                        "tokens": { "input": 12400 }
+                    },
+                    "parts": []
+                }),
+            ],
+            None,
+        );
+        assert_eq!(conversation.context_tokens(), Some(12_400));
+        assert!(conversation.apply_event(&json!({
+            "type": "message.updated",
+            "properties": {
+                "info": {
+                    "id": "msg_new",
+                    "role": "assistant",
+                    "time": { "created": 3 },
+                    "tokens": { "input": 15600 }
+                }
+            }
+        })));
+        assert_eq!(conversation.context_tokens(), Some(15_600));
+    }
+
+    #[test]
+    fn compact_context_usage_matches_the_composer_label() {
+        assert_eq!(format_context_usage(0, 200_000), "0 / 200k");
+        assert_eq!(format_context_usage(12_400, 200_000), "12.4k / 200k");
+        assert_eq!(format_context_usage(999, 8_192), "999 / 8.2k");
+        assert_eq!(format_context_usage(1_500_000, 2_000_000), "1.5m / 2m");
     }
 }

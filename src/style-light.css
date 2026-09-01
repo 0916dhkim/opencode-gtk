@@ -272,6 +272,10 @@ listview.transcript > row:focus {
   background: #eeebe4;
 }
 
+.composer-usage {
+  color: #6f7471;
+}
+
 .composer-input {
   color: #262421;
   caret-color: #9c641a;

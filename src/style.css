@@ -475,6 +475,12 @@ listview.transcript > row:focus {
   background-image: none;
 }
 
+.composer-usage {
+  color: #899097;
+  font-size: 0.82em;
+  padding: 0 4px;
+}
+
 .attachment-chip {
   border-radius: 999px;
   padding: 2px 9px;
