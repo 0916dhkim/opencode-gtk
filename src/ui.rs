@@ -3105,6 +3105,16 @@ impl Controller {
     }
 
     fn refresh_sticky_message(&self) {
+        let loaded = self.state.active.as_ref().is_some_and(|active| {
+            self.state
+                .conversations
+                .get(active)
+                .is_some_and(|conversation| conversation.loaded)
+        });
+        if !loaded || self.rendered_rows.is_empty() {
+            self.place_sticky_message(false);
+            return;
+        }
         let adjustment = self.widgets.transcript_scroll.vadjustment();
         if adjustment_at_top(&adjustment) {
             self.place_sticky_message(false);
