@@ -772,15 +772,11 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
     sticky_message.add_controller(sticky_scroll_controller);
     sticky_message.append(&sticky_message_header);
     sticky_message.append(&sticky_message_scroll);
-    let overlay = gtk::Overlay::new();
-    overlay.set_vexpand(true);
-    overlay.set_hexpand(true);
-    overlay.set_child(Some(&transcript_scroll));
-    overlay.add_overlay(&sticky_message);
     let conversation = gtk::Box::new(gtk::Orientation::Vertical, 0);
     conversation.set_vexpand(true);
     conversation.append(&load_earlier);
-    conversation.append(&overlay);
+    conversation.append(&sticky_message);
+    conversation.append(&transcript_scroll);
     conversation.append(&transcript_status);
     main.append(&conversation);
 
@@ -3344,9 +3340,6 @@ impl Controller {
         let compact = visible && has_rows;
         self.widgets.transcript_scroll.set_visible(has_rows);
         self.widgets.transcript_scroll.set_vexpand(has_rows);
-        if let Some(pane) = self.widgets.transcript_scroll.parent() {
-            pane.set_vexpand(has_rows);
-        }
         self.widgets.transcript_status.set_visible(visible);
         self.widgets
             .transcript_status
