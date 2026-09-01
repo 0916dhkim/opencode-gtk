@@ -486,7 +486,11 @@ pub fn launch(
     application.add_action(&quit);
     application.set_accels_for_action("app.quit", &["<Control>q"]);
     Controller::refresh_all(&controller);
-    controller.borrow().widgets.window.present();
+    {
+        let widgets = &controller.borrow().widgets;
+        gtk::prelude::GtkWindowExt::set_focus(&widgets.window, Some(&widgets.new_button));
+        widgets.window.present();
+    }
     controller.borrow().api.send(Command::Bootstrap);
 
     let close_controller = Rc::downgrade(&controller);
@@ -3205,6 +3209,9 @@ impl Controller {
     }
 
     fn relayout_transcript(&mut self) {
+        if !self.widgets.transcript_scroll.is_realized() {
+            return;
+        }
         let width = self.widgets.transcript_scroll.width();
         if width <= ROW_PADDING_X {
             return;
