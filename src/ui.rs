@@ -704,9 +704,11 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
     transcript_tail.set_can_target(false);
     let transcript = gtk::Box::new(gtk::Orientation::Vertical, 0);
     transcript.set_hexpand(true);
+    transcript.set_overflow(gtk::Overflow::Hidden);
     let transcript_column = gtk::Box::new(gtk::Orientation::Vertical, 0);
     transcript_column.add_css_class("transcript");
     transcript_column.set_hexpand(true);
+    transcript_column.set_overflow(gtk::Overflow::Hidden);
     transcript_column.append(&transcript_spacer);
     transcript_column.append(&transcript);
     transcript_column.append(&transcript_tail);
@@ -729,6 +731,7 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
     sticky_message.add_css_class("message-row");
     sticky_message.add_css_class("user-message");
     sticky_message.add_css_class("sticky-message");
+    sticky_message.set_overflow(gtk::Overflow::Hidden);
     sticky_message.set_halign(gtk::Align::Fill);
     sticky_message.set_valign(gtk::Align::Start);
     sticky_message.set_can_target(true);
@@ -889,6 +892,7 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
 fn transcript_row_widget() -> gtk::Box {
     let row = gtk::Box::new(gtk::Orientation::Vertical, 6);
     row.add_css_class("message-row");
+    row.set_overflow(gtk::Overflow::Hidden);
     let header = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     header.add_css_class("message-header");
     let role = gtk::Label::new(None);
@@ -3187,7 +3191,10 @@ impl Controller {
     }
 
     fn place_sticky_message(&self, visible: bool) {
-        self.widgets.sticky_message.set_visible(visible);
+        let wide_enough = self.widgets.transcript_scroll.width() > ROW_PADDING_X;
+        self.widgets
+            .sticky_message
+            .set_visible(visible && wide_enough);
     }
 
     fn queue_transcript_edge_refresh(&mut self) {
@@ -3214,6 +3221,7 @@ impl Controller {
         }
         let width = self.widgets.transcript_scroll.width();
         if width <= ROW_PADDING_X {
+            self.recycle_visible_rows();
             return;
         }
         let adjustment = self.widgets.transcript_scroll.vadjustment();
