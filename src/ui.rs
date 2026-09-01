@@ -766,7 +766,6 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
     let conversation = gtk::Box::new(gtk::Orientation::Vertical, 0);
     conversation.set_vexpand(true);
     conversation.append(&load_earlier);
-    conversation.append(&sticky_message);
     conversation.append(&transcript_scroll);
     conversation.append(&transcript_status);
     main.append(&conversation);
@@ -3035,7 +3034,7 @@ impl Controller {
         self.refresh_transcript_indicator(indicator, has_rows, load_error.map(String::as_str));
         if update == TranscriptUpdate::Activate {
             self.widgets.load_earlier.set_visible(false);
-            self.widgets.sticky_message.set_visible(false);
+            self.place_sticky_message(false);
         } else {
             self.refresh_load_earlier_visibility();
         }
@@ -3108,7 +3107,7 @@ impl Controller {
     fn refresh_sticky_message(&self) {
         let adjustment = self.widgets.transcript_scroll.vadjustment();
         if adjustment_at_top(&adjustment) {
-            self.widgets.sticky_message.set_visible(false);
+            self.place_sticky_message(false);
             return;
         }
         let user_indices: Vec<usize> = self
@@ -3119,7 +3118,7 @@ impl Controller {
             .collect();
         let viewport_bottom = adjustment.page_size();
         if viewport_bottom <= 0.0 {
-            self.widgets.sticky_message.set_visible(false);
+            self.place_sticky_message(false);
             return;
         }
         let realized = row_layout_bounds(&self.rendered_rows, &self.transcript_heights);
@@ -3148,14 +3147,44 @@ impl Controller {
                 self.widgets
                     .sticky_message_time
                     .set_visible(!time_text.is_empty());
-                self.widgets.sticky_message.set_visible(true);
+                self.place_sticky_message(true);
             }
             None => {
                 self.widgets.sticky_message_body.set_label("");
                 self.widgets.sticky_message_time.set_label("");
-                self.widgets.sticky_message.set_visible(false);
+                self.place_sticky_message(false);
             }
         }
+    }
+
+    fn place_sticky_message(&self, visible: bool) {
+        let sticky = &self.widgets.sticky_message;
+        if !visible {
+            sticky.set_visible(false);
+            if sticky.parent().is_some() {
+                self.widgets.transcript.remove(sticky);
+            }
+            return;
+        }
+        let width = self
+            .widgets
+            .transcript_scroll
+            .width()
+            .max(self.widgets.transcript.width());
+        if width <= ROW_PADDING_X {
+            sticky.set_visible(false);
+            if sticky.parent().is_some() {
+                self.widgets.transcript.remove(sticky);
+            }
+            return;
+        }
+        let y = self.widgets.transcript_scroll.vadjustment().value();
+        sticky.set_size_request(width, -1);
+        sticky.set_visible(true);
+        if sticky.parent().is_some() {
+            self.widgets.transcript.remove(sticky);
+        }
+        self.widgets.transcript.put(sticky, 0.0, y);
     }
 
     fn queue_transcript_edge_refresh(&mut self) {
