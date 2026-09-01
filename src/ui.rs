@@ -830,6 +830,8 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
     let context_sizer = gtk::DrawingArea::new();
     context_sizer.set_hexpand(true);
     context_sizer.set_can_target(false);
+    context_sizer.set_content_width(0);
+    context_sizer.set_content_height(1);
     context_sizer.set_valign(gtk::Align::Fill);
     let send_button = icon_button(ICON_SEND, COMPOSER_ICON_PX);
     send_button.add_css_class("suggested-action");
@@ -5361,8 +5363,11 @@ fn display_local_timestamp(timestamp: u64) -> Option<String> {
 }
 
 fn context_usage_fits(available: i32, natural: i32, visible: bool) -> bool {
-    if natural <= 0 || available <= 0 {
+    if natural <= 0 {
         return false;
+    }
+    if available <= 0 {
+        return true;
     }
     available >= natural + if visible { 8 } else { 32 }
 }
@@ -5986,7 +5991,7 @@ mod tests {
 
     #[test]
     fn context_usage_hides_until_there_is_room() {
-        assert!(!context_usage_fits(0, 72, false));
+        assert!(context_usage_fits(0, 72, false));
         assert!(!context_usage_fits(90, 72, false));
         assert!(context_usage_fits(104, 72, false));
         assert!(context_usage_fits(80, 72, true));
