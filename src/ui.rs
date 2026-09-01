@@ -152,7 +152,6 @@ struct Widgets {
     variant_store: gtk::StringList,
     variant_dropdown: gtk::DropDown,
     context_usage: gtk::Label,
-    context_sizer: gtk::DrawingArea,
     send_button: gtk::Button,
     transcript_user_scrolling: Rc<Cell<bool>>,
     tab_dnd: Rc<RefCell<TabDnd>>,
@@ -825,13 +824,10 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
     let context_usage = gtk::Label::new(None);
     context_usage.add_css_class("composer-usage");
     context_usage.set_xalign(0.0);
-    context_usage.set_hexpand(false);
+    context_usage.set_hexpand(true);
+    context_usage.set_ellipsize(pango::EllipsizeMode::End);
     context_usage.set_valign(gtk::Align::Center);
     context_usage.set_visible(false);
-    let context_sizer = gtk::DrawingArea::new();
-    context_sizer.set_hexpand(true);
-    context_sizer.set_can_target(false);
-    context_sizer.set_valign(gtk::Align::Fill);
     let send_button = icon_button(ICON_SEND, COMPOSER_ICON_PX);
     send_button.add_css_class("suggested-action");
     send_button.add_css_class("composer-action");
@@ -844,7 +840,6 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
     composer_controls.append(&model_dropdown);
     composer_controls.append(&variant_dropdown);
     composer_controls.append(&context_usage);
-    composer_controls.append(&context_sizer);
     composer_controls.append(&send_button);
 
     let composer_box = gtk::Box::new(gtk::Orientation::Vertical, 8);
@@ -896,7 +891,6 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
         variant_store,
         variant_dropdown,
         context_usage,
-        context_sizer,
         send_button,
         transcript_user_scrolling,
         tab_dnd: Rc::new(RefCell::new(TabDnd::default())),
@@ -1266,21 +1260,6 @@ fn wire_callbacks(controller: &Rc<RefCell<Controller>>) {
         glib::Propagation::Proceed
     });
     controller.borrow().widgets.composer.add_controller(key);
-
-    let weak = Rc::downgrade(controller);
-    controller
-        .borrow()
-        .widgets
-        .context_sizer
-        .connect_resize(move |_, _, _| {
-            let Some(controller) = weak.upgrade() else {
-                return;
-            };
-            let Ok(controller) = controller.try_borrow() else {
-                return;
-            };
-            controller.fit_context_usage();
-        });
 
     let weak = Rc::downgrade(controller);
     controller
@@ -3035,26 +3014,6 @@ impl Controller {
             .filter(|limit| *limit > 0)
     }
 
-    fn fit_context_usage(&self) {
-        let usage = &self.widgets.context_usage;
-        if usage.text().is_empty() {
-            usage.set_visible(false);
-            return;
-        }
-        let grow = self.widgets.context_sizer.width().max(0);
-        let taken = if usage.is_visible() {
-            usage.width().max(0)
-        } else {
-            0
-        };
-        let natural = usage.measure(gtk::Orientation::Horizontal, -1).1;
-        usage.set_visible(context_usage_fits(
-            grow.saturating_add(taken),
-            natural,
-            usage.is_visible(),
-        ));
-    }
-
     fn refresh_context_usage(&self) {
         let Some(limit) = self.selected_context_limit() else {
             self.widgets.context_usage.set_text("");
@@ -3075,7 +3034,7 @@ impl Controller {
         self.widgets
             .context_usage
             .set_tooltip_text(Some(&format!("{used} / {limit} tokens")));
-        self.fit_context_usage();
+        self.widgets.context_usage.set_visible(true);
     }
 
     fn refresh_attachment_control(&self) {
@@ -3316,7 +3275,6 @@ impl Controller {
     }
 
     fn relayout_transcript(&mut self) {
-        self.fit_context_usage();
         if !self.widgets.transcript_scroll.is_realized() {
             return;
         }
@@ -5380,6 +5338,7 @@ fn display_local_timestamp(timestamp: u64) -> Option<String> {
         .filter(|formatted| !formatted.is_empty())
 }
 
+#[cfg(test)]
 fn context_usage_fits(available: i32, natural: i32, visible: bool) -> bool {
     if natural <= 0 || available <= 0 {
         return false;
