@@ -134,7 +134,7 @@ impl ModelCatalog {
                     label: format!("{provider_name} / {model_name}"),
                     variants,
                     supports_attachments,
-                    context_limit: json_u64(model.pointer("/limit/context")),
+                    context_limit: model_context_limit(model),
                 });
             }
         }
@@ -230,6 +230,14 @@ fn json_u64(value: Option<&Value>) -> Option<u64> {
                 .as_f64()
                 .and_then(|n| (n.is_finite() && n >= 0.0).then_some(n as u64))
         })
+}
+
+fn model_context_limit(model: &Value) -> Option<u64> {
+    json_u64(model.pointer("/limit/context"))
+        .or_else(|| json_u64(model.get("context")))
+        .or_else(|| json_u64(model.get("contextWindow")))
+        .or_else(|| json_u64(model.get("context_window")))
+        .filter(|limit| *limit > 0)
 }
 
 pub fn format_context_usage(used: u64, limit: u64) -> String {

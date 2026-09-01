@@ -151,6 +151,7 @@ struct Widgets {
     model_dropdown: gtk::DropDown,
     variant_store: gtk::StringList,
     variant_dropdown: gtk::DropDown,
+    composer_controls: gtk::Box,
     context_usage: gtk::Label,
     context_sizer: gtk::DrawingArea,
     send_button: gtk::Button,
@@ -839,13 +840,13 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
     send_button.set_tooltip_text(Some("Send prompt"));
     send_button.set_sensitive(false);
 
-    let controls = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-    controls.append(&attach_button);
-    controls.append(&model_dropdown);
-    controls.append(&variant_dropdown);
-    controls.append(&context_usage);
-    controls.append(&context_sizer);
-    controls.append(&send_button);
+    let composer_controls = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    composer_controls.append(&attach_button);
+    composer_controls.append(&model_dropdown);
+    composer_controls.append(&variant_dropdown);
+    composer_controls.append(&context_usage);
+    composer_controls.append(&context_sizer);
+    composer_controls.append(&send_button);
 
     let composer_box = gtk::Box::new(gtk::Orientation::Vertical, 8);
     composer_box.set_margin_start(14);
@@ -854,7 +855,7 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
     composer_box.set_margin_bottom(12);
     composer_box.append(&attachment_box);
     composer_box.append(&composer_scroll);
-    composer_box.append(&controls);
+    composer_box.append(&composer_controls);
     let composer_frame = gtk::Frame::new(None);
     composer_frame.add_css_class("composer-frame");
     composer_frame.set_hexpand(true);
@@ -895,6 +896,7 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
         model_dropdown,
         variant_store,
         variant_dropdown,
+        composer_controls,
         context_usage,
         context_sizer,
         send_button,
@@ -3011,15 +3013,47 @@ impl Controller {
     }
 
     fn selected_context_limit(&self) -> Option<u64> {
-        let active = self.state.active.as_ref()?;
-        let selection = self.state.selections.get(active)?;
-        self.current_models
-            .iter()
-            .find(|model| {
-                model.provider_id == selection.provider_id && model.model_id == selection.model_id
-            })?
-            .context_limit
+        let from_selection = self.state.active.as_ref().and_then(|active| {
+            let selection = self.state.selections.get(active)?;
+            self.current_models
+                .iter()
+                .find(|model| {
+                    model.provider_id == selection.provider_id
+                        && model.model_id == selection.model_id
+                })
+                .and_then(|model| model.context_limit)
+        });
+        from_selection
+            .or_else(|| {
+                self.current_models
+                    .get(self.widgets.model_dropdown.selected() as usize)
+                    .and_then(|model| model.context_limit)
+            })
             .filter(|limit| *limit > 0)
+    }
+
+    fn fit_context_usage(&self) {
+        let usage = &self.widgets.context_usage;
+        if usage.text().is_empty() {
+            usage.set_visible(false);
+            return;
+        }
+        let width = self.widgets.composer_controls.width();
+        if width <= 0 {
+            usage.set_visible(true);
+            return;
+        }
+        let occupied = self.widgets.attach_button.width()
+            + self.widgets.model_dropdown.width()
+            + self.widgets.variant_dropdown.width()
+            + self.widgets.send_button.width()
+            + 30;
+        let natural = usage.measure(gtk::Orientation::Horizontal, -1).1;
+        usage.set_visible(context_usage_fits(
+            width - occupied,
+            natural,
+            usage.is_visible(),
+        ));
     }
 
     fn refresh_context_usage(&self) {
@@ -3043,22 +3077,6 @@ impl Controller {
             .context_usage
             .set_tooltip_text(Some(&format!("{used} / {limit} tokens")));
         self.fit_context_usage();
-    }
-
-    fn fit_context_usage(&self) {
-        let usage = &self.widgets.context_usage;
-        if usage.text().is_empty() {
-            usage.set_visible(false);
-            return;
-        }
-        let grow = self.widgets.context_sizer.width();
-        let taken = if usage.is_visible() { usage.width() } else { 0 };
-        let natural = usage.measure(gtk::Orientation::Horizontal, -1).1;
-        usage.set_visible(context_usage_fits(
-            grow + taken,
-            natural,
-            usage.is_visible(),
-        ));
     }
 
     fn refresh_attachment_control(&self) {
@@ -3299,6 +3317,7 @@ impl Controller {
     }
 
     fn relayout_transcript(&mut self) {
+        self.fit_context_usage();
         if !self.widgets.transcript_scroll.is_realized() {
             return;
         }
