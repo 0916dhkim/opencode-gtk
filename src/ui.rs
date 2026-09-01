@@ -763,14 +763,11 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
     sticky_message.add_controller(sticky_scroll_controller);
     sticky_message.append(&sticky_message_header);
     sticky_message.append(&sticky_message_scroll);
-    let overlay = gtk::Overlay::new();
-    overlay.set_vexpand(true);
-    overlay.set_child(Some(&transcript_scroll));
-    overlay.add_overlay(&sticky_message);
     let conversation = gtk::Box::new(gtk::Orientation::Vertical, 0);
     conversation.set_vexpand(true);
     conversation.append(&load_earlier);
-    conversation.append(&overlay);
+    conversation.append(&sticky_message);
+    conversation.append(&transcript_scroll);
     conversation.append(&transcript_status);
     main.append(&conversation);
 
@@ -5277,17 +5274,24 @@ fn pointer_hits_widget(
     x: f64,
     y: f64,
 ) -> bool {
-    if widget.parent().is_none() || origin.parent().is_none() {
+    if !widget.is_visible() || widget.parent().is_none() {
         return false;
     }
-    widget.compute_bounds(origin).is_some_and(|bounds| {
-        let x = x as f32;
-        let y = y as f32;
-        x >= bounds.x()
-            && x <= bounds.x() + bounds.width()
-            && y >= bounds.y()
-            && y <= bounds.y() + bounds.height()
-    })
+    origin
+        .pick(x, y, gtk::PickFlags::DEFAULT)
+        .is_some_and(|picked| is_self_or_descendant(widget, &picked))
+}
+
+fn is_self_or_descendant(root: &impl IsA<gtk::Widget>, widget: &gtk::Widget) -> bool {
+    let root = root.upcast_ref::<gtk::Widget>();
+    let mut current = Some(widget.clone());
+    while let Some(node) = current {
+        if node == *root {
+            return true;
+        }
+        current = node.parent();
+    }
+    false
 }
 
 fn adjustment_at_top(adjustment: &gtk::Adjustment) -> bool {
