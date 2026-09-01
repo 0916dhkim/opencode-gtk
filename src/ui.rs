@@ -132,8 +132,9 @@ struct Widgets {
     settings_button: gtk::Button,
     status: gtk::Label,
     tab_bar: gtk::Box,
-    transcript: gtk::Fixed,
+    transcript: gtk::Box,
     transcript_spacer: gtk::Box,
+    transcript_tail: gtk::Box,
     transcript_scroll: gtk::ScrolledWindow,
     sticky_message: gtk::Box,
     sticky_message_scroll: gtk::ScrolledWindow,
@@ -694,15 +695,22 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
     let transcript_spacer = gtk::Box::new(gtk::Orientation::Vertical, 0);
     transcript_spacer.set_hexpand(true);
     transcript_spacer.set_can_target(false);
-    let transcript = gtk::Fixed::new();
-    transcript.add_css_class("transcript");
+    let transcript_tail = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    transcript_tail.set_hexpand(true);
+    transcript_tail.set_can_target(false);
+    let transcript = gtk::Box::new(gtk::Orientation::Vertical, 0);
     transcript.set_hexpand(true);
-    transcript.put(&transcript_spacer, 0.0, 0.0);
+    let transcript_column = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    transcript_column.add_css_class("transcript");
+    transcript_column.set_hexpand(true);
+    transcript_column.append(&transcript_spacer);
+    transcript_column.append(&transcript);
+    transcript_column.append(&transcript_tail);
     let transcript_scroll = gtk::ScrolledWindow::builder()
         .hscrollbar_policy(gtk::PolicyType::Never)
         .vscrollbar_policy(gtk::PolicyType::Automatic)
         .vexpand(true)
-        .child(&transcript)
+        .child(&transcript_column)
         .build();
     let transcript_spinner = gtk::Spinner::new();
     let transcript_status_label = gtk::Label::new(Some("Open a session to begin"));
@@ -764,10 +772,15 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
     sticky_message.add_controller(sticky_scroll_controller);
     sticky_message.append(&sticky_message_header);
     sticky_message.append(&sticky_message_scroll);
+    let overlay = gtk::Overlay::new();
+    overlay.set_vexpand(true);
+    overlay.set_hexpand(true);
+    overlay.set_child(Some(&transcript_scroll));
+    overlay.add_overlay(&sticky_message);
     let conversation = gtk::Box::new(gtk::Orientation::Vertical, 0);
     conversation.set_vexpand(true);
     conversation.append(&load_earlier);
-    conversation.append(&transcript_scroll);
+    conversation.append(&overlay);
     conversation.append(&transcript_status);
     main.append(&conversation);
 
@@ -850,6 +863,7 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
         tab_bar,
         transcript,
         transcript_spacer,
+        transcript_tail,
         transcript_scroll,
         sticky_message,
         sticky_message_scroll,
@@ -3173,29 +3187,7 @@ impl Controller {
     }
 
     fn place_sticky_message(&self, visible: bool) {
-        let sticky = &self.widgets.sticky_message;
-        if !visible {
-            sticky.set_visible(false);
-            if sticky.parent().is_some() {
-                self.widgets.transcript.remove(sticky);
-            }
-            return;
-        }
-        let width = self.widgets.transcript_scroll.width();
-        if width <= ROW_PADDING_X {
-            sticky.set_visible(false);
-            if sticky.parent().is_some() {
-                self.widgets.transcript.remove(sticky);
-            }
-            return;
-        }
-        let y = self.widgets.transcript_scroll.vadjustment().value();
-        sticky.set_size_request(width, -1);
-        sticky.set_visible(true);
-        if sticky.parent().is_some() {
-            self.widgets.transcript.remove(sticky);
-        }
-        self.widgets.transcript.put(sticky, 0.0, y);
+        self.widgets.sticky_message.set_visible(visible);
     }
 
     fn queue_transcript_edge_refresh(&mut self) {
@@ -3231,14 +3223,9 @@ impl Controller {
         self.sync_visible_rows(start, end);
         let mut changed = false;
         for slot in &self.transcript_visible {
-            if slot.row.width_request() != width {
-                slot.row.set_size_request(width, -1);
+            if slot.row.width_request() != -1 {
+                slot.row.set_size_request(-1, -1);
             }
-            self.widgets.transcript.move_(
-                &slot.row,
-                0.0,
-                f64::from(row_offset(&self.transcript_heights, slot.index)),
-            );
             let (_, natural, _, _) = slot.row.measure(gtk::Orientation::Vertical, width);
             let height = natural.max(1);
             if let Some(stored) = self.transcript_heights.get_mut(slot.index) {
@@ -3249,12 +3236,14 @@ impl Controller {
             }
         }
         let total = self.transcript_heights.iter().copied().sum::<i32>().max(0);
-        if self.widgets.transcript_spacer.width_request() != width
-            || self.widgets.transcript_spacer.height_request() != total
-        {
-            self.widgets
-                .transcript_spacer
-                .set_size_request(width, total);
+        let top = row_offset(&self.transcript_heights, start);
+        let bottom = (total - row_offset(&self.transcript_heights, end)).max(0);
+        if self.widgets.transcript_spacer.height_request() != top {
+            self.widgets.transcript_spacer.set_size_request(-1, top);
+            changed = true;
+        }
+        if self.widgets.transcript_tail.height_request() != bottom {
+            self.widgets.transcript_tail.set_size_request(-1, bottom);
             changed = true;
         }
         if changed {
@@ -3304,9 +3293,18 @@ impl Controller {
             slot.index = index;
             slot.bound.clear();
             slot.row.set_halign(gtk::Align::Fill);
+            slot.row.set_hexpand(true);
             slot.row.set_valign(gtk::Align::Start);
-            self.widgets.transcript.put(&slot.row, 0.0, 0.0);
+            self.widgets.transcript.append(&slot.row);
             keep.push(slot);
+        }
+        keep.sort_by_key(|slot| slot.index);
+        let mut previous: Option<gtk::Widget> = None;
+        for slot in &keep {
+            self.widgets
+                .transcript
+                .reorder_child_after(&slot.row, previous.as_ref());
+            previous = Some(slot.row.clone().upcast());
         }
         for slot in &mut keep {
             let Some(value) = self.rendered_rows.get(slot.index) else {
@@ -3346,6 +3344,9 @@ impl Controller {
         let compact = visible && has_rows;
         self.widgets.transcript_scroll.set_visible(has_rows);
         self.widgets.transcript_scroll.set_vexpand(has_rows);
+        if let Some(pane) = self.widgets.transcript_scroll.parent() {
+            pane.set_vexpand(has_rows);
+        }
         self.widgets.transcript_status.set_visible(visible);
         self.widgets
             .transcript_status
