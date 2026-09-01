@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use serde_json::{json, Value};
 
@@ -34,6 +34,7 @@ pub fn server_state() -> ServerState {
         ],
         active: Some(ACTIVE_ID.into()),
         selections: HashMap::new(),
+        unread: HashSet::new(),
     }
 }
 

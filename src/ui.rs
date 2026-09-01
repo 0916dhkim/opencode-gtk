@@ -597,6 +597,7 @@ fn restored_state(server_state: ServerState) -> State {
         tabs: server_state.tabs.iter().map(|tab| tab.id.clone()).collect(),
         active: server_state.active,
         selections: server_state.selections,
+        unread: server_state.unread,
         ..State::default()
     };
     state
@@ -1040,26 +1041,6 @@ fn remove_pending_clipboard_attachments(pending: Option<PendingPrompt>) {
 }
 
 fn wire_callbacks(controller: &Rc<RefCell<Controller>>) {
-    let weak = Rc::downgrade(controller);
-    controller
-        .borrow()
-        .widgets
-        .window
-        .connect_is_active_notify(move |window| {
-            if !window.is_active() {
-                return;
-            }
-            let Some(controller) = weak.upgrade() else {
-                return;
-            };
-            let mut controller = controller.borrow_mut();
-            let active = controller.state.active.clone();
-            if active.is_some_and(|active| controller.clear_session_unread(&active)) {
-                let weak = controller.self_weak.clone();
-                controller.refresh_tabs(&weak);
-            }
-        });
-
     let transcript_adjustment = controller.borrow().widgets.transcript_scroll.vadjustment();
     let user_scrolling = controller
         .borrow()
@@ -1339,6 +1320,10 @@ fn wire_callbacks(controller: &Rc<RefCell<Controller>>) {
         };
         if key == gdk::Key::F2 && modifiers.is_empty() {
             Controller::rename_active_session(&controller);
+            return glib::Propagation::Stop;
+        }
+        if key == gdk::Key::Escape && modifiers.is_empty() {
+            Controller::acknowledge_active_unread(&controller);
             return glib::Propagation::Stop;
         }
         let alt = modifiers.contains(gdk::ModifierType::ALT_MASK)
@@ -2100,7 +2085,7 @@ impl Controller {
         this.event_flush_scheduled = false;
         let events = std::mem::take(&mut this.pending_events);
         let active = this.state.active.clone();
-        let window_active = this.widgets.window.is_active();
+        let mut persist_unread = false;
         let mut transcript_changed = false;
         let mut tabs_changed = false;
         let mut tab_status_changed = false;
@@ -2168,18 +2153,10 @@ impl Controller {
                 }
                 let status_changed = this.update_session_status(&session_id, status);
                 let open = this.state.tabs.iter().any(|id| id == &session_id);
-                if event_returns_control(&payload) {
-                    let unread =
-                        session_completion_is_unread(active.as_deref(), &session_id, window_active);
-                    let unread_changed = if open && unread {
-                        this.state.unread.insert(session_id.clone())
-                    } else {
-                        this.state.unread.remove(&session_id)
-                    };
-                    tab_status_changed |= unread_changed;
-                    if open {
-                        this.notify_session_idle(&session_id);
-                    }
+                if event_returns_control(&payload) && open {
+                    persist_unread |= this.state.unread.insert(session_id.clone());
+                    tab_status_changed = true;
+                    this.notify_session_idle(&session_id);
                 }
                 tab_status_changed |= status_changed && open;
             }
@@ -2275,6 +2252,9 @@ impl Controller {
             Self::refresh_all(controller);
             this = controller.borrow_mut();
         } else if tab_status_changed {
+            if persist_unread {
+                this.persist_state();
+            }
             let weak = this.self_weak.clone();
             this.refresh_tabs(&weak);
         }
@@ -2334,6 +2314,7 @@ impl Controller {
             tab.set_widget_name(&id);
             let active = self.state.active.as_deref() == Some(id.as_str());
             let unread = self.state.unread.contains(&id);
+            let busy = self.state.statuses.get(&id) == Some(&RunStatus::Busy);
             if active {
                 tab.add_css_class("active");
                 previous_inactive = false;
@@ -2347,7 +2328,9 @@ impl Controller {
             if unread {
                 tab.add_css_class("unread");
             }
-            let busy = self.state.statuses.get(&id) == Some(&RunStatus::Busy);
+            if busy {
+                tab.add_css_class("busy");
+            }
             let status = if busy {
                 let spinner = gtk::Spinner::new();
                 spinner.start();
@@ -2570,7 +2553,6 @@ impl Controller {
             };
             let active_changed = this.state.active.as_deref() != Some(id);
             this.state.active = Some(id.to_owned());
-            this.clear_session_unread(id);
             let load_messages = !this
                 .state
                 .conversations
@@ -3469,11 +3451,25 @@ impl Controller {
 
     fn clear_session_unread(&mut self, session_id: &str) -> bool {
         let changed = self.state.unread.remove(session_id);
-        if let Some(application) = self.widgets.window.application() {
-            application
-                .withdraw_notification(&session_notification_id(&self.server_key, session_id));
+        if changed {
+            if let Some(application) = self.widgets.window.application() {
+                application
+                    .withdraw_notification(&session_notification_id(&self.server_key, session_id));
+            }
+            self.persist_state();
         }
         changed
+    }
+
+    fn acknowledge_active_unread(controller: &Rc<RefCell<Self>>) {
+        let mut this = controller.borrow_mut();
+        let Some(active) = this.state.active.clone() else {
+            return;
+        };
+        if this.clear_session_unread(&active) {
+            let weak = this.self_weak.clone();
+            this.refresh_tabs(&weak);
+        }
     }
 
     fn send_if_idle(controller: &Rc<RefCell<Self>>) {
@@ -3572,8 +3568,9 @@ impl Controller {
                         draft: pending,
                     },
                 );
+                let unread_changed = this.clear_session_unread(&active);
                 let status_changed = this.update_session_status(&active, RunStatus::Busy);
-                if status_changed {
+                if status_changed || unread_changed {
                     let weak = this.self_weak.clone();
                     this.refresh_tabs(&weak);
                 }
@@ -4919,6 +4916,7 @@ impl Controller {
                 tabs,
                 active: self.state.active.clone(),
                 selections: self.state.selections.clone(),
+                unread: self.state.unread.clone(),
             },
         );
         match self.persisted.save(&self.state_path) {
@@ -5508,14 +5506,6 @@ fn event_returns_control(payload: &serde_json::Value) -> bool {
     payload.get("type").and_then(serde_json::Value::as_str) == Some("session.idle")
 }
 
-fn session_completion_is_unread(
-    active_session: Option<&str>,
-    completed_session: &str,
-    window_active: bool,
-) -> bool {
-    !window_active || active_session != Some(completed_session)
-}
-
 fn session_notification_id(server_key: &str, session_id: &str) -> String {
     format!("{server_key}:session:{session_id}")
 }
@@ -6086,25 +6076,6 @@ mod tests {
                 "type": event_type
             })));
         }
-    }
-
-    #[test]
-    fn completed_sessions_are_unread_until_visibly_active() {
-        assert!(!session_completion_is_unread(
-            Some("ses_active"),
-            "ses_active",
-            true
-        ));
-        assert!(session_completion_is_unread(
-            Some("ses_active"),
-            "ses_other",
-            true
-        ));
-        assert!(session_completion_is_unread(
-            Some("ses_active"),
-            "ses_active",
-            false
-        ));
     }
 
     #[test]

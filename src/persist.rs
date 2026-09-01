@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fs,
     io::Write,
     path::{Path, PathBuf},
@@ -45,6 +45,8 @@ pub struct ServerState {
     pub active: Option<String>,
     #[serde(default)]
     pub selections: HashMap<String, ModelSelection>,
+    #[serde(default)]
+    pub unread: HashSet<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -157,6 +159,7 @@ mod tests {
                 }],
                 active: Some("ses_1".into()),
                 selections: HashMap::new(),
+                unread: HashSet::from(["ses_1".into()]),
             },
         );
 
@@ -165,6 +168,9 @@ mod tests {
 
         assert!(warning.is_none());
         assert_eq!(loaded.servers["http://127.0.0.1:4096"].tabs[0].id, "ses_1");
+        assert!(loaded.servers["http://127.0.0.1:4096"]
+            .unread
+            .contains("ses_1"));
         assert_eq!(loaded.connection, state.connection);
         let contents = fs::read_to_string(path).unwrap();
         assert!(!contents.contains("password"));

@@ -68,6 +68,12 @@ headerbar {
   color: #135d83;
 }
 
+.session-tab.busy .session-tab-title,
+.session-tab.busy .session-tab-index {
+  color: #9c641a;
+  font-weight: 700;
+}
+
 .session-tab button.session-tab-close:hover {
   background: #b84b45;
   color: #ffffff;

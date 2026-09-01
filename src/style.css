@@ -122,6 +122,12 @@ headerbar {
   font-weight: 700;
 }
 
+.session-tab.busy .session-tab-title,
+.session-tab.busy .session-tab-index {
+  color: #e5b567;
+  font-weight: 700;
+}
+
 .session-tab button.session-tab-action {
   min-width: 22px;
   min-height: 22px;
