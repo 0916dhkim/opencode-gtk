@@ -35,6 +35,7 @@ pub fn server_state() -> ServerState {
         active: Some(ACTIVE_ID.into()),
         selections: HashMap::new(),
         unread: HashSet::new(),
+        busy: HashSet::new(),
     }
 }
 

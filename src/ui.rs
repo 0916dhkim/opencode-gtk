@@ -177,6 +177,7 @@ struct Controller {
     credential_warning: Option<String>,
     persistence_writes_blocked: bool,
     had_server_state: bool,
+    offline_busy: HashSet<String>,
     state: State,
     widgets: Widgets,
     rendered_session: Option<String>,
@@ -411,6 +412,7 @@ pub fn launch(
                 .unwrap_or_default(),
         )
     };
+    let offline_busy = server_state.busy.clone();
     let state = restored_state(server_state);
 
     let controller = Rc::new(RefCell::new(Controller {
@@ -426,6 +428,7 @@ pub fn launch(
         credential_warning,
         persistence_writes_blocked,
         had_server_state,
+        offline_busy,
         state,
         widgets,
         rendered_session: None,
@@ -501,7 +504,9 @@ pub fn launch(
         .window
         .connect_close_request(move |_| {
             if let Some(controller) = close_controller.upgrade() {
-                controller.borrow().events.close();
+                let mut controller = controller.borrow_mut();
+                controller.persist_state();
+                controller.events.close();
             }
             glib::Propagation::Proceed
         });
@@ -1846,6 +1851,7 @@ impl Controller {
                     }
                 }
             }
+            this.apply_missed_idle(statuses_complete);
             let resolved = std::mem::take(&mut this.resolved_requests_during_bootstrap);
             pending.retain(|event| {
                 event_data(&event.payload)
@@ -4083,6 +4089,7 @@ impl Controller {
                 .cloned()
                 .unwrap_or_default();
             this.had_server_state = this.persisted.servers.contains_key(&server_key);
+            this.offline_busy = server_state.busy.clone();
             this.connection_config = config.clone();
             this.persisted.connection = ConnectionSettings {
                 server: config.base_url,
@@ -4897,6 +4904,26 @@ impl Controller {
         }
     }
 
+    fn apply_missed_idle(&mut self, statuses_complete: bool) {
+        let pending = std::mem::take(&mut self.offline_busy);
+        let mut leftover = HashSet::new();
+        for id in pending {
+            let known = self.state.statuses.get(&id);
+            if known == Some(&RunStatus::Busy) {
+                leftover.insert(id);
+                continue;
+            }
+            if !statuses_complete && known.is_none() {
+                leftover.insert(id);
+                continue;
+            }
+            if self.state.tabs.contains(&id) {
+                self.state.unread.insert(id);
+            }
+        }
+        self.offline_busy = leftover;
+    }
+
     fn persist_state(&mut self) {
         if self.persistence_writes_blocked {
             return;
@@ -4920,6 +4947,17 @@ impl Controller {
                 active: self.state.active.clone(),
                 selections: self.state.selections.clone(),
                 unread: self.state.unread.clone(),
+                busy: {
+                    let mut busy: HashSet<_> = self
+                        .state
+                        .statuses
+                        .iter()
+                        .filter(|(_, status)| **status == RunStatus::Busy)
+                        .map(|(id, _)| id.clone())
+                        .collect();
+                    busy.extend(self.offline_busy.iter().cloned());
+                    busy
+                },
             },
         );
         match self.persisted.save(&self.state_path) {

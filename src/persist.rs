@@ -47,6 +47,8 @@ pub struct ServerState {
     pub selections: HashMap<String, ModelSelection>,
     #[serde(default)]
     pub unread: HashSet<String>,
+    #[serde(default)]
+    pub busy: HashSet<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -160,6 +162,7 @@ mod tests {
                 active: Some("ses_1".into()),
                 selections: HashMap::new(),
                 unread: HashSet::from(["ses_1".into()]),
+                busy: HashSet::from(["ses_1".into()]),
             },
         );
 
@@ -170,6 +173,9 @@ mod tests {
         assert_eq!(loaded.servers["http://127.0.0.1:4096"].tabs[0].id, "ses_1");
         assert!(loaded.servers["http://127.0.0.1:4096"]
             .unread
+            .contains("ses_1"));
+        assert!(loaded.servers["http://127.0.0.1:4096"]
+            .busy
             .contains("ses_1"));
         assert_eq!(loaded.connection, state.connection);
         let contents = fs::read_to_string(path).unwrap();
