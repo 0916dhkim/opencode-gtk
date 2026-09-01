@@ -3464,6 +3464,7 @@ impl Controller {
             Some(&session_notification_id(&self.server_key, session_id)),
             &notification,
         );
+        play_session_ready_sound();
     }
 
     fn clear_session_unread(&mut self, session_id: &str) -> bool {
@@ -5708,6 +5709,15 @@ fn move_tab(tabs: &mut Vec<String>, source_id: &str, target_id: &str, after: boo
     }
     tabs.insert(destination, source);
     true
+}
+
+fn play_session_ready_sound() {
+    let _ = std::process::Command::new("canberra-gtk-play")
+        .args(["-i", "message-new-instant", "-d", "Session ready"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
 }
 
 fn clear_box(container: &gtk::Box) {
