@@ -825,13 +825,12 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
     let context_usage = gtk::Label::new(None);
     context_usage.add_css_class("composer-usage");
     context_usage.set_xalign(0.0);
+    context_usage.set_hexpand(false);
     context_usage.set_valign(gtk::Align::Center);
     context_usage.set_visible(false);
     let context_sizer = gtk::DrawingArea::new();
     context_sizer.set_hexpand(true);
     context_sizer.set_can_target(false);
-    context_sizer.set_content_width(0);
-    context_sizer.set_content_height(1);
     context_sizer.set_valign(gtk::Align::Fill);
     let send_button = icon_button(ICON_SEND, COMPOSER_ICON_PX);
     send_button.add_css_class("suggested-action");
@@ -840,6 +839,7 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
     send_button.set_sensitive(false);
 
     let composer_controls = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    composer_controls.set_overflow(gtk::Overflow::Hidden);
     composer_controls.append(&attach_button);
     composer_controls.append(&model_dropdown);
     composer_controls.append(&variant_dropdown);
@@ -3037,7 +3037,22 @@ impl Controller {
 
     fn fit_context_usage(&self) {
         let usage = &self.widgets.context_usage;
-        usage.set_visible(!usage.text().is_empty());
+        if usage.text().is_empty() {
+            usage.set_visible(false);
+            return;
+        }
+        let grow = self.widgets.context_sizer.width().max(0);
+        let taken = if usage.is_visible() {
+            usage.width().max(0)
+        } else {
+            0
+        };
+        let natural = usage.measure(gtk::Orientation::Horizontal, -1).1;
+        usage.set_visible(context_usage_fits(
+            grow.saturating_add(taken),
+            natural,
+            usage.is_visible(),
+        ));
     }
 
     fn refresh_context_usage(&self) {
@@ -5366,11 +5381,8 @@ fn display_local_timestamp(timestamp: u64) -> Option<String> {
 }
 
 fn context_usage_fits(available: i32, natural: i32, visible: bool) -> bool {
-    if natural <= 0 {
+    if natural <= 0 || available <= 0 {
         return false;
-    }
-    if available <= 0 {
-        return true;
     }
     available >= natural + if visible { 8 } else { 32 }
 }
@@ -5994,7 +6006,7 @@ mod tests {
 
     #[test]
     fn context_usage_hides_until_there_is_room() {
-        assert!(context_usage_fits(0, 72, false));
+        assert!(!context_usage_fits(0, 72, false));
         assert!(!context_usage_fits(90, 72, false));
         assert!(context_usage_fits(104, 72, false));
         assert!(context_usage_fits(80, 72, true));
