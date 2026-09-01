@@ -685,6 +685,7 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
     root.set_start_child(Some(&sidebar));
     let main = gtk::Box::new(gtk::Orientation::Vertical, 0);
     main.set_hexpand(true);
+    main.set_vexpand(true);
 
     let load_earlier = gtk::Button::with_label("Load earlier messages");
     load_earlier.add_css_class("flat");
@@ -781,9 +782,10 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
     let composer_scroll = gtk::ScrolledWindow::builder()
         .hscrollbar_policy(gtk::PolicyType::Never)
         .vscrollbar_policy(gtk::PolicyType::Automatic)
-        .min_content_height(44)
+        .min_content_height(72)
         .max_content_height(220)
         .propagate_natural_height(true)
+        .vexpand(false)
         .child(&composer)
         .build();
 
@@ -827,6 +829,9 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
     composer_box.append(&controls);
     let composer_frame = gtk::Frame::new(None);
     composer_frame.add_css_class("composer-frame");
+    composer_frame.set_hexpand(true);
+    composer_frame.set_vexpand(false);
+    composer_frame.set_valign(gtk::Align::End);
     composer_frame.set_margin_start(18);
     composer_frame.set_margin_end(18);
     composer_frame.set_margin_bottom(16);
@@ -3176,11 +3181,7 @@ impl Controller {
             }
             return;
         }
-        let width = self
-            .widgets
-            .transcript_scroll
-            .width()
-            .max(self.widgets.transcript.width());
+        let width = self.widgets.transcript_scroll.width();
         if width <= ROW_PADDING_X {
             sticky.set_visible(false);
             if sticky.parent().is_some() {
@@ -3216,11 +3217,7 @@ impl Controller {
     }
 
     fn relayout_transcript(&mut self) {
-        let width = self
-            .widgets
-            .transcript_scroll
-            .width()
-            .max(self.widgets.transcript.width());
+        let width = self.widgets.transcript_scroll.width();
         if width <= ROW_PADDING_X {
             return;
         }
