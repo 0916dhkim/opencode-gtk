@@ -3335,6 +3335,7 @@ impl Controller {
 
     fn recycle_visible_rows(&mut self) {
         for slot in self.transcript_visible.drain(..) {
+            prepare_transcript_row_for_recycle(&self.widgets.window, &slot.row);
             self.widgets.transcript.remove(&slot.row);
             self.transcript_pool.push(slot);
         }
@@ -3347,6 +3348,7 @@ impl Controller {
             if needed.contains(&slot.index) {
                 keep.push(slot);
             } else {
+                prepare_transcript_row_for_recycle(&self.widgets.window, &slot.row);
                 self.widgets.transcript.remove(&slot.row);
                 self.transcript_pool.push(slot);
             }
@@ -5710,7 +5712,36 @@ fn move_tab(tabs: &mut Vec<String>, source_id: &str, target_id: &str, after: boo
 
 fn clear_box(container: &gtk::Box) {
     while let Some(child) = container.first_child() {
+        clear_selectable_text(&child);
         container.remove(&child);
+    }
+}
+
+fn prepare_transcript_row_for_recycle(
+    window: &gtk::ApplicationWindow,
+    row: &impl IsA<gtk::Widget>,
+) {
+    let row = row.upcast_ref::<gtk::Widget>();
+    if let Some(focus) = gtk::prelude::RootExt::focus(window) {
+        if &focus == row || focus.is_ancestor(row) {
+            gtk::prelude::GtkWindowExt::set_focus(window, None::<&gtk::Widget>);
+        }
+    }
+    clear_selectable_text(row);
+}
+
+fn clear_selectable_text(widget: &gtk::Widget) {
+    if let Ok(label) = widget.clone().downcast::<gtk::Label>() {
+        if label.is_selectable() {
+            label.select_region(0, 0);
+            label.set_selectable(false);
+        }
+    }
+    let mut child = widget.first_child();
+    while let Some(current) = child {
+        let next = current.next_sibling();
+        clear_selectable_text(&current);
+        child = next;
     }
 }
 
