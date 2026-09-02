@@ -574,14 +574,56 @@ fn autolink_markup(text: &str) -> String {
 }
 
 fn next_url(text: &str) -> Option<(usize, usize)> {
-    ["https://", "http://", "mailto:"]
-        .into_iter()
-        .filter_map(|prefix| {
-            let start = text.find(prefix)?;
+    let mut best: Option<(usize, usize)> = None;
+    let mut from = 0;
+    while let Some(relative) = text[from..].find("://") {
+        let separator = from + relative;
+        if let Some(start) = scheme_start(text, separator) {
             let end = start + url_len(&text[start..]);
-            (end > start).then_some((start, end))
-        })
-        .min_by_key(|(start, _)| *start)
+            if end > separator + 3 {
+                consider_url(&mut best, start, end);
+            }
+        }
+        from = separator + 1;
+    }
+    from = 0;
+    while let Some(relative) = text[from..].find("mailto:") {
+        let start = from + relative;
+        if start == 0 || !scheme_continue(text.as_bytes()[start - 1]) {
+            let end = start + url_len(&text[start..]);
+            if end > start + "mailto:".len() {
+                consider_url(&mut best, start, end);
+            }
+        }
+        from = start + 1;
+    }
+    best
+}
+
+fn consider_url(best: &mut Option<(usize, usize)>, start: usize, end: usize) {
+    if best.is_none_or(|(best_start, _)| start < best_start) {
+        *best = Some((start, end));
+    }
+}
+
+fn scheme_start(text: &str, separator: usize) -> Option<usize> {
+    let bytes = text.as_bytes();
+    if separator == 0 || separator + 2 >= bytes.len() || &bytes[separator..separator + 3] != b"://"
+    {
+        return None;
+    }
+    let mut start = separator;
+    while start > 0 && scheme_continue(bytes[start - 1]) {
+        start -= 1;
+    }
+    if start == separator || !bytes[start].is_ascii_alphabetic() {
+        return None;
+    }
+    Some(start)
+}
+
+fn scheme_continue(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'.' | b'-')
 }
 
 fn url_len(text: &str) -> usize {
@@ -619,7 +661,8 @@ fn heading_level(level: HeadingLevel) -> u8 {
 }
 
 fn safe_link(target: &str) -> bool {
-    Url::parse(target).is_ok_and(|url| matches!(url.scheme(), "http" | "https" | "mailto"))
+    Url::parse(target)
+        .is_ok_and(|url| !matches!(url.scheme(), "javascript" | "data" | "vbscript" | "file"))
 }
 
 #[cfg(test)]
@@ -671,6 +714,8 @@ mod tests {
         assert!(safe_link("https://example.com"));
         assert!(safe_link("http://localhost:4096"));
         assert!(safe_link("mailto:test@example.com"));
+        assert!(safe_link("obsidian://open?vault=notes"));
+        assert!(safe_link("vscode://file/tmp/foo.rs"));
         assert!(!safe_link("file:///etc/passwd"));
         assert!(!safe_link("javascript:alert(1)"));
         assert!(!safe_link("not a url"));
@@ -684,6 +729,9 @@ mod tests {
         );
         assert!(markup.ends_with(", please."));
         assert!(!autolink_markup("javascript:alert(1)").contains("href="));
+        let deep = autolink_markup("open obsidian://open?vault=notes now");
+        assert!(deep
+            .contains("<a href=\"obsidian://open?vault=notes\">obsidian://open?vault=notes</a>"));
     }
 
     #[test]
