@@ -2150,9 +2150,10 @@ impl Controller {
                         );
                     }
                 }
+                let previous = this.state.statuses.get(&session_id).copied();
                 let status_changed = this.update_session_status(&session_id, status);
                 let open = this.state.tabs.iter().any(|id| id == &session_id);
-                if event_returns_control(&payload) && open {
+                if event_returns_control(&payload) && open && session_idle_marks_unread(previous) {
                     persist_unread |= this.state.unread.insert(session_id.clone());
                     tab_status_changed = true;
                     this.notify_session_idle(&session_id);
@@ -5540,6 +5541,10 @@ fn event_returns_control(payload: &serde_json::Value) -> bool {
     payload.get("type").and_then(serde_json::Value::as_str) == Some("session.idle")
 }
 
+fn session_idle_marks_unread(previous: Option<RunStatus>) -> bool {
+    previous == Some(RunStatus::Busy)
+}
+
 fn session_notification_id(server_key: &str, session_id: &str) -> String {
     format!("{server_key}:session:{session_id}")
 }
@@ -6111,6 +6116,13 @@ mod tests {
                 "type": event_type
             })));
         }
+    }
+
+    #[test]
+    fn unread_requires_a_busy_to_idle_transition() {
+        assert!(session_idle_marks_unread(Some(RunStatus::Busy)));
+        assert!(!session_idle_marks_unread(Some(RunStatus::Idle)));
+        assert!(!session_idle_marks_unread(None));
     }
 
     #[test]
