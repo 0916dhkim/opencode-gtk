@@ -194,12 +194,12 @@ impl MarkdownParser {
             Tag::Subscript => self.append_markup("<sub>"),
             Tag::Link { dest_url, .. } => {
                 let safe = safe_link(&dest_url);
+                self.link_markup.push(safe);
                 if safe {
                     self.append_markup("<a href=\"");
-                    self.append_escaped(&dest_url);
+                    self.append_markup(&glib::markup_escape_text(&dest_url));
                     self.append_markup("\">");
                 }
-                self.link_markup.push(safe);
             }
             Tag::Image { .. } => self.append_markup("Image: "),
             Tag::Table(alignments) => {
@@ -732,6 +732,14 @@ mod tests {
         let deep = autolink_markup("open obsidian://open?vault=notes now");
         assert!(deep
             .contains("<a href=\"obsidian://open?vault=notes\">obsidian://open?vault=notes</a>"));
+    }
+
+    #[test]
+    fn markdown_links_do_not_nest_autolinks() {
+        let markup = &parse("[Figma](https://www.figma.com/) and https://example.com")[0].content;
+        assert!(!markup.contains("<a href=\"<a"));
+        assert!(markup.contains("<a href=\"https://www.figma.com/\">Figma</a>"));
+        assert!(markup.contains("<a href=\"https://example.com\">https://example.com</a>"));
     }
 
     #[test]
