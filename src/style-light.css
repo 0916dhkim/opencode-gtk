@@ -132,7 +132,6 @@ headerbar {
 
 .session-tab-status.unread {
   background: #1778a8;
-  box-shadow: 0 0 0 2px alpha(#1778a8, 0.18);
 }
 
 .transcript,

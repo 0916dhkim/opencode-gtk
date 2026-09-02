@@ -232,12 +232,10 @@ headerbar {
   min-width: 14px;
   min-height: 14px;
 }
-}
 
 .session-tab-status.unread {
   border-radius: 999px;
   background: #62bceb;
-  box-shadow: 0 0 0 2px alpha(#62bceb, 0.24);
 }
 
 .transcript {
