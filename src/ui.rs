@@ -2361,6 +2361,7 @@ impl Controller {
             hint.add_css_class("session-tab-hint");
             hint.set_halign(gtk::Align::Center);
             hint.set_valign(gtk::Align::Center);
+            hint.set_size_request(14, 14);
             status.set_visible(!show_index);
             hint.append(&status);
             if index < 9 {

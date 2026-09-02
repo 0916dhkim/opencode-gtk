@@ -205,8 +205,6 @@ headerbar {
   margin-right: 3px;
   min-width: 14px;
   min-height: 14px;
-  max-width: 14px;
-  max-height: 14px;
 }
 
 .session-tab-hint .session-tab-status {
@@ -231,8 +229,7 @@ headerbar {
   color: #e5b567;
   min-width: 14px;
   min-height: 14px;
-  max-width: 14px;
-  max-height: 14px;
+}
 }
 
 .session-tab-status.unread {
