@@ -629,6 +629,7 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
         .title("OpenCode")
         .default_width(1180)
         .default_height(820)
+        .resizable(true)
         .build();
 
     let header = gtk::HeaderBar::new();
@@ -663,6 +664,8 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
     root.set_position(270);
     root.set_resize_start_child(false);
     root.set_shrink_start_child(false);
+    root.set_hexpand(true);
+    root.set_vexpand(true);
     let sidebar = gtk::Box::new(gtk::Orientation::Vertical, 0);
     sidebar.add_css_class("tab-strip");
     new_button.set_margin_start(8);
@@ -723,6 +726,9 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
         .hscrollbar_policy(gtk::PolicyType::Never)
         .vscrollbar_policy(gtk::PolicyType::Automatic)
         .vexpand(true)
+        .hexpand(true)
+        .propagate_natural_height(false)
+        .min_content_height(0)
         .child(&transcript_column)
         .build();
     let transcript_spinner = gtk::Spinner::new();
@@ -3403,12 +3409,10 @@ impl Controller {
         };
         let visible = indicator != TranscriptIndicator::Hidden;
         let compact = visible && has_rows;
-        self.widgets.transcript_scroll.set_visible(has_rows);
-        self.widgets.transcript_scroll.set_vexpand(has_rows);
+        self.widgets.transcript_scroll.set_visible(true);
+        self.widgets.transcript_scroll.set_vexpand(true);
         self.widgets.transcript_status.set_visible(visible);
-        self.widgets
-            .transcript_status
-            .set_vexpand(!has_rows && visible);
+        self.widgets.transcript_status.set_vexpand(false);
         if compact {
             self.widgets
                 .transcript_status
