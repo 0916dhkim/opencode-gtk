@@ -5798,6 +5798,7 @@ fn install_css() {
         provider.load_from_data(include_str!("style.css"));
         return;
     };
+    settings.set_gtk_error_bell(false);
     let mode = Rc::new(Cell::new(
         dark_light::detect().unwrap_or(dark_light::Mode::Unspecified),
     ));
