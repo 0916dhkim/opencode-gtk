@@ -2,6 +2,7 @@ use std::{
     cell::{Cell, RefCell},
     collections::{HashMap, HashSet},
     fs,
+    io::Write,
     path::PathBuf,
     rc::{Rc, Weak},
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -976,13 +977,31 @@ fn bind_transcript_row(row: &gtk::Box, value: &str, index: u32) {
     } else {
         markdown::render_into(&content, body);
     }
+    if body.contains("Attached:") && images.is_empty() {
+        debug_log("attached text without images[]");
+    }
     for image in images {
-        if let Some(texture) = inline_image_texture(image) {
-            let picture = gtk::Picture::for_paintable(&texture);
-            picture.set_can_shrink(true);
-            picture.set_halign(gtk::Align::Start);
-            picture.add_css_class("message-image");
-            content.append(&picture);
+        match inline_image_texture(image) {
+            Some(texture) => {
+                let picture = gtk::Picture::for_paintable(&texture);
+                picture.set_can_shrink(true);
+                picture.set_halign(gtk::Align::Start);
+                picture.add_css_class("message-image");
+                let width = texture.width().max(1).min(640);
+                let height = (i64::from(texture.height().max(1)) * i64::from(width)
+                    / i64::from(texture.width().max(1)))
+                .clamp(1, 720) as i32;
+                picture.set_size_request(-1, height);
+                debug_log(format!(
+                    "image ok prefix={} texture={}x{} request_h={}",
+                    image_prefix(image),
+                    texture.width(),
+                    texture.height(),
+                    height
+                ));
+                content.append(&picture);
+            }
+            None => debug_log(format!("image fail prefix={}", image_prefix(image))),
         }
     }
     row.remove_css_class("user-message");
@@ -1000,6 +1019,17 @@ fn bind_transcript_row(row: &gtk::Box, value: &str, index: u32) {
 }
 
 fn inline_image_texture(url: &str) -> Option<gdk::Texture> {
+    if let Some(texture) = data_url_texture(url) {
+        return Some(texture);
+    }
+    let path = url.strip_prefix("file://").unwrap_or(url);
+    if path.starts_with('/') {
+        return gdk::Texture::from_filename(path).ok();
+    }
+    None
+}
+
+fn data_url_texture(url: &str) -> Option<gdk::Texture> {
     let (metadata, encoded) = url.strip_prefix("data:")?.split_once(',')?;
     if !metadata.starts_with("image/") || !metadata.ends_with(";base64") {
         return None;
@@ -1011,6 +1041,22 @@ fn inline_image_texture(url: &str) -> Option<gdk::Texture> {
     (bytes.len() <= MAX_INLINE_IMAGE_BYTES)
         .then(|| gdk::Texture::from_bytes(&glib::Bytes::from_owned(bytes)).ok())
         .flatten()
+}
+
+fn image_prefix(url: &str) -> String {
+    url.chars().take(48).collect()
+}
+
+fn debug_log(message: impl AsRef<str>) {
+    let line = format!("{} {}\n", unix_millis(), message.as_ref());
+    eprint!("{line}");
+    if let Ok(mut file) = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("/tmp/opencode-gtk-debug.log")
+    {
+        let _ = file.write_all(line.as_bytes());
+    }
 }
 
 fn clipboard_attachment_dir() -> PathBuf {
@@ -1092,8 +1138,20 @@ fn wire_callbacks(controller: &Rc<RefCell<Controller>>) {
             return;
         };
         let at_bottom = adjustment_at_bottom(adjustment);
-        let scrolled_up = adjustment.value() + BOTTOM_EPSILON < controller.transcript_scroll_value;
+        let previous = controller.transcript_scroll_value;
+        let scrolled_up = adjustment.value() + BOTTOM_EPSILON < previous;
+        let jump = (adjustment.value() - previous).abs();
         controller.transcript_scroll_value = adjustment.value();
+        if jump > 24.0 {
+            debug_log(format!(
+                "scroll jump={jump:.1} value={:.1} page={:.1} upper={:.1} pinned={} user={}",
+                adjustment.value(),
+                adjustment.page_size(),
+                adjustment.upper(),
+                controller.transcript_at_bottom,
+                controller.widgets.transcript_user_scrolling.get()
+            ));
+        }
         if controller.widgets.transcript_user_scrolling.get() {
             let (pinned, invalidate) =
                 apply_user_bottom_pin(controller.transcript_at_bottom, at_bottom, scrolled_up);
@@ -3307,11 +3365,24 @@ impl Controller {
         let total = self.transcript_heights.iter().copied().sum::<i32>().max(0);
         let top = row_offset(&self.transcript_heights, start);
         let bottom = (total - row_offset(&self.transcript_heights, end)).max(0);
-        if (self.widgets.transcript_spacer.height_request() - top).abs() >= 2 {
+        let spacer_changed = (self.widgets.transcript_spacer.height_request() - top).abs() >= 2;
+        let tail_changed = (self.widgets.transcript_tail.height_request() - bottom).abs() >= 2;
+        if spacer_changed {
             self.widgets.transcript_spacer.set_size_request(-1, top);
         }
-        if (self.widgets.transcript_tail.height_request() - bottom).abs() >= 2 {
+        if tail_changed {
             self.widgets.transcript_tail.set_size_request(-1, bottom);
+        }
+        if remesure || width_changed || spacer_changed || tail_changed {
+            let adjustment = self.widgets.transcript_scroll.vadjustment();
+            debug_log(format!(
+                "relayout remesure={remesure} width={width} page={:.1} value={:.1} upper={:.1} rows={start}..{end}/{} spacer={top} tail={bottom} total={total} pinned={}",
+                adjustment.page_size(),
+                adjustment.value(),
+                adjustment.upper(),
+                self.transcript_heights.len(),
+                self.transcript_at_bottom
+            ));
         }
     }
 
@@ -5543,6 +5614,13 @@ fn scroll_adjustment_to_bottom(adjustment: &gtk::Adjustment) {
     let bottom = adjustment.upper() - adjustment.page_size();
     let target = clamp_adjustment(adjustment, bottom);
     if (adjustment.value() - target).abs() > BOTTOM_EPSILON {
+        debug_log(format!(
+            "pin-bottom from={:.1} to={:.1} page={:.1} upper={:.1}",
+            adjustment.value(),
+            target,
+            adjustment.page_size(),
+            adjustment.upper()
+        ));
         adjustment.set_value(target);
     }
 }
