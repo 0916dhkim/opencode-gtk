@@ -731,6 +731,7 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
     let transcript_scroll = gtk::ScrolledWindow::builder()
         .hscrollbar_policy(gtk::PolicyType::Never)
         .vscrollbar_policy(gtk::PolicyType::Automatic)
+        .overlay_scrolling(false)
         .vexpand(true)
         .hexpand(true)
         .propagate_natural_height(false)
@@ -1167,12 +1168,16 @@ fn wire_callbacks(controller: &Rc<RefCell<Controller>>) {
                 flag.set(false);
             });
         } else if controller.transcript_at_bottom && !at_bottom {
-            scroll_adjustment_to_bottom(adjustment);
+            if distance_from_bottom(adjustment) > 40.0 {
+                scroll_adjustment_to_bottom(adjustment);
+            }
         } else if at_bottom {
             controller.transcript_at_bottom = true;
         }
         controller.refresh_load_earlier_visibility();
-        controller.queue_transcript_relayout(false);
+        if controller.widgets.transcript_user_scrolling.get() || !controller.transcript_at_bottom {
+            controller.queue_transcript_relayout(false);
+        }
     });
     let weak = Rc::downgrade(controller);
     transcript_adjustment.connect_changed(move |adjustment| {
@@ -1182,7 +1187,7 @@ fn wire_callbacks(controller: &Rc<RefCell<Controller>>) {
         let Ok(mut controller) = controller.try_borrow_mut() else {
             return;
         };
-        if controller.transcript_at_bottom {
+        if controller.transcript_at_bottom && distance_from_bottom(adjustment) > 40.0 {
             scroll_adjustment_to_bottom(adjustment);
         }
         controller.queue_transcript_relayout(false);
@@ -3213,9 +3218,6 @@ impl Controller {
                         });
                         if still_active {
                             scroll_adjustment_to_bottom(&adjustment);
-                            if let Some(controller) = weak.upgrade() {
-                                controller.borrow_mut().queue_transcript_edge_refresh();
-                            }
                         }
                     });
                 }
@@ -3351,12 +3353,16 @@ impl Controller {
         self.transcript_layout_width = width;
         let adjustment = self.widgets.transcript_scroll.vadjustment();
         let page = adjustment.page_size();
-        let (start, mut end) = visible_row_range(
-            &self.transcript_heights,
-            adjustment.value(),
-            page,
-            ROW_OVERSCAN,
-        );
+        let (start, mut end) = if self.transcript_at_bottom {
+            visible_row_range_from_end(&self.transcript_heights, page, ROW_OVERSCAN)
+        } else {
+            visible_row_range(
+                &self.transcript_heights,
+                adjustment.value(),
+                page,
+                ROW_OVERSCAN,
+            )
+        };
         end = end.max(min_visible_end(start, self.transcript_heights.len(), page));
         self.sync_visible_rows(start, end);
         if remesure || width_changed {
@@ -5208,6 +5214,27 @@ fn min_visible_end(start: usize, len: usize, page: f64) -> usize {
     start.saturating_add(count).min(len)
 }
 
+fn visible_row_range_from_end(heights: &[i32], page: f64, overscan: usize) -> (usize, usize) {
+    if heights.is_empty() {
+        return (0, 0);
+    }
+    let end = heights.len();
+    let mut y = 0.0;
+    let mut start = 0;
+    for (index, height) in heights.iter().enumerate().rev() {
+        y += f64::from(*height);
+        start = index;
+        if y >= page.max(1.0) {
+            break;
+        }
+    }
+    (start.saturating_sub(overscan), end)
+}
+
+fn distance_from_bottom(adjustment: &gtk::Adjustment) -> f64 {
+    adjustment.upper() - (adjustment.value() + adjustment.page_size())
+}
+
 fn visible_row_range(heights: &[i32], scroll: f64, page: f64, overscan: usize) -> (usize, usize) {
     if heights.is_empty() {
         return (0, 0);
@@ -6315,6 +6342,13 @@ mod tests {
         assert_eq!(visible_row_range(&heights, 0.0, 100.0, 1), (0, 3));
         assert_eq!(visible_row_range(&heights, 160.0, 80.0, 1), (1, 4));
         assert_eq!(visible_row_range(&[], 0.0, 100.0, 1), (0, 0));
+    }
+
+    #[test]
+    fn pinned_range_starts_from_the_end() {
+        let heights = [80, 80, 80, 80, 80, 80];
+        assert_eq!(visible_row_range_from_end(&heights, 100.0, 1), (3, 6));
+        assert_eq!(visible_row_range_from_end(&[], 100.0, 1), (0, 0));
     }
 
     #[test]
