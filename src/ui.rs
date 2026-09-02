@@ -960,14 +960,7 @@ fn bind_transcript_row(row: &gtk::Box, value: &str, index: u32) {
     time.set_visible(!time_text.is_empty());
     clear_box(&content);
     if role_text == "YOU" {
-        let label = gtk::Label::new(Some(body));
-        label.set_xalign(0.0);
-        label.set_yalign(0.0);
-        label.set_wrap(true);
-        label.set_wrap_mode(pango::WrapMode::WordChar);
-        label.set_selectable(true);
-        label.add_css_class("message-plain-text");
-        content.append(&label);
+        content.append(&markdown::render_plain(body, "message-plain-text"));
     } else {
         markdown::render_into(&content, body);
     }

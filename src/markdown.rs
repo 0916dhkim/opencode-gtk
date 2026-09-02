@@ -69,6 +69,10 @@ struct OpenTable {
     current_row: Vec<String>,
 }
 
+pub fn render_plain(text: &str, class: &str) -> gtk::Label {
+    rich_label(&autolink_markup(text), class)
+}
+
 pub fn render_into(container: &gtk::Box, source: &str) {
     while let Some(child) = container.first_child() {
         container.remove(&child);
@@ -276,7 +280,11 @@ impl MarkdownParser {
     }
 
     fn append_escaped(&mut self, text: &str) {
-        self.append_markup(&glib::markup_escape_text(text));
+        if self.link_markup.is_empty() {
+            self.append_markup(&autolink_markup(text));
+        } else {
+            self.append_markup(&glib::markup_escape_text(text));
+        }
     }
 
     fn append_code(&mut self, text: &str) {
@@ -533,7 +541,70 @@ fn rich_label(markup: &str, class: &str) -> gtk::Label {
     label.set_wrap_mode(pango::WrapMode::WordChar);
     label.set_selectable(true);
     label.add_css_class(class);
+    label.connect_activate_link(|label, uri| {
+        if !safe_link(uri) {
+            return glib::Propagation::Stop;
+        }
+        let parent = label.root().and_downcast::<gtk::Window>();
+        gtk::show_uri(parent.as_ref(), uri, 0);
+        glib::Propagation::Stop
+    });
     label
+}
+
+fn autolink_markup(text: &str) -> String {
+    let mut markup = String::new();
+    let mut rest = text;
+    while let Some((start, end)) = next_url(rest) {
+        markup.push_str(&glib::markup_escape_text(&rest[..start]));
+        let url = &rest[start..end];
+        if safe_link(url) {
+            markup.push_str("<a href=\"");
+            markup.push_str(&glib::markup_escape_text(url));
+            markup.push_str("\">");
+            markup.push_str(&glib::markup_escape_text(url));
+            markup.push_str("</a>");
+        } else {
+            markup.push_str(&glib::markup_escape_text(url));
+        }
+        rest = &rest[end..];
+    }
+    markup.push_str(&glib::markup_escape_text(rest));
+    markup
+}
+
+fn next_url(text: &str) -> Option<(usize, usize)> {
+    ["https://", "http://", "mailto:"]
+        .into_iter()
+        .filter_map(|prefix| {
+            let start = text.find(prefix)?;
+            let end = start + url_len(&text[start..]);
+            (end > start).then_some((start, end))
+        })
+        .min_by_key(|(start, _)| *start)
+}
+
+fn url_len(text: &str) -> usize {
+    let mut end = text
+        .char_indices()
+        .take_while(|(_, ch)| !ch.is_whitespace() && *ch != '<' && *ch != '"')
+        .map(|(index, ch)| index + ch.len_utf8())
+        .last()
+        .unwrap_or(0);
+    while end > 0 {
+        let Some(previous) = text[..end].chars().next_back() else {
+            break;
+        };
+        if matches!(
+            previous,
+            '.' | ',' | ';' | ':' | '!' | '?' | ')' | ']' | '}' | '>'
+        ) {
+            end -= previous.len_utf8();
+        } else {
+            break;
+        }
+    }
+    end
 }
 
 fn heading_level(level: HeadingLevel) -> u8 {
@@ -603,6 +674,16 @@ mod tests {
         assert!(!safe_link("file:///etc/passwd"));
         assert!(!safe_link("javascript:alert(1)"));
         assert!(!safe_link("not a url"));
+    }
+
+    #[test]
+    fn autolinks_bare_http_urls() {
+        let markup = autolink_markup("see https://example.com/path, please.");
+        assert!(
+            markup.contains("<a href=\"https://example.com/path\">https://example.com/path</a>")
+        );
+        assert!(markup.ends_with(", please."));
+        assert!(!autolink_markup("javascript:alert(1)").contains("href="));
     }
 
     #[test]
