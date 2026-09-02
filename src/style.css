@@ -117,7 +117,9 @@ headerbar {
 }
 
 .session-tab.unread .session-tab-title,
-.session-tab.unread .session-tab-index {
+.session-tab.unread .session-tab-index,
+.session-tab.active.unread .session-tab-title,
+.session-tab.active.unread .session-tab-index {
   color: #d9efff;
   font-weight: 700;
 }

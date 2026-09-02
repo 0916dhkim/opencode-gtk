@@ -2153,10 +2153,12 @@ impl Controller {
                 let previous = this.state.statuses.get(&session_id).copied();
                 let status_changed = this.update_session_status(&session_id, status);
                 let open = this.state.tabs.iter().any(|id| id == &session_id);
-                if event_returns_control(&payload) && open && session_idle_marks_unread(previous) {
+                if open && session_idle_marks_unread(previous) && status == RunStatus::Idle {
                     persist_unread |= this.state.unread.insert(session_id.clone());
                     tab_status_changed = true;
-                    this.notify_session_idle(&session_id);
+                    if event_returns_control(&payload) {
+                        this.notify_session_idle(&session_id);
+                    }
                 }
                 tab_status_changed |= status_changed && open;
             }
