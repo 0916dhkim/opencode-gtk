@@ -40,7 +40,8 @@ const TAB_ICON_PX: i32 = 16;
 const BOTTOM_EPSILON: f64 = 2.0;
 const MAX_INLINE_IMAGE_BYTES: usize = 25 * 1024 * 1024;
 const ROW_ESTIMATE: i32 = 88;
-const ROW_OVERSCAN: usize = 2;
+const ROW_MIN_HEIGHT: i32 = 24;
+const ROW_OVERSCAN: usize = 4;
 const ROW_PADDING_X: i32 = 56;
 
 #[derive(Deserialize)]
@@ -3279,26 +3280,29 @@ impl Controller {
             return;
         }
         let adjustment = self.widgets.transcript_scroll.vadjustment();
-        let (start, end) = visible_row_range(
+        let page = adjustment.page_size();
+        let (mut start, mut end) = visible_row_range(
             &self.transcript_heights,
             adjustment.value(),
-            adjustment.page_size(),
+            page,
             ROW_OVERSCAN,
         );
-        self.sync_visible_rows(start, end);
         let mut changed = false;
-        for slot in &self.transcript_visible {
-            if slot.row.width_request() != -1 {
-                slot.row.set_size_request(-1, -1);
+        for _ in 0..32 {
+            end = end.max(min_visible_end(start, self.transcript_heights.len(), page));
+            self.sync_visible_rows(start, end);
+            changed |= self.refresh_visible_row_heights(width);
+            let painted = self.painted_visible_height();
+            if painted <= 1 || painted >= page as i32 || end >= self.transcript_heights.len() {
+                break;
             }
-            let (_, natural, _, _) = slot.row.measure(gtk::Orientation::Vertical, width);
-            let height = natural.max(1);
-            if let Some(stored) = self.transcript_heights.get_mut(slot.index) {
-                if *stored != height {
-                    *stored = height;
-                    changed = true;
-                }
+            let extra = ((page as i32 - painted) / ROW_MIN_HEIGHT).max(1) as usize;
+            let next = (end + extra).min(self.transcript_heights.len());
+            if next == end {
+                break;
             }
+            end = next;
+            changed = true;
         }
         let total = self.transcript_heights.iter().copied().sum::<i32>().max(0);
         let top = row_offset(&self.transcript_heights, start);
@@ -3314,6 +3318,41 @@ impl Controller {
         if changed {
             self.queue_transcript_edge_refresh();
         }
+    }
+
+    fn refresh_visible_row_heights(&mut self, width: i32) -> bool {
+        let mut changed = false;
+        for slot in &self.transcript_visible {
+            if slot.row.width_request() != -1 {
+                slot.row.set_size_request(-1, -1);
+            }
+            let allocated = slot.row.height();
+            let height = if allocated > 1 {
+                allocated
+            } else {
+                let measure_width = match slot.row.width() {
+                    w if w > ROW_PADDING_X => w,
+                    _ => width,
+                };
+                let (_, natural, _, _) =
+                    slot.row.measure(gtk::Orientation::Vertical, measure_width);
+                natural.max(1)
+            };
+            if let Some(stored) = self.transcript_heights.get_mut(slot.index) {
+                if *stored != height {
+                    *stored = height;
+                    changed = true;
+                }
+            }
+        }
+        changed
+    }
+
+    fn painted_visible_height(&self) -> i32 {
+        self.transcript_visible
+            .iter()
+            .map(|slot| slot.row.height().max(0))
+            .sum()
     }
 
     fn sync_transcript_data(&mut self, active_session: Option<&str>, new_rows: Vec<String>) {
@@ -5110,6 +5149,12 @@ fn row_offset(heights: &[i32], index: usize) -> i32 {
     heights.iter().take(index).copied().sum()
 }
 
+fn min_visible_end(start: usize, len: usize, page: f64) -> usize {
+    let count =
+        ((page.max(1.0) as i32 / ROW_MIN_HEIGHT) as usize).saturating_add(ROW_OVERSCAN * 2 + 1);
+    start.saturating_add(count).min(len)
+}
+
 fn visible_row_range(heights: &[i32], scroll: f64, page: f64, overscan: usize) -> (usize, usize) {
     if heights.is_empty() {
         return (0, 0);
@@ -6207,6 +6252,13 @@ mod tests {
         assert_eq!(visible_row_range(&heights, 0.0, 100.0, 1), (0, 3));
         assert_eq!(visible_row_range(&heights, 160.0, 80.0, 1), (1, 4));
         assert_eq!(visible_row_range(&[], 0.0, 100.0, 1), (0, 0));
+    }
+
+    #[test]
+    fn min_visible_end_fills_a_tall_viewport() {
+        assert_eq!(min_visible_end(0, 80, 800.0), 42);
+        assert_eq!(min_visible_end(10, 20, 800.0), 20);
+        assert_eq!(min_visible_end(0, 3, 100.0), 3);
     }
 
     #[test]
