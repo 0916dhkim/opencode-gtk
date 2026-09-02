@@ -190,6 +190,8 @@ struct Controller {
     transcript_scroll_value: f64,
     transcript_scroll_generation: u64,
     transcript_edge_refresh_scheduled: bool,
+    transcript_edge_remeasure: bool,
+    transcript_layout_width: i32,
     current_models: Vec<ModelOption>,
     current_variants: Vec<Option<String>>,
     controls_updating: bool,
@@ -441,6 +443,8 @@ pub fn launch(
         transcript_scroll_value: 0.0,
         transcript_scroll_generation: 0,
         transcript_edge_refresh_scheduled: false,
+        transcript_edge_remeasure: false,
+        transcript_layout_width: 0,
         current_models: Vec::new(),
         current_variants: Vec::new(),
         controls_updating: false,
@@ -1110,7 +1114,7 @@ fn wire_callbacks(controller: &Rc<RefCell<Controller>>) {
             controller.transcript_at_bottom = true;
         }
         controller.refresh_load_earlier_visibility();
-        controller.queue_transcript_edge_refresh();
+        controller.queue_transcript_relayout(false);
     });
     let weak = Rc::downgrade(controller);
     transcript_adjustment.connect_changed(move |adjustment| {
@@ -1123,7 +1127,7 @@ fn wire_callbacks(controller: &Rc<RefCell<Controller>>) {
         if controller.transcript_at_bottom {
             scroll_adjustment_to_bottom(adjustment);
         }
-        controller.queue_transcript_edge_refresh();
+        controller.queue_transcript_relayout(false);
     });
 
     let weak = Rc::downgrade(controller);
@@ -3253,6 +3257,11 @@ impl Controller {
     }
 
     fn queue_transcript_edge_refresh(&mut self) {
+        self.queue_transcript_relayout(true);
+    }
+
+    fn queue_transcript_relayout(&mut self, remesure: bool) {
+        self.transcript_edge_remeasure |= remesure;
         if self.transcript_edge_refresh_scheduled {
             return;
         }
@@ -3264,13 +3273,14 @@ impl Controller {
             };
             let mut controller = controller.borrow_mut();
             controller.transcript_edge_refresh_scheduled = false;
-            controller.relayout_transcript();
+            let remesure = std::mem::take(&mut controller.transcript_edge_remeasure);
+            controller.relayout_transcript(remesure);
             controller.refresh_load_earlier_visibility();
             controller.refresh_sticky_message();
         });
     }
 
-    fn relayout_transcript(&mut self) {
+    fn relayout_transcript(&mut self, remesure: bool) {
         if !self.widgets.transcript_scroll.is_realized() {
             return;
         }
@@ -3279,44 +3289,29 @@ impl Controller {
             self.recycle_visible_rows();
             return;
         }
+        let width_changed = self.transcript_layout_width != width;
+        self.transcript_layout_width = width;
         let adjustment = self.widgets.transcript_scroll.vadjustment();
         let page = adjustment.page_size();
-        let (mut start, mut end) = visible_row_range(
+        let (start, mut end) = visible_row_range(
             &self.transcript_heights,
             adjustment.value(),
             page,
             ROW_OVERSCAN,
         );
-        let mut changed = false;
-        for _ in 0..32 {
-            end = end.max(min_visible_end(start, self.transcript_heights.len(), page));
-            self.sync_visible_rows(start, end);
-            changed |= self.refresh_visible_row_heights(width);
-            let painted = self.painted_visible_height();
-            if painted <= 1 || painted >= page as i32 || end >= self.transcript_heights.len() {
-                break;
-            }
-            let extra = ((page as i32 - painted) / ROW_MIN_HEIGHT).max(1) as usize;
-            let next = (end + extra).min(self.transcript_heights.len());
-            if next == end {
-                break;
-            }
-            end = next;
-            changed = true;
+        end = end.max(min_visible_end(start, self.transcript_heights.len(), page));
+        self.sync_visible_rows(start, end);
+        if remesure || width_changed {
+            self.refresh_visible_row_heights(width);
         }
         let total = self.transcript_heights.iter().copied().sum::<i32>().max(0);
         let top = row_offset(&self.transcript_heights, start);
         let bottom = (total - row_offset(&self.transcript_heights, end)).max(0);
-        if self.widgets.transcript_spacer.height_request() != top {
+        if (self.widgets.transcript_spacer.height_request() - top).abs() >= 2 {
             self.widgets.transcript_spacer.set_size_request(-1, top);
-            changed = true;
         }
-        if self.widgets.transcript_tail.height_request() != bottom {
+        if (self.widgets.transcript_tail.height_request() - bottom).abs() >= 2 {
             self.widgets.transcript_tail.set_size_request(-1, bottom);
-            changed = true;
-        }
-        if changed {
-            self.queue_transcript_edge_refresh();
         }
     }
 
@@ -3326,33 +3321,20 @@ impl Controller {
             if slot.row.width_request() != -1 {
                 slot.row.set_size_request(-1, -1);
             }
-            let allocated = slot.row.height();
-            let height = if allocated > 1 {
-                allocated
-            } else {
-                let measure_width = match slot.row.width() {
-                    w if w > ROW_PADDING_X => w,
-                    _ => width,
-                };
-                let (_, natural, _, _) =
-                    slot.row.measure(gtk::Orientation::Vertical, measure_width);
-                natural.max(1)
+            let measure_width = match slot.row.width() {
+                w if w > ROW_PADDING_X => w,
+                _ => width,
             };
+            let (_, natural, _, _) = slot.row.measure(gtk::Orientation::Vertical, measure_width);
+            let height = natural.max(1);
             if let Some(stored) = self.transcript_heights.get_mut(slot.index) {
-                if *stored != height {
+                if (*stored - height).abs() >= 2 {
                     *stored = height;
                     changed = true;
                 }
             }
         }
         changed
-    }
-
-    fn painted_visible_height(&self) -> i32 {
-        self.transcript_visible
-            .iter()
-            .map(|slot| slot.row.height().max(0))
-            .sum()
     }
 
     fn sync_transcript_data(&mut self, active_session: Option<&str>, new_rows: Vec<String>) {
@@ -5559,7 +5541,10 @@ fn scroll_target(
 
 fn scroll_adjustment_to_bottom(adjustment: &gtk::Adjustment) {
     let bottom = adjustment.upper() - adjustment.page_size();
-    adjustment.set_value(clamp_adjustment(adjustment, bottom));
+    let target = clamp_adjustment(adjustment, bottom);
+    if (adjustment.value() - target).abs() > BOTTOM_EPSILON {
+        adjustment.set_value(target);
+    }
 }
 
 fn transcript_indicator(
