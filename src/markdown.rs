@@ -438,6 +438,8 @@ fn block_widget(block: Block) -> gtk::Widget {
             let scroll = gtk::ScrolledWindow::builder()
                 .hscrollbar_policy(gtk::PolicyType::Automatic)
                 .vscrollbar_policy(gtk::PolicyType::Never)
+                .propagate_natural_width(false)
+                .hexpand(true)
                 .child(&code)
                 .build();
             code_block.append(&scroll);
@@ -468,9 +470,9 @@ fn table_widget(table: TableBlock) -> gtk::Widget {
         .vscrollbar_policy(gtk::PolicyType::Never)
         .overlay_scrolling(false)
         .propagate_natural_height(true)
-        .propagate_natural_width(true)
-        .hexpand(false)
-        .halign(gtk::Align::Start)
+        .propagate_natural_width(false)
+        .hexpand(true)
+        .halign(gtk::Align::Fill)
         .child(&grid)
         .build();
     scroll.add_css_class("markdown-table-scroll");

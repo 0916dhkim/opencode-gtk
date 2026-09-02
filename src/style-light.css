@@ -137,6 +137,7 @@ headerbar {
 .transcript,
 .assistant-message {
   background: #f7f5f1;
+  min-width: 0;
 }
 
 listview.transcript > row,
@@ -260,6 +261,7 @@ listview.transcript > row:focus {
 .composer-frame {
   background: #ffffff;
   border-color: #cbc7bf;
+  min-width: 0;
 }
 
 .composer-action:hover {

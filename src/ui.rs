@@ -822,6 +822,7 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
     let model_dropdown = gtk::DropDown::new(Some(model_store.clone()), None::<gtk::Expression>);
     model_dropdown.add_css_class("composer-menu");
     model_dropdown.set_sensitive(false);
+    model_dropdown.set_hexpand(true);
     let variant_store = gtk::StringList::new(&["Default"]);
     let variant_dropdown = gtk::DropDown::new(Some(variant_store.clone()), None::<gtk::Expression>);
     variant_dropdown.add_css_class("composer-menu");
@@ -967,7 +968,6 @@ fn bind_transcript_row(row: &gtk::Box, value: &str, index: u32) {
     for image in images {
         if let Some(texture) = inline_image_texture(image) {
             let picture = gtk::Picture::for_paintable(&texture);
-            picture.set_size_request(320, 220);
             picture.set_can_shrink(true);
             picture.set_halign(gtk::Align::Start);
             picture.add_css_class("message-image");
@@ -2378,6 +2378,7 @@ impl Controller {
             title_label.set_xalign(0.0);
             title_label.set_hexpand(true);
             title_label.set_ellipsize(pango::EllipsizeMode::End);
+            title_label.set_width_chars(8);
             title_label.set_max_width_chars(24);
             title_label.add_css_class("session-tab-title");
             let rename = icon_button(ICON_EDIT, TAB_ICON_PX);

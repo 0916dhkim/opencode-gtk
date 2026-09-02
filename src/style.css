@@ -240,6 +240,7 @@ headerbar {
 
 .transcript {
   background: #101214;
+  min-width: 0;
 }
 
 listview.transcript > row,
@@ -416,6 +417,7 @@ listview.transcript > row:focus {
   background: #191c1f;
   border: 1px solid #30353a;
   border-radius: 12px;
+  min-width: 0;
 }
 
 .composer-action {
@@ -465,6 +467,7 @@ listview.transcript > row:focus {
 .composer-frame dropdown.composer-menu {
   background: transparent;
   box-shadow: none;
+  min-width: 0;
 }
 
 .composer-frame dropdown.composer-menu > button {
