@@ -195,11 +195,31 @@ listview.transcript > row:focus {
 
 .markdown-code-block {
   border-color: #d0ccc4;
-  background: #eeece7;
+  background: #f7f5f1;
+}
+
+.markdown-code-header {
+  background: #e9e6df;
+  border-bottom: 1px solid #d3cfc7;
 }
 
 .markdown-code-language {
   color: #6f7471;
+}
+
+button.markdown-code-copy {
+  color: #6f7471;
+}
+
+button.markdown-code-copy:hover {
+  background: rgba(0, 0, 0, 0.06);
+  background-image: none;
+  color: #282623;
+}
+
+button.markdown-code-copy.copied {
+  color: #1a7f37;
+  background: rgba(26, 127, 55, 0.12);
 }
 
 .markdown-code-content {

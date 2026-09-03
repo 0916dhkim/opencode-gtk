@@ -1,4 +1,6 @@
-use gtk::{glib, pango, prelude::*};
+use std::time::Duration;
+
+use gtk::{gdk, glib, pango, prelude::*};
 use pulldown_cmark::{Alignment, CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use url::Url;
 
@@ -421,14 +423,42 @@ fn block_widget(block: Block) -> gtk::Widget {
             label.upcast()
         }
         BlockKind::Code(language) => {
-            let code_block = gtk::Box::new(gtk::Orientation::Vertical, 4);
+            let code_block = gtk::Box::new(gtk::Orientation::Vertical, 0);
             code_block.add_css_class("markdown-code-block");
-            if let Some(language) = language {
-                let language = gtk::Label::new(Some(&language));
-                language.set_xalign(0.0);
-                language.add_css_class("markdown-code-language");
-                code_block.append(&language);
-            }
+
+            let header = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+            header.add_css_class("markdown-code-header");
+
+            let lang_label = gtk::Label::new(language.as_deref());
+            lang_label.set_xalign(0.0);
+            lang_label.set_hexpand(true);
+            lang_label.add_css_class("markdown-code-language");
+            header.append(&lang_label);
+
+            let copy_button = gtk::Button::new();
+            copy_button.set_child(Some(&copy_icon(14)));
+            copy_button.set_tooltip_text(Some("Copy code"));
+            copy_button.set_valign(gtk::Align::Center);
+            copy_button.add_css_class("flat");
+            copy_button.add_css_class("markdown-code-copy");
+
+            let copy_text = content.clone();
+            copy_button.connect_clicked(move |btn| {
+                btn.display().clipboard().set_text(&copy_text);
+                btn.set_child(Some(&check_icon(14)));
+                btn.add_css_class("copied");
+                btn.set_tooltip_text(Some("Copied!"));
+
+                let btn = btn.clone();
+                glib::timeout_add_local_once(Duration::from_millis(2000), move || {
+                    btn.set_child(Some(&copy_icon(14)));
+                    btn.remove_css_class("copied");
+                    btn.set_tooltip_text(Some("Copy code"));
+                });
+            });
+            header.append(&copy_button);
+            code_block.append(&header);
+
             let code = gtk::Label::new(Some(&content));
             code.set_xalign(0.0);
             code.set_yalign(0.0);
@@ -442,6 +472,10 @@ fn block_widget(block: Block) -> gtk::Widget {
                 .hexpand(true)
                 .child(&code)
                 .build();
+            scroll.set_margin_start(12);
+            scroll.set_margin_end(12);
+            scroll.set_margin_top(10);
+            scroll.set_margin_bottom(12);
             code_block.append(&scroll);
             code_block.upcast()
         }
@@ -667,6 +701,106 @@ fn safe_link(target: &str) -> bool {
         .is_ok_and(|url| !matches!(url.scheme(), "javascript" | "data" | "vbscript" | "file"))
 }
 
+fn copy_icon(pixel_size: i32) -> gtk::DrawingArea {
+    drawn_icon(pixel_size, draw_copy)
+}
+
+fn check_icon(pixel_size: i32) -> gtk::DrawingArea {
+    drawn_icon(pixel_size, draw_check)
+}
+
+fn drawn_icon(
+    pixel_size: i32,
+    draw: fn(&gtk::DrawingArea, &gtk::cairo::Context, i32, i32, i32),
+) -> gtk::DrawingArea {
+    let area = gtk::DrawingArea::builder()
+        .content_width(pixel_size)
+        .content_height(pixel_size)
+        .halign(gtk::Align::Center)
+        .valign(gtk::Align::Center)
+        .can_target(false)
+        .build();
+    area.set_draw_func(move |widget, cr, width, height| {
+        draw(widget, cr, width, height, pixel_size);
+    });
+    area
+}
+
+fn draw_copy(
+    widget: &gtk::DrawingArea,
+    cr: &gtk::cairo::Context,
+    width: i32,
+    height: i32,
+    pixel_size: i32,
+) {
+    let color = widget
+        .parent()
+        .map(|parent| parent.style_context().color())
+        .unwrap_or_else(|| widget.style_context().color());
+    cr.set_source_rgba(
+        f64::from(color.red()),
+        f64::from(color.green()),
+        f64::from(color.blue()),
+        f64::from(color.alpha()),
+    );
+    let size = f64::from(pixel_size);
+    let s = size / 14.0;
+    cr.save().ok();
+    cr.translate(
+        f64::from(width) / 2.0 - 7.0 * s,
+        f64::from(height) / 2.0 - 7.0 * s,
+    );
+    cr.set_line_width(1.3 * s);
+    cr.set_line_cap(gtk::cairo::LineCap::Round);
+    cr.set_line_join(gtk::cairo::LineJoin::Round);
+
+    cr.rectangle(2.2 * s, 4.2 * s, 7.2 * s, 8.0 * s);
+    let _ = cr.stroke();
+
+    cr.move_to(4.8 * s, 2.0 * s);
+    cr.line_to(11.8 * s, 2.0 * s);
+    cr.line_to(11.8 * s, 9.4 * s);
+    let _ = cr.stroke();
+
+    cr.restore().ok();
+}
+
+fn draw_check(
+    widget: &gtk::DrawingArea,
+    cr: &gtk::cairo::Context,
+    width: i32,
+    height: i32,
+    pixel_size: i32,
+) {
+    let color = widget
+        .parent()
+        .map(|parent| parent.style_context().color())
+        .unwrap_or_else(|| widget.style_context().color());
+    cr.set_source_rgba(
+        f64::from(color.red()),
+        f64::from(color.green()),
+        f64::from(color.blue()),
+        f64::from(color.alpha()),
+    );
+    let size = f64::from(pixel_size);
+    let s = size / 14.0;
+    cr.save().ok();
+    cr.translate(
+        f64::from(width) / 2.0 - 7.0 * s,
+        f64::from(height) / 2.0 - 7.0 * s,
+    );
+    cr.set_line_width(1.6 * s);
+    cr.set_line_cap(gtk::cairo::LineCap::Round);
+    cr.set_line_join(gtk::cairo::LineJoin::Round);
+
+    cr.move_to(2.8 * s, 7.2 * s);
+    cr.line_to(5.8 * s, 10.4 * s);
+    cr.line_to(11.6 * s, 4.0 * s);
+    let _ = cr.stroke();
+
+    cr.restore().ok();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -761,5 +895,21 @@ mod tests {
     #[test]
     fn incomplete_table_stays_renderable() {
         assert!(!parse("| Name | Count |\n| ---").is_empty());
+    }
+
+    #[test]
+    fn code_block_includes_header_and_content() {
+        if gtk::init().is_err() {
+            return;
+        }
+        let block = Block {
+            kind: BlockKind::Code(Some("rust".into())),
+            content: "fn main() {}\n".into(),
+            marker: None,
+            list_depth: 0,
+            quote_depth: 0,
+        };
+        let widget = block_widget(block);
+        assert!(widget.has_css_class("markdown-code-block"));
     }
 }

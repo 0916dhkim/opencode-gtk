@@ -338,10 +338,16 @@ listview.transcript > row:focus {
 }
 
 .markdown-code-block {
-  padding: 10px 12px 12px 12px;
   border: 1px solid #30353a;
   border-radius: 8px;
   background: #171a1d;
+  overflow: hidden;
+}
+
+.markdown-code-header {
+  padding: 4px 8px 4px 12px;
+  background: #14171a;
+  border-bottom: 1px solid #282c30;
 }
 
 .markdown-code-language {
@@ -349,6 +355,30 @@ listview.transcript > row:focus {
   font-size: 0.76em;
   font-weight: 700;
   letter-spacing: 0.06em;
+}
+
+button.markdown-code-copy {
+  min-width: 26px;
+  min-height: 26px;
+  padding: 0;
+  margin: 0;
+  border: none;
+  background: transparent;
+  background-image: none;
+  box-shadow: none;
+  border-radius: 5px;
+  color: #8b949e;
+}
+
+button.markdown-code-copy:hover {
+  background: rgba(255, 255, 255, 0.08);
+  background-image: none;
+  color: #f0ede7;
+}
+
+button.markdown-code-copy.copied {
+  color: #56d364;
+  background: rgba(86, 211, 100, 0.12);
 }
 
 .markdown-code-content {
