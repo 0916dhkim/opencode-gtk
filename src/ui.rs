@@ -2230,9 +2230,7 @@ impl Controller {
                 if open && session_idle_marks_unread(previous) && status == RunStatus::Idle {
                     persist_unread |= this.state.unread.insert(session_id.clone());
                     tab_status_changed = true;
-                    if event_returns_control(&payload) {
-                        this.notify_session_idle(&session_id);
-                    }
+                    this.notify_session_idle(&session_id);
                 }
                 tab_status_changed |= status_changed && open;
             }
