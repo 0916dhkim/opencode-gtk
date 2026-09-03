@@ -708,7 +708,7 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
     let header = gtk::HeaderBar::new();
     let sidebar_toggle = gtk::Button::new();
     sidebar_toggle.set_child(Some(&panel_icon(16)));
-    sidebar_toggle.set_tooltip_text(Some("Hide sidebar"));
+    sidebar_toggle.set_tooltip_text(Some("Hide sidebar (Ctrl+B)"));
     sidebar_toggle.add_css_class("flat");
     sidebar_toggle.add_css_class("sidebar-toggle");
     header.pack_start(&sidebar_toggle);
@@ -1500,6 +1500,7 @@ fn wire_callbacks(controller: &Rc<RefCell<Controller>>) {
             return glib::Propagation::Proceed;
         }
         match key {
+            gdk::Key::b | gdk::Key::B => controller.borrow().toggle_sidebar(),
             gdk::Key::comma => Controller::show_settings(&controller),
             gdk::Key::p => Controller::show_session_picker(&controller),
             gdk::Key::t => Controller::show_new_session(&controller),
@@ -3190,9 +3191,9 @@ impl Controller {
         self.widgets
             .sidebar_toggle
             .set_tooltip_text(Some(if visible {
-                "Hide sidebar"
+                "Hide sidebar (Ctrl+B)"
             } else {
-                "Show sidebar"
+                "Show sidebar (Ctrl+B)"
             }));
     }
 
