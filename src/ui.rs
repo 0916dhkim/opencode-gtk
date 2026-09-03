@@ -6207,10 +6207,6 @@ fn populate_session_list(
     }
 }
 
-fn replace_string_list(model: &gtk::StringList, values: &[&str]) {
-    model.splice(0, model.n_items(), values);
-}
-
 fn new_transcript_slot() -> TranscriptVisible {
     let row = transcript_row_widget();
     row.set_hexpand(true);
