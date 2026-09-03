@@ -905,7 +905,12 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
     attach_button.set_tooltip_text(Some("Attach files (Ctrl+U)"));
     attach_button.add_css_class("composer-action");
     let model_store = gtk::StringList::new(&["Loading models..."]);
-    let model_dropdown = gtk::DropDown::new(Some(model_store.clone()), None::<gtk::Expression>);
+    let model_expression = gtk::PropertyExpression::new(
+        gtk::StringObject::static_type(),
+        None::<gtk::Expression>,
+        "string",
+    );
+    let model_dropdown = gtk::DropDown::new(Some(model_store.clone()), Some(model_expression));
     model_dropdown.set_enable_search(true);
     model_dropdown.set_tooltip_text(Some("Select model (Ctrl+M)"));
     model_dropdown.add_css_class("composer-menu");
