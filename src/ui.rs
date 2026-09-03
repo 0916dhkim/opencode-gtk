@@ -158,8 +158,12 @@ struct Widgets {
     model_search: gtk::SearchEntry,
     model_list: gtk::ListBox,
     model_filtered_indices: Rc<RefCell<Vec<usize>>>,
-    variant_store: gtk::StringList,
-    variant_dropdown: gtk::DropDown,
+    variant_button: gtk::Button,
+    variant_button_label: gtk::Label,
+    variant_popover: gtk::Popover,
+    variant_search: gtk::SearchEntry,
+    variant_list: gtk::ListBox,
+    variant_filtered_indices: Rc<RefCell<Vec<usize>>>,
     context_usage: gtk::Label,
     send_button: gtk::Button,
     transcript_user_scrolling: Rc<Cell<bool>>,
@@ -1075,11 +1079,61 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
     model_popover.set_child(Some(&popover_box));
     let model_filtered_indices = Rc::new(RefCell::new(Vec::new()));
 
-    let variant_store = gtk::StringList::new(&["Default"]);
-    let variant_dropdown = gtk::DropDown::new(Some(variant_store.clone()), None::<gtk::Expression>);
-    variant_dropdown.add_css_class("composer-menu");
-    variant_dropdown.set_sensitive(false);
-    variant_dropdown.set_tooltip_text(Some("Reasoning level (Ctrl+/)"));
+    let variant_button = gtk::Button::new();
+    let variant_row = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+    let variant_button_label = gtk::Label::new(Some("Default"));
+    variant_button_label.set_xalign(0.0);
+    variant_button_label.set_hexpand(true);
+    variant_button_label.set_ellipsize(pango::EllipsizeMode::End);
+    variant_button_label.add_css_class("composer-menu-title");
+
+    let variant_chevron = chevron_down_icon(10);
+    variant_chevron.add_css_class("composer-menu-arrow");
+    variant_chevron.set_halign(gtk::Align::End);
+    variant_chevron.set_valign(gtk::Align::Center);
+
+    variant_row.append(&variant_button_label);
+    variant_row.append(&variant_chevron);
+    variant_button.set_child(Some(&variant_row));
+    variant_button.add_css_class("composer-menu");
+    variant_button.set_tooltip_text(Some("Reasoning level (Ctrl+/)"));
+    variant_button.set_sensitive(false);
+
+    let variant_popover = gtk::Popover::new();
+    variant_popover.set_parent(&variant_button);
+    variant_popover.set_position(gtk::PositionType::Top);
+    variant_popover.set_autohide(true);
+    variant_popover.add_css_class("model-picker-popover");
+
+    let variant_popover_box = gtk::Box::new(gtk::Orientation::Vertical, 6);
+    variant_popover_box.set_margin_start(8);
+    variant_popover_box.set_margin_end(8);
+    variant_popover_box.set_margin_top(8);
+    variant_popover_box.set_margin_bottom(8);
+    variant_popover_box.set_size_request(240, -1);
+
+    let variant_search = gtk::SearchEntry::new();
+    variant_search.set_placeholder_text(Some("Search levels (fuzzy)..."));
+    variant_search.add_css_class("model-picker-search");
+    variant_popover_box.append(&variant_search);
+
+    let variant_list = gtk::ListBox::new();
+    variant_list.set_selection_mode(gtk::SelectionMode::Single);
+    variant_list.add_css_class("model-picker-list");
+
+    let variant_scroll = gtk::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .vscrollbar_policy(gtk::PolicyType::Automatic)
+        .propagate_natural_height(true)
+        .max_content_height(240)
+        .min_content_height(80)
+        .child(&variant_list)
+        .build();
+    variant_popover_box.append(&variant_scroll);
+
+    variant_popover.set_child(Some(&variant_popover_box));
+    let variant_filtered_indices = Rc::new(RefCell::new(Vec::new()));
+
     let context_usage = gtk::Label::new(None);
     context_usage.add_css_class("composer-usage");
     context_usage.set_xalign(0.0);
@@ -1097,7 +1151,7 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
     composer_controls.set_overflow(gtk::Overflow::Hidden);
     composer_controls.append(&attach_button);
     composer_controls.append(&model_button);
-    composer_controls.append(&variant_dropdown);
+    composer_controls.append(&variant_button);
     composer_controls.append(&context_usage);
     composer_controls.append(&send_button);
 
@@ -1153,8 +1207,12 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
         model_search,
         model_list,
         model_filtered_indices,
-        variant_store,
-        variant_dropdown,
+        variant_button,
+        variant_button_label,
+        variant_popover,
+        variant_search,
+        variant_list,
+        variant_filtered_indices,
         context_usage,
         send_button,
         transcript_user_scrolling,
@@ -1766,28 +1824,163 @@ fn wire_callbacks(controller: &Rc<RefCell<Controller>>) {
     controller
         .borrow()
         .widgets
-        .variant_dropdown
-        .connect_selected_notify(move |dropdown| {
-            let Some(controller) = weak.upgrade() else {
-                return;
-            };
-            let Ok(mut controller) = controller.try_borrow_mut() else {
-                return;
-            };
-            if controller.controls_updating {
-                return;
+        .variant_button
+        .connect_clicked(move |_| {
+            if let Some(controller) = weak.upgrade() {
+                Controller::show_variant_picker(&controller);
             }
-            let Some(active) = controller.state.active.clone() else {
-                return;
-            };
-            let variant = controller
-                .current_variants
-                .get(dropdown.selected() as usize)
-                .cloned()
-                .flatten();
-            if let Some(selection) = controller.state.selections.get_mut(&active) {
-                selection.variant = variant;
-                controller.persist_state();
+        });
+
+    let weak = Rc::downgrade(controller);
+    controller
+        .borrow()
+        .widgets
+        .variant_search
+        .connect_search_changed(move |search| {
+            if let Some(controller) = weak.upgrade() {
+                Controller::filter_variant_list(&controller, search.text().as_str());
+            }
+        });
+
+    let weak = Rc::downgrade(controller);
+    controller
+        .borrow()
+        .widgets
+        .variant_search
+        .connect_activate(move |_| {
+            if let Some(controller) = weak.upgrade() {
+                Controller::activate_current_variant_selection(&controller);
+            }
+        });
+
+    let weak = Rc::downgrade(controller);
+    let variant_search_keys = gtk::EventControllerKey::new();
+    variant_search_keys.set_propagation_phase(gtk::PropagationPhase::Capture);
+    variant_search_keys.connect_key_pressed(move |_, key, _, _| {
+        let Some(controller) = weak.upgrade() else {
+            return glib::Propagation::Proceed;
+        };
+        let (list, popover, composer, search) = {
+            let this = controller.borrow();
+            (
+                this.widgets.variant_list.clone(),
+                this.widgets.variant_popover.clone(),
+                this.widgets.composer.clone(),
+                this.widgets.variant_search.clone(),
+            )
+        };
+        match key {
+            gdk::Key::Down => {
+                if let Some(selected) = list.selected_row() {
+                    let next_idx = selected.index() + 1;
+                    if let Some(next_row) = list.row_at_index(next_idx) {
+                        list.select_row(Some(&next_row));
+                        next_row.grab_focus();
+                    } else {
+                        selected.grab_focus();
+                    }
+                } else if let Some(first_row) = list.row_at_index(0) {
+                    list.select_row(Some(&first_row));
+                    first_row.grab_focus();
+                }
+                glib::Propagation::Stop
+            }
+            gdk::Key::Up => {
+                if let Some(selected) = list.selected_row() {
+                    let prev_idx = selected.index() - 1;
+                    if prev_idx >= 0 {
+                        if let Some(prev_row) = list.row_at_index(prev_idx) {
+                            list.select_row(Some(&prev_row));
+                            prev_row.grab_focus();
+                        }
+                    } else {
+                        search.grab_focus();
+                    }
+                } else {
+                    search.grab_focus();
+                }
+                glib::Propagation::Stop
+            }
+            gdk::Key::Return | gdk::Key::KP_Enter => {
+                Controller::activate_current_variant_selection(&controller);
+                glib::Propagation::Stop
+            }
+            gdk::Key::Escape => {
+                popover.popdown();
+                composer.grab_focus();
+                glib::Propagation::Stop
+            }
+            _ => glib::Propagation::Proceed,
+        }
+    });
+    controller
+        .borrow()
+        .widgets
+        .variant_search
+        .add_controller(variant_search_keys);
+
+    let weak = Rc::downgrade(controller);
+    let variant_list_keys = gtk::EventControllerKey::new();
+    variant_list_keys.set_propagation_phase(gtk::PropagationPhase::Capture);
+    variant_list_keys.connect_key_pressed(move |_, key, _, _| {
+        let Some(controller) = weak.upgrade() else {
+            return glib::Propagation::Proceed;
+        };
+        let (list, popover, composer, search) = {
+            let this = controller.borrow();
+            (
+                this.widgets.variant_list.clone(),
+                this.widgets.variant_popover.clone(),
+                this.widgets.composer.clone(),
+                this.widgets.variant_search.clone(),
+            )
+        };
+        match key {
+            gdk::Key::Return | gdk::Key::KP_Enter => {
+                Controller::activate_current_variant_selection(&controller);
+                glib::Propagation::Stop
+            }
+            gdk::Key::Escape => {
+                popover.popdown();
+                composer.grab_focus();
+                glib::Propagation::Stop
+            }
+            gdk::Key::Up => {
+                if let Some(selected) = list.selected_row() {
+                    if selected.index() <= 0 {
+                        search.grab_focus();
+                        return glib::Propagation::Stop;
+                    }
+                }
+                glib::Propagation::Proceed
+            }
+            _ => glib::Propagation::Proceed,
+        }
+    });
+    controller
+        .borrow()
+        .widgets
+        .variant_list
+        .add_controller(variant_list_keys);
+
+    let weak = Rc::downgrade(controller);
+    controller
+        .borrow()
+        .widgets
+        .variant_list
+        .connect_row_activated(move |_, row| {
+            if let Some(controller) = weak.upgrade() {
+                let row_idx = row.index() as usize;
+                let variant_idx = controller
+                    .borrow()
+                    .widgets
+                    .variant_filtered_indices
+                    .borrow()
+                    .get(row_idx)
+                    .copied();
+                if let Some(variant_idx) = variant_idx {
+                    Controller::select_variant(&controller, variant_idx);
+                }
             }
         });
 
@@ -1827,10 +2020,7 @@ fn wire_callbacks(controller: &Rc<RefCell<Controller>>) {
                 Controller::show_model_picker(&controller);
             }
             gdk::Key::slash | gdk::Key::KP_Divide => {
-                let this = controller.borrow();
-                if this.widgets.variant_dropdown.is_sensitive() {
-                    this.widgets.variant_dropdown.activate();
-                }
+                Controller::show_variant_picker(&controller);
             }
             gdk::Key::comma => Controller::show_settings(&controller),
             gdk::Key::p => Controller::show_session_picker(&controller),
@@ -3350,12 +3540,6 @@ impl Controller {
                     .flat_map(|model| model.variants.iter().cloned().map(Some)),
             )
             .collect();
-        let labels: Vec<_> = self
-            .current_variants
-            .iter()
-            .map(|variant| variant.as_deref().unwrap_or("Default"))
-            .collect();
-        replace_string_list(&self.widgets.variant_store, &labels);
         let saved = selection.as_ref().map(|selection| &selection.variant);
         let (selected, clear_invalid) =
             resolved_variant_index(saved, &self.current_variants, model.is_some());
@@ -3367,9 +3551,14 @@ impl Controller {
             }
             self.persist_state();
         }
-        self.widgets.variant_dropdown.set_selected(selected as u32);
+        let label = self
+            .current_variants
+            .get(selected)
+            .and_then(|v| v.as_deref())
+            .unwrap_or("Default");
+        self.widgets.variant_button_label.set_text(label);
         self.widgets
-            .variant_dropdown
+            .variant_button
             .set_sensitive(self.current_variants.len() > 1);
     }
 
@@ -4499,6 +4688,175 @@ impl Controller {
         this.persist_state();
         this.refresh_send_button();
         this.widgets.model_popover.popdown();
+        this.widgets.composer.grab_focus();
+    }
+
+    fn show_variant_picker(controller: &Rc<RefCell<Self>>) {
+        let (popover, search) = {
+            let this = controller.borrow();
+            if !this.widgets.variant_button.is_sensitive() || this.current_variants.len() <= 1 {
+                return;
+            }
+            (
+                this.widgets.variant_popover.clone(),
+                this.widgets.variant_search.clone(),
+            )
+        };
+        search.set_text("");
+        Self::filter_variant_list(controller, "");
+        popover.popup();
+        search.grab_focus();
+    }
+
+    fn filter_variant_list(controller: &Rc<RefCell<Self>>, query: &str) {
+        let (current_variants, active_selection, list, filtered_indices) = {
+            let this = controller.borrow();
+            let active = this.state.active.clone();
+            let selection = active.and_then(|a| this.state.selections.get(&a).cloned());
+            (
+                this.current_variants.clone(),
+                selection,
+                this.widgets.variant_list.clone(),
+                this.widgets.variant_filtered_indices.clone(),
+            )
+        };
+
+        while let Some(child) = list.first_child() {
+            list.remove(&child);
+        }
+
+        let query = query.trim();
+        let mut scored: Vec<(i64, usize, Option<String>)> = current_variants
+            .into_iter()
+            .enumerate()
+            .filter_map(|(idx, variant)| {
+                let label = variant.as_deref().unwrap_or("Default");
+                if query.is_empty() {
+                    Some((0, idx, variant))
+                } else {
+                    let score = fuzzy_score(query, label);
+                    score.map(|s| (s, idx, variant))
+                }
+            })
+            .collect();
+
+        if !query.is_empty() {
+            scored.sort_by(|a, b| {
+                b.0.cmp(&a.0).then_with(|| {
+                    let la = a.2.as_deref().unwrap_or("Default");
+                    let lb = b.2.as_deref().unwrap_or("Default");
+                    la.cmp(lb)
+                })
+            });
+        }
+
+        let mut indices = Vec::with_capacity(scored.len());
+
+        if scored.is_empty() {
+            *filtered_indices.borrow_mut() = Vec::new();
+            let empty = gtk::Label::new(Some("No matching levels"));
+            empty.add_css_class("model-picker-empty");
+            empty.set_margin_top(14);
+            empty.set_margin_bottom(14);
+            list.append(&empty);
+            return;
+        }
+
+        let mut row_to_select = None;
+
+        for (rank, (_, idx, variant)) in scored.iter().enumerate() {
+            indices.push(*idx);
+
+            let is_selected = match (&active_selection, &variant) {
+                (Some(sel), Some(v)) => sel.variant.as_deref() == Some(v.as_str()),
+                (Some(sel), None) => sel.variant.is_none(),
+                _ => false,
+            };
+
+            let row = gtk::ListBoxRow::new();
+            row.add_css_class("model-picker-row");
+            if is_selected {
+                row.add_css_class("selected");
+            }
+
+            let box_row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+            box_row.set_margin_start(10);
+            box_row.set_margin_end(10);
+            box_row.set_margin_top(6);
+            box_row.set_margin_bottom(6);
+
+            let label = gtk::Label::new(Some(variant.as_deref().unwrap_or("Default")));
+            label.set_xalign(0.0);
+            label.set_hexpand(true);
+            label.add_css_class("model-picker-item-title");
+
+            box_row.append(&label);
+
+            if is_selected {
+                let check = gtk::Label::new(Some("✓"));
+                check.add_css_class("model-picker-check");
+                box_row.append(&check);
+            }
+
+            row.set_child(Some(&box_row));
+            list.append(&row);
+
+            if is_selected {
+                row_to_select = Some(row.clone());
+            } else if rank == 0 && row_to_select.is_none() {
+                row_to_select = Some(row.clone());
+            }
+        }
+
+        if let Some(row) = row_to_select {
+            list.select_row(Some(&row));
+        }
+
+        *filtered_indices.borrow_mut() = indices;
+    }
+
+    fn activate_current_variant_selection(controller: &Rc<RefCell<Self>>) {
+        let (list, filtered_indices) = {
+            let this = controller.borrow();
+            (
+                this.widgets.variant_list.clone(),
+                this.widgets.variant_filtered_indices.clone(),
+            )
+        };
+        let row_idx = list
+            .selected_row()
+            .map(|row| row.index() as usize)
+            .or_else(|| {
+                if list.row_at_index(0).is_some() {
+                    Some(0)
+                } else {
+                    None
+                }
+            });
+        let variant_idx = row_idx
+            .and_then(|idx| filtered_indices.borrow().get(idx).copied())
+            .or_else(|| filtered_indices.borrow().first().copied());
+        if let Some(variant_idx) = variant_idx {
+            Self::select_variant(controller, variant_idx);
+        }
+    }
+
+    fn select_variant(controller: &Rc<RefCell<Self>>, index: usize) {
+        let _active = {
+            let mut this = controller.borrow_mut();
+            let Some(active) = this.state.active.clone() else {
+                return;
+            };
+            let variant = this.current_variants.get(index).cloned().flatten();
+            if let Some(selection) = this.state.selections.get_mut(&active) {
+                selection.variant = variant;
+            }
+            active
+        };
+        let mut this = controller.borrow_mut();
+        this.refresh_variant_control();
+        this.persist_state();
+        this.widgets.variant_popover.popdown();
         this.widgets.composer.grab_focus();
     }
 
