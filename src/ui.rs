@@ -64,13 +64,14 @@ enum TranscriptUpdate {
     Prepend,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum TranscriptIndicator {
     Hidden,
     NoSession,
     Loading,
     Refreshing,
     Working,
+    Retry(String),
     Error,
     Empty,
 }
@@ -1217,7 +1218,32 @@ fn bind_transcript_row(row: &gtk::Box, value: &str, index: u32) {
     time.set_label(&time_text);
     time.set_visible(!time_text.is_empty());
     clear_box(&content);
-    if role_text == "YOU" {
+    let kind = parsed.as_ref().map(|row| row.kind.as_str()).unwrap_or("");
+    if kind == "error" {
+        let card = gtk::Box::new(gtk::Orientation::Vertical, 4);
+        card.add_css_class("message-error-card");
+
+        let header = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        header.add_css_class("message-error-header");
+        let icon = gtk::Label::new(Some("⚠"));
+        icon.add_css_class("message-error-icon");
+        let title = gtk::Label::new(Some("Error"));
+        title.add_css_class("message-error-title");
+        title.set_xalign(0.0);
+        header.append(&icon);
+        header.append(&title);
+
+        let body_label = gtk::Label::new(Some(body));
+        body_label.set_xalign(0.0);
+        body_label.set_wrap(true);
+        body_label.set_wrap_mode(pango::WrapMode::WordChar);
+        body_label.set_selectable(true);
+        body_label.add_css_class("message-error-body");
+
+        card.append(&header);
+        card.append(&body_label);
+        content.append(&card);
+    } else if role_text == "YOU" {
         content.append(&markdown::render_plain(body, "message-plain-text"));
     } else {
         markdown::render_into(&content, body);
@@ -1252,13 +1278,16 @@ fn bind_transcript_row(row: &gtk::Box, value: &str, index: u32) {
     row.remove_css_class("user-message");
     row.remove_css_class("assistant-message");
     row.remove_css_class("message-reasoning");
+    row.remove_css_class("message-error-row");
     row.add_css_class(if role_text == "YOU" {
         "user-message"
     } else {
         "assistant-message"
     });
-    if parsed.as_ref().is_some_and(|row| row.kind == "reasoning") {
+    if kind == "reasoning" {
         row.add_css_class("message-reasoning");
+    } else if kind == "error" {
+        row.add_css_class("message-error-row");
     }
     row.set_widget_name(&format!("row-{index}"));
 }
@@ -2284,7 +2313,7 @@ impl Controller {
             }
             for (session_id, status) in statuses {
                 match status {
-                    RunStatus::Busy => {
+                    RunStatus::Busy | RunStatus::Retry { .. } => {
                         this.state.server_busy.insert(session_id.clone());
                         remove_pending_clipboard_attachments(
                             this.state.pending_prompts.remove(&session_id),
@@ -2589,10 +2618,10 @@ impl Controller {
                 }
                 if this.bootstrap_pending {
                     this.status_events_during_bootstrap
-                        .insert(session_id.clone(), status);
+                        .insert(session_id.clone(), status.clone());
                 }
-                match status {
-                    RunStatus::Busy => {
+                match &status {
+                    RunStatus::Busy | RunStatus::Retry { .. } => {
                         this.state.server_busy.insert(session_id.clone());
                         this.state.pending_prompts.remove(&session_id);
                         if this.state.abort_requested.remove(&session_id) {
@@ -2613,10 +2642,10 @@ impl Controller {
                         );
                     }
                 }
-                let previous = this.state.statuses.get(&session_id).copied();
-                let status_changed = this.update_session_status(&session_id, status);
+                let previous = this.state.statuses.get(&session_id).cloned();
+                let status_changed = this.update_session_status(&session_id, status.clone());
                 let open = this.state.tabs.iter().any(|id| id == &session_id);
-                if open && session_idle_marks_unread(previous) && status == RunStatus::Idle {
+                if open && session_idle_marks_unread(previous.as_ref()) && status.is_idle() {
                     persist_unread |= this.state.unread.insert(session_id.clone());
                     tab_status_changed = true;
                     this.notify_session_idle(&session_id);
@@ -2777,7 +2806,7 @@ impl Controller {
             tab.set_widget_name(&id);
             let active = self.state.active.as_deref() == Some(id.as_str());
             let unread = self.state.unread.contains(&id);
-            let busy = self.state.statuses.get(&id) == Some(&RunStatus::Busy);
+            let busy = self.state.statuses.get(&id).is_some_and(|s| s.is_busy());
             if active {
                 tab.add_css_class("active");
                 previous_inactive = false;
@@ -3395,7 +3424,7 @@ impl Controller {
             self.widgets.send_button.set_sensitive(false);
             return;
         };
-        let busy = self.state.statuses.get(active) == Some(&RunStatus::Busy);
+        let busy = self.state.statuses.get(active).is_some_and(|s| s.is_busy());
         set_button_icon(
             &self.widgets.send_button,
             if busy { ICON_STOP } else { ICON_SEND },
@@ -3556,23 +3585,34 @@ impl Controller {
             .as_ref()
             .and_then(|active| self.state.conversations.get(active))
             .is_some_and(|conversation| conversation.loaded);
+        let retry_message = active
+            .as_ref()
+            .and_then(|active| self.state.statuses.get(active))
+            .and_then(|status| match status {
+                RunStatus::Retry { message, .. } => Some(message.clone()),
+                _ => None,
+            });
         let working = active
             .as_ref()
-            .is_some_and(|active| self.state.statuses.get(active) == Some(&RunStatus::Busy));
+            .is_some_and(|active| self.state.statuses.get(active).is_some_and(|s| s.is_busy()));
         let load_error = active
             .as_ref()
             .and_then(|active| self.message_load_errors.get(active));
         let has_rows = !self.rendered_rows.is_empty();
-        let indicator = transcript_indicator(
-            active.is_some(),
-            loading,
-            replacing,
-            loaded,
-            has_rows,
-            working,
-            load_error.is_some(),
-        );
-        self.refresh_transcript_indicator(indicator, has_rows, load_error.map(String::as_str));
+        let indicator = if let Some(message) = retry_message {
+            TranscriptIndicator::Retry(message)
+        } else {
+            transcript_indicator(
+                active.is_some(),
+                loading,
+                replacing,
+                loaded,
+                has_rows,
+                working,
+                load_error.is_some(),
+            )
+        };
+        self.refresh_transcript_indicator(&indicator, has_rows, load_error.map(String::as_str));
         if update == TranscriptUpdate::Activate {
             self.widgets.load_earlier.set_visible(false);
             self.place_sticky_message(false);
@@ -3881,16 +3921,17 @@ impl Controller {
 
     fn refresh_transcript_indicator(
         &self,
-        indicator: TranscriptIndicator,
+        indicator: &TranscriptIndicator,
         has_rows: bool,
         error: Option<&str>,
     ) {
-        let (label, spinning) = match indicator {
-            TranscriptIndicator::Hidden => ("", false),
-            TranscriptIndicator::NoSession => ("Open a session to begin", false),
-            TranscriptIndicator::Loading => ("Loading conversation", true),
-            TranscriptIndicator::Refreshing => ("Refreshing conversation", true),
-            TranscriptIndicator::Working => ("OpenCode is working", true),
+        let (label, spinning, is_retry) = match indicator {
+            TranscriptIndicator::Hidden => ("", false, false),
+            TranscriptIndicator::NoSession => ("Open a session to begin", false, false),
+            TranscriptIndicator::Loading => ("Loading conversation", true, false),
+            TranscriptIndicator::Refreshing => ("Refreshing conversation", true, false),
+            TranscriptIndicator::Working => ("OpenCode is working", true, false),
+            TranscriptIndicator::Retry(message) => (message.as_str(), true, true),
             TranscriptIndicator::Error => (
                 if has_rows {
                     "Could not refresh conversation"
@@ -3898,10 +3939,11 @@ impl Controller {
                     "Could not load conversation"
                 },
                 false,
+                false,
             ),
-            TranscriptIndicator::Empty => ("No messages yet", false),
+            TranscriptIndicator::Empty => ("No messages yet", false, false),
         };
-        let visible = indicator != TranscriptIndicator::Hidden;
+        let visible = *indicator != TranscriptIndicator::Hidden;
         let compact = visible && has_rows;
         self.widgets.transcript_scroll.set_visible(true);
         self.widgets.transcript_scroll.set_vexpand(true);
@@ -3916,6 +3958,15 @@ impl Controller {
                 .transcript_status
                 .remove_css_class("transcript-status-compact");
         }
+        if is_retry {
+            self.widgets
+                .transcript_status
+                .add_css_class("transcript-status-retry");
+        } else {
+            self.widgets
+                .transcript_status
+                .remove_css_class("transcript-status-retry");
+        }
         self.widgets.transcript_status_label.set_label(label);
         self.widgets.transcript_status.set_tooltip_text(error);
         self.widgets.transcript_spinner.set_visible(spinning);
@@ -3927,7 +3978,10 @@ impl Controller {
     }
 
     fn update_session_status(&mut self, session_id: &str, status: RunStatus) -> bool {
-        let previous = self.state.statuses.insert(session_id.to_owned(), status);
+        let previous = self
+            .state
+            .statuses
+            .insert(session_id.to_owned(), status.clone());
         previous != Some(status)
     }
 
@@ -3989,7 +4043,7 @@ impl Controller {
                 .active
                 .as_ref()
                 .and_then(|active| this.state.statuses.get(active))
-                == Some(&RunStatus::Busy)
+                .is_some_and(|status| status.is_busy())
         };
         if !running {
             Self::send_or_abort(controller);
@@ -4005,7 +4059,12 @@ impl Controller {
             let Some(session) = this.session(&active).cloned() else {
                 return;
             };
-            if this.state.statuses.get(&active) == Some(&RunStatus::Busy) {
+            if this
+                .state
+                .statuses
+                .get(&active)
+                .is_some_and(|status| status.is_busy())
+            {
                 if this.state.pending_prompts.contains_key(&active)
                     && !this.state.server_busy.contains(&active)
                 {
@@ -5596,7 +5655,7 @@ impl Controller {
         let mut leftover = HashSet::new();
         for id in pending {
             let known = self.state.statuses.get(&id);
-            if known == Some(&RunStatus::Busy) {
+            if known.is_some_and(|s| s.is_busy()) {
                 leftover.insert(id);
                 continue;
             }
@@ -5639,7 +5698,7 @@ impl Controller {
                         .state
                         .statuses
                         .iter()
-                        .filter(|(_, status)| **status == RunStatus::Busy)
+                        .filter(|(_, status)| status.is_busy())
                         .map(|(id, _)| id.clone())
                         .collect();
                     busy.extend(self.offline_busy.iter().cloned());
@@ -6272,8 +6331,8 @@ fn event_returns_control(payload: &serde_json::Value) -> bool {
     payload.get("type").and_then(serde_json::Value::as_str) == Some("session.idle")
 }
 
-fn session_idle_marks_unread(previous: Option<RunStatus>) -> bool {
-    previous == Some(RunStatus::Busy)
+fn session_idle_marks_unread(previous: Option<&RunStatus>) -> bool {
+    previous.is_some_and(|s| s.is_busy())
 }
 
 fn session_notification_id(server_key: &str, session_id: &str) -> String {
@@ -6851,8 +6910,12 @@ mod tests {
 
     #[test]
     fn unread_requires_a_busy_to_idle_transition() {
-        assert!(session_idle_marks_unread(Some(RunStatus::Busy)));
-        assert!(!session_idle_marks_unread(Some(RunStatus::Idle)));
+        assert!(session_idle_marks_unread(Some(&RunStatus::Busy)));
+        assert!(session_idle_marks_unread(Some(&RunStatus::Retry {
+            message: "retry".into(),
+            attempt: 1,
+        })));
+        assert!(!session_idle_marks_unread(Some(&RunStatus::Idle)));
         assert!(!session_idle_marks_unread(None));
     }
 

@@ -405,17 +405,28 @@ impl ChatMessage {
                 images.push(url.clone());
             }
         }
-        if let Some(error) = &self.error {
-            blocks.push(format!("Error: {error}"));
+        if !blocks.is_empty() || !images.is_empty() {
+            push_transcript_row(
+                &mut rows,
+                role,
+                blocks.join("\n\n"),
+                images,
+                self.created,
+                "",
+            );
         }
-        push_transcript_row(
-            &mut rows,
-            role,
-            blocks.join("\n\n"),
-            images,
-            self.created,
-            "",
-        );
+        if let Some(error) = &self.error {
+            if error != "Aborted" {
+                push_transcript_row(
+                    &mut rows,
+                    role,
+                    error.clone(),
+                    Vec::new(),
+                    self.created,
+                    "error",
+                );
+            }
+        }
         rows
     }
 
@@ -809,6 +820,11 @@ impl Conversation {
         let Some(error) = error_text(data.get("error")) else {
             return false;
         };
+        if error == "Aborted"
+            || data.pointer("/error/name").and_then(Value::as_str) == Some("MessageAbortedError")
+        {
+            return false;
+        }
         let index = if let Some(message_id) = message_id {
             self.ensure_message(message_id, Role::Assistant)
         } else {
@@ -818,7 +834,9 @@ impl Conversation {
                 .unwrap_or("session");
             let id = format!("{session_id}:error:{}", self.error_sequence);
             self.error_sequence += 1;
-            self.ensure_message(&id, Role::Assistant)
+            let idx = self.ensure_message(&id, Role::Assistant);
+            self.messages[idx].created = value_time(data);
+            idx
         };
         self.messages[index].error = Some(error);
         true
@@ -973,7 +991,10 @@ fn error_text(error: Option<&Value>) -> Option<String> {
     let error = error?;
     value_text(error)
         .or_else(|| error.pointer("/data/message").and_then(value_text))
+        .or_else(|| error.pointer("/error/message").and_then(value_text))
+        .or_else(|| error.pointer("/data/error").and_then(value_text))
         .or_else(|| error.get("message").and_then(value_text))
+        .or_else(|| error.get("error").and_then(value_text))
         .or_else(|| (!error.is_null()).then(|| error.to_string()))
 }
 
@@ -1028,17 +1049,35 @@ pub fn event_session_id(payload: &Value) -> Option<&str> {
         .and_then(Value::as_str)
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RunStatus {
     Idle,
     Busy,
+    Retry { message: String, attempt: u32 },
 }
 
 impl RunStatus {
+    pub fn is_busy(&self) -> bool {
+        matches!(self, Self::Busy | Self::Retry { .. })
+    }
+
+    pub fn is_idle(&self) -> bool {
+        matches!(self, Self::Idle)
+    }
+
     pub fn from_value(value: &Value) -> Option<Self> {
         match value.get("type").and_then(Value::as_str) {
             Some("idle") => Some(Self::Idle),
-            Some("busy" | "retry") => Some(Self::Busy),
+            Some("busy") => Some(Self::Busy),
+            Some("retry") => {
+                let message = value
+                    .get("message")
+                    .and_then(Value::as_str)
+                    .unwrap_or("Retrying...")
+                    .to_owned();
+                let attempt = value.get("attempt").and_then(Value::as_u64).unwrap_or(1) as u32;
+                Some(Self::Retry { message, attempt })
+            }
             _ => None,
         }
     }
@@ -1369,11 +1408,49 @@ mod tests {
         );
         assert_eq!(
             event_run_status(&json!({
+                "type": "session.status",
+                "properties": {
+                    "sessionID": "ses_1",
+                    "status": {
+                        "type": "retry",
+                        "message": "retrying in 4s",
+                        "attempt": 1
+                    }
+                }
+            })),
+            Some((
+                "ses_1".into(),
+                RunStatus::Retry {
+                    message: "retrying in 4s".into(),
+                    attempt: 1,
+                }
+            ))
+        );
+        assert_eq!(
+            event_run_status(&json!({
                 "type": "session.error",
                 "properties": { "sessionID": "ses_1" }
             })),
             Some(("ses_1".into(), RunStatus::Idle))
         );
+    }
+
+    #[test]
+    fn transcript_rows_emits_error_row_for_failed_message() {
+        let msg = ChatMessage {
+            id: "msg_err".into(),
+            role: Role::Assistant,
+            created: 100,
+            segments: Vec::new(),
+            error: Some("AI_APICallError: Not Found".into()),
+            context_tokens: None,
+        };
+        let rows = msg.transcript_rows();
+        assert_eq!(rows.len(), 1);
+        let parsed: serde_json::Value = serde_json::from_str(&rows[0]).unwrap();
+        assert_eq!(parsed["kind"], "error");
+        assert_eq!(parsed["body"], "AI_APICallError: Not Found");
+        assert_eq!(parsed["role"], "AGENT");
     }
 
     #[test]
