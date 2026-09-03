@@ -4095,6 +4095,47 @@ impl Controller {
                 }
                 let supports_attachments = this.selected_model_supports_attachments();
                 let draft = this.state.drafts.entry(active.clone()).or_default();
+                if draft.text.trim() == "/debug error" {
+                    draft.text.clear();
+                    this.widgets.composer.buffer().set_text("");
+                    let conversation = this.state.conversations.entry(active.clone()).or_default();
+                    conversation.apply_event(&serde_json::json!({
+                        "type": "session.error",
+                        "properties": {
+                            "sessionID": active,
+                            "error": {
+                                "name": "APIError",
+                                "data": {
+                                    "message": "AI_APICallError: Not Found (404)",
+                                    "statusCode": 404
+                                }
+                            }
+                        }
+                    }));
+                    this.refresh_transcript(TranscriptUpdate::Content);
+                    return;
+                }
+                if draft.text.trim() == "/debug retry" {
+                    draft.text.clear();
+                    this.widgets.composer.buffer().set_text("");
+                    this.update_session_status(
+                        &active,
+                        RunStatus::Retry {
+                            message: "Rate limited upstream. Retrying in 4s (attempt 1/3)..."
+                                .into(),
+                            attempt: 1,
+                        },
+                    );
+                    this.refresh_transcript(TranscriptUpdate::Content);
+                    return;
+                }
+                if draft.text.trim() == "/debug clear" || draft.text.trim() == "/debug idle" {
+                    draft.text.clear();
+                    this.widgets.composer.buffer().set_text("");
+                    this.update_session_status(&active, RunStatus::Idle);
+                    this.refresh_transcript(TranscriptUpdate::Content);
+                    return;
+                }
                 if draft.text.trim().is_empty() && draft.attachments.is_empty() {
                     return;
                 }

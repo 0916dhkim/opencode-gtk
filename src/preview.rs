@@ -338,6 +338,22 @@ fn other_messages() -> Vec<Value> {
             CREATED - 86_370_000,
             "Tunnel loopback: `ssh -N -L 4096:127.0.0.1:4096 host`, then connect to `http://127.0.0.1:4096`.",
         ),
+        json!({
+            "info": {
+                "id": "msg_other_error",
+                "sessionID": OTHER_ID,
+                "role": "assistant",
+                "time": { "created": CREATED - 86_300_000 },
+                "error": {
+                    "name": "APIError",
+                    "data": {
+                        "message": "AI_APICallError: Not Found (404)",
+                        "statusCode": 404
+                    }
+                }
+            },
+            "parts": []
+        }),
     ]
 }
 
