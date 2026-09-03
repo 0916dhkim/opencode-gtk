@@ -1586,17 +1586,30 @@ fn wire_callbacks(controller: &Rc<RefCell<Controller>>) {
         });
 
     let weak = Rc::downgrade(controller);
+    controller
+        .borrow()
+        .widgets
+        .model_search
+        .connect_activate(move |_| {
+            if let Some(controller) = weak.upgrade() {
+                Controller::activate_current_model_selection(&controller);
+            }
+        });
+
+    let weak = Rc::downgrade(controller);
     let search_keys = gtk::EventControllerKey::new();
+    search_keys.set_propagation_phase(gtk::PropagationPhase::Capture);
     search_keys.connect_key_pressed(move |_, key, _, _| {
         let Some(controller) = weak.upgrade() else {
             return glib::Propagation::Proceed;
         };
-        let (list, popover, composer) = {
+        let (list, popover, composer, search) = {
             let this = controller.borrow();
             (
                 this.widgets.model_list.clone(),
                 this.widgets.model_popover.clone(),
                 this.widgets.composer.clone(),
+                this.widgets.model_search.clone(),
             )
         };
         match key {
@@ -1606,6 +1619,8 @@ fn wire_callbacks(controller: &Rc<RefCell<Controller>>) {
                     if let Some(next_row) = list.row_at_index(next_idx) {
                         list.select_row(Some(&next_row));
                         next_row.grab_focus();
+                    } else {
+                        selected.grab_focus();
                     }
                 } else if let Some(first_row) = list.row_at_index(0) {
                     list.select_row(Some(&first_row));
@@ -1621,24 +1636,16 @@ fn wire_callbacks(controller: &Rc<RefCell<Controller>>) {
                             list.select_row(Some(&prev_row));
                             prev_row.grab_focus();
                         }
+                    } else {
+                        search.grab_focus();
                     }
+                } else {
+                    search.grab_focus();
                 }
                 glib::Propagation::Stop
             }
             gdk::Key::Return | gdk::Key::KP_Enter => {
-                if let Some(selected) = list.selected_row() {
-                    let row_idx = selected.index() as usize;
-                    let model_idx = controller
-                        .borrow()
-                        .widgets
-                        .model_filtered_indices
-                        .borrow()
-                        .get(row_idx)
-                        .copied();
-                    if let Some(model_idx) = model_idx {
-                        Controller::select_model(&controller, model_idx);
-                    }
-                }
+                Controller::activate_current_model_selection(&controller);
                 glib::Propagation::Stop
             }
             gdk::Key::Escape => {
@@ -1654,6 +1661,50 @@ fn wire_callbacks(controller: &Rc<RefCell<Controller>>) {
         .widgets
         .model_search
         .add_controller(search_keys);
+
+    let weak = Rc::downgrade(controller);
+    let list_keys = gtk::EventControllerKey::new();
+    list_keys.set_propagation_phase(gtk::PropagationPhase::Capture);
+    list_keys.connect_key_pressed(move |_, key, _, _| {
+        let Some(controller) = weak.upgrade() else {
+            return glib::Propagation::Proceed;
+        };
+        let (list, popover, composer, search) = {
+            let this = controller.borrow();
+            (
+                this.widgets.model_list.clone(),
+                this.widgets.model_popover.clone(),
+                this.widgets.composer.clone(),
+                this.widgets.model_search.clone(),
+            )
+        };
+        match key {
+            gdk::Key::Return | gdk::Key::KP_Enter => {
+                Controller::activate_current_model_selection(&controller);
+                glib::Propagation::Stop
+            }
+            gdk::Key::Escape => {
+                popover.popdown();
+                composer.grab_focus();
+                glib::Propagation::Stop
+            }
+            gdk::Key::Up => {
+                if let Some(selected) = list.selected_row() {
+                    if selected.index() <= 0 {
+                        search.grab_focus();
+                        return glib::Propagation::Stop;
+                    }
+                }
+                glib::Propagation::Proceed
+            }
+            _ => glib::Propagation::Proceed,
+        }
+    });
+    controller
+        .borrow()
+        .widgets
+        .model_list
+        .add_controller(list_keys);
 
     let weak = Rc::downgrade(controller);
     controller
@@ -4289,8 +4340,34 @@ impl Controller {
         *filtered_indices.borrow_mut() = indices;
     }
 
+    fn activate_current_model_selection(controller: &Rc<RefCell<Self>>) {
+        let (list, filtered_indices) = {
+            let this = controller.borrow();
+            (
+                this.widgets.model_list.clone(),
+                this.widgets.model_filtered_indices.clone(),
+            )
+        };
+        let row_idx = list
+            .selected_row()
+            .map(|row| row.index() as usize)
+            .or_else(|| {
+                if list.row_at_index(0).is_some() {
+                    Some(0)
+                } else {
+                    None
+                }
+            });
+        let model_idx = row_idx
+            .and_then(|idx| filtered_indices.borrow().get(idx).copied())
+            .or_else(|| filtered_indices.borrow().first().copied());
+        if let Some(model_idx) = model_idx {
+            Self::select_model(controller, model_idx);
+        }
+    }
+
     fn select_model(controller: &Rc<RefCell<Self>>, index: usize) {
-        let (active, _model) = {
+        let _active = {
             let mut this = controller.borrow_mut();
             let Some(active) = this.state.active.clone() else {
                 return;
@@ -4301,12 +4378,12 @@ impl Controller {
             this.state.selections.insert(
                 active.clone(),
                 ModelSelection {
-                    provider_id: model.provider_id.clone(),
-                    model_id: model.model_id.clone(),
+                    provider_id: model.provider_id,
+                    model_id: model.model_id,
                     variant: None,
                 },
             );
-            (active, model)
+            active
         };
         let mut this = controller.borrow_mut();
         this.refresh_model_control();
