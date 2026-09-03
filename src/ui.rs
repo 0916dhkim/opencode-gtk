@@ -543,6 +543,25 @@ pub fn launch(
     });
     application.add_action(&quit);
     application.set_accels_for_action("app.quit", &["<Control>q"]);
+
+    let activate_session =
+        gio::SimpleAction::new("activate-session", Some(&glib::VariantTy::STRING));
+    let weak = Rc::downgrade(&controller);
+    activate_session.connect_activate(move |_, target| {
+        let Some(controller) = weak.upgrade() else {
+            return;
+        };
+        let (window, composer) = {
+            let this = controller.borrow();
+            (this.widgets.window.clone(), this.widgets.composer.clone())
+        };
+        window.present();
+        gtk::prelude::GtkWindowExt::set_focus(&window, Some(&composer));
+        if let Some(session_id) = target.and_then(|v| v.get::<String>()) {
+            Controller::open_tab(&controller, &session_id);
+        }
+    });
+    application.add_action(&activate_session);
     Controller::refresh_all(&controller);
     {
         let widgets = &controller.borrow().widgets;
@@ -3629,6 +3648,10 @@ impl Controller {
             .unwrap_or_else(|| "OpenCode".to_owned());
         let notification = gio::Notification::new(&title);
         notification.set_body(Some("opencode session"));
+        notification.set_default_action_and_target_value(
+            "app.activate-session",
+            Some(&session_id.to_variant()),
+        );
         application.send_notification(
             Some(&session_notification_id(&self.server_key, session_id)),
             &notification,
@@ -5758,6 +5781,7 @@ fn transcript_indicator(
     }
 }
 
+#[cfg(test)]
 fn event_returns_control(payload: &serde_json::Value) -> bool {
     payload.get("type").and_then(serde_json::Value::as_str) == Some("session.idle")
 }
