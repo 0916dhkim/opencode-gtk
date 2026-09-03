@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use gtk::{gdk, glib, pango, prelude::*};
+use gtk::{glib, pango, prelude::*};
 use pulldown_cmark::{Alignment, CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use url::Url;
 

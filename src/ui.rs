@@ -906,6 +906,8 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
     attach_button.add_css_class("composer-action");
     let model_store = gtk::StringList::new(&["Loading models..."]);
     let model_dropdown = gtk::DropDown::new(Some(model_store.clone()), None::<gtk::Expression>);
+    model_dropdown.set_enable_search(true);
+    model_dropdown.set_tooltip_text(Some("Select model (Ctrl+M)"));
     model_dropdown.add_css_class("composer-menu");
     model_dropdown.set_sensitive(false);
     model_dropdown.set_hexpand(true);
@@ -913,7 +915,7 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
     let variant_dropdown = gtk::DropDown::new(Some(variant_store.clone()), None::<gtk::Expression>);
     variant_dropdown.add_css_class("composer-menu");
     variant_dropdown.set_sensitive(false);
-    variant_dropdown.set_tooltip_text(Some("Reasoning level"));
+    variant_dropdown.set_tooltip_text(Some("Reasoning level (Ctrl+/)"));
     let context_usage = gtk::Label::new(None);
     context_usage.add_css_class("composer-usage");
     context_usage.set_xalign(0.0);
@@ -1501,6 +1503,18 @@ fn wire_callbacks(controller: &Rc<RefCell<Controller>>) {
         }
         match key {
             gdk::Key::b | gdk::Key::B => controller.borrow().toggle_sidebar(),
+            gdk::Key::m | gdk::Key::M => {
+                let this = controller.borrow();
+                if this.widgets.model_dropdown.is_sensitive() {
+                    this.widgets.model_dropdown.activate();
+                }
+            }
+            gdk::Key::slash | gdk::Key::KP_Divide => {
+                let this = controller.borrow();
+                if this.widgets.variant_dropdown.is_sensitive() {
+                    this.widgets.variant_dropdown.activate();
+                }
+            }
             gdk::Key::comma => Controller::show_settings(&controller),
             gdk::Key::p => Controller::show_session_picker(&controller),
             gdk::Key::t => Controller::show_new_session(&controller),
@@ -2995,6 +3009,10 @@ impl Controller {
                 .set_tooltip_text(Some("Refreshing models..."));
         } else if let Some(error) = self.model_load_errors.get(&directory) {
             self.widgets.model_dropdown.set_tooltip_text(Some(error));
+        } else {
+            self.widgets
+                .model_dropdown
+                .set_tooltip_text(Some("Select model (Ctrl+M)"));
         }
         self.widgets.model_dropdown.set_sensitive(model_ready);
         self.refresh_variant_control();
