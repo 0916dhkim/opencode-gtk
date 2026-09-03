@@ -302,8 +302,59 @@ button.markdown-code-copy.copied {
   background: #b88732;
 }
 
-.composer-frame dropdown.composer-menu > button:hover {
+.composer-frame dropdown.composer-menu > button:hover,
+.composer-frame button.composer-menu:hover {
   background: #eeebe4;
+}
+
+.composer-frame button.composer-menu {
+  color: #282623;
+}
+
+popover.model-picker-popover > contents {
+  background: #f7f5f1;
+  border: 1px solid #d3cfc7;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15);
+  padding: 6px;
+}
+
+.model-picker-search {
+  background: #ffffff;
+  border: 1px solid #d3cfc7;
+  color: #282623;
+}
+
+.model-picker-search:focus-within {
+  border-color: #2563eb;
+}
+
+.model-picker-row {
+  color: #282623;
+}
+
+.model-picker-row:hover,
+.model-picker-row:selected {
+  background: #eae6de;
+}
+
+.model-picker-row.selected .model-picker-item-title {
+  color: #2563eb;
+}
+
+.model-picker-item-title {
+  color: #282623;
+}
+
+.model-picker-item-subtext {
+  color: #6f7471;
+}
+
+.model-picker-check {
+  color: #2563eb;
+}
+
+.model-picker-empty {
+  color: #6f7471;
 }
 
 .composer-usage {

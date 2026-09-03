@@ -511,10 +511,16 @@ button.markdown-code-copy.copied {
   min-height: 32px;
 }
 
-.composer-frame dropdown.composer-menu {
+.composer-frame dropdown.composer-menu,
+.composer-frame button.composer-menu {
   background: transparent;
+  background-image: none;
   box-shadow: none;
+  border: none;
+  border-radius: 8px;
   min-width: 0;
+  padding: 0 8px;
+  color: #e8e5df;
 }
 
 .composer-frame dropdown.composer-menu > button {
@@ -527,9 +533,84 @@ button.markdown-code-copy.copied {
   border-radius: 8px;
 }
 
-.composer-frame dropdown.composer-menu > button:hover {
+.composer-frame dropdown.composer-menu > button:hover,
+.composer-frame button.composer-menu:hover {
   background: #22262a;
   background-image: none;
+}
+
+.composer-menu-title {
+  font-weight: 500;
+  font-size: 0.9em;
+}
+
+.composer-menu-arrow {
+  margin-left: 2px;
+}
+
+popover.model-picker-popover {
+  border-radius: 10px;
+}
+
+popover.model-picker-popover > contents {
+  background: #171a1d;
+  border: 1px solid #30353a;
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  padding: 6px;
+}
+
+.model-picker-search {
+  border-radius: 6px;
+  background: #101214;
+  border: 1px solid #282c32;
+  color: #f0ede7;
+}
+
+.model-picker-search:focus-within {
+  border-color: #62bceb;
+}
+
+.model-picker-list {
+  background: transparent;
+}
+
+.model-picker-row {
+  border-radius: 6px;
+  padding: 2px 4px;
+  color: #e1ddd5;
+  background: transparent;
+}
+
+.model-picker-row:hover,
+.model-picker-row:selected {
+  background: #22262b;
+}
+
+.model-picker-row.selected .model-picker-item-title {
+  color: #62bceb;
+}
+
+.model-picker-item-title {
+  font-size: 0.92em;
+  font-weight: 500;
+  color: #e8e5df;
+}
+
+.model-picker-item-subtext {
+  font-size: 0.76em;
+  color: #899097;
+}
+
+.model-picker-check {
+  color: #62bceb;
+  font-weight: 700;
+  font-size: 0.9em;
+}
+
+.model-picker-empty {
+  color: #899097;
+  font-size: 0.88em;
 }
 
 .composer-usage {

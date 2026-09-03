@@ -151,8 +151,12 @@ struct Widgets {
     composer: gtk::TextView,
     attachment_box: gtk::Box,
     attach_button: gtk::Button,
-    model_store: gtk::StringList,
-    model_dropdown: gtk::DropDown,
+    model_button: gtk::Button,
+    model_button_label: gtk::Label,
+    model_popover: gtk::Popover,
+    model_search: gtk::SearchEntry,
+    model_list: gtk::ListBox,
+    model_filtered_indices: Rc<RefCell<Vec<usize>>>,
     variant_store: gtk::StringList,
     variant_dropdown: gtk::DropDown,
     context_usage: gtk::Label,
@@ -383,6 +387,109 @@ fn draw_panel(
     cr.line_to(6.5 * s, 13.0 * s);
     let _ = cr.stroke();
     cr.restore().ok();
+}
+
+fn chevron_down_icon(pixel_size: i32) -> gtk::DrawingArea {
+    drawn_icon(pixel_size, draw_chevron_down)
+}
+
+fn draw_chevron_down(
+    widget: &gtk::DrawingArea,
+    cr: &cairo::Context,
+    width: i32,
+    height: i32,
+    pixel_size: i32,
+) {
+    let color = widget
+        .parent()
+        .map(|parent| parent.style_context().color())
+        .unwrap_or_else(|| widget.style_context().color());
+    cr.set_source_rgba(
+        f64::from(color.red()),
+        f64::from(color.green()),
+        f64::from(color.blue()),
+        f64::from(color.alpha()) * 0.75,
+    );
+    let size = f64::from(pixel_size);
+    let s = size / 10.0;
+    cr.save().ok();
+    cr.translate(
+        f64::from(width) / 2.0 - 5.0 * s,
+        f64::from(height) / 2.0 - 5.0 * s,
+    );
+    cr.set_line_width(1.4 * s);
+    cr.set_line_cap(cairo::LineCap::Round);
+    cr.set_line_join(cairo::LineJoin::Round);
+    cr.move_to(2.0 * s, 3.5 * s);
+    cr.line_to(5.0 * s, 6.5 * s);
+    cr.line_to(8.0 * s, 3.5 * s);
+    let _ = cr.stroke();
+    cr.restore().ok();
+}
+
+fn fuzzy_score(query: &str, target: &str) -> Option<i64> {
+    if query.is_empty() {
+        return Some(0);
+    }
+    let q_lower: Vec<char> = query.to_lowercase().chars().collect();
+    let t_lower: Vec<char> = target.to_lowercase().chars().collect();
+    let original: Vec<char> = target.chars().collect();
+
+    let mut q_idx = 0;
+    let mut score: i64 = 0;
+    let mut prev_match_idx: Option<usize> = None;
+    let mut first_match_idx: Option<usize> = None;
+
+    for (t_idx, &t_ch) in t_lower.iter().enumerate() {
+        if q_idx < q_lower.len() && t_ch == q_lower[q_idx] {
+            if first_match_idx.is_none() {
+                first_match_idx = Some(t_idx);
+            }
+            score += 10;
+
+            if let Some(prev) = prev_match_idx {
+                if prev + 1 == t_idx {
+                    score += 15;
+                }
+            }
+
+            if t_idx == 0 {
+                score += 30;
+            } else {
+                let prev_ch = original[t_idx - 1];
+                if matches!(prev_ch, ' ' | '-' | '_' | '/' | '.' | ':') {
+                    score += 25;
+                } else if prev_ch.is_lowercase() && original[t_idx].is_uppercase() {
+                    score += 20;
+                }
+            }
+
+            prev_match_idx = Some(t_idx);
+            q_idx += 1;
+        }
+    }
+
+    if q_idx < q_lower.len() {
+        return None;
+    }
+
+    let t_str = target.to_lowercase();
+    let q_str = query.to_lowercase();
+    if let Some(idx) = t_str.find(&q_str) {
+        score += 50;
+        if idx == 0 {
+            score += 25;
+        }
+    }
+
+    if let (Some(first), Some(last)) = (first_match_idx, prev_match_idx) {
+        let span = last.saturating_sub(first);
+        score -= span as i64;
+    }
+
+    score -= (t_lower.len() as i64) / 4;
+
+    Some(score)
 }
 
 fn set_button_icon(button: &gtk::Button, name: &str, pixel_size: i32) {
@@ -904,18 +1011,63 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
     attach_button.set_child(Some(&paperclip_icon(COMPOSER_ICON_PX)));
     attach_button.set_tooltip_text(Some("Attach files (Ctrl+U)"));
     attach_button.add_css_class("composer-action");
-    let model_store = gtk::StringList::new(&["Loading models..."]);
-    let model_expression = gtk::PropertyExpression::new(
-        gtk::StringObject::static_type(),
-        None::<gtk::Expression>,
-        "string",
-    );
-    let model_dropdown = gtk::DropDown::new(Some(model_store.clone()), Some(model_expression));
-    model_dropdown.set_enable_search(true);
-    model_dropdown.set_tooltip_text(Some("Select model (Ctrl+M)"));
-    model_dropdown.add_css_class("composer-menu");
-    model_dropdown.set_sensitive(false);
-    model_dropdown.set_hexpand(true);
+
+    let model_button = gtk::Button::new();
+    let model_row = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+    let model_button_label = gtk::Label::new(Some("Loading models..."));
+    model_button_label.set_xalign(0.0);
+    model_button_label.set_hexpand(true);
+    model_button_label.set_ellipsize(pango::EllipsizeMode::End);
+    model_button_label.add_css_class("composer-menu-title");
+
+    let model_chevron = chevron_down_icon(10);
+    model_chevron.add_css_class("composer-menu-arrow");
+    model_chevron.set_halign(gtk::Align::End);
+    model_chevron.set_valign(gtk::Align::Center);
+
+    model_row.append(&model_button_label);
+    model_row.append(&model_chevron);
+    model_button.set_child(Some(&model_row));
+    model_button.add_css_class("composer-menu");
+    model_button.set_tooltip_text(Some("Select model (Ctrl+M)"));
+    model_button.set_sensitive(false);
+    model_button.set_hexpand(true);
+
+    let model_popover = gtk::Popover::new();
+    model_popover.set_parent(&model_button);
+    model_popover.set_position(gtk::PositionType::Top);
+    model_popover.set_autohide(true);
+    model_popover.add_css_class("model-picker-popover");
+
+    let popover_box = gtk::Box::new(gtk::Orientation::Vertical, 6);
+    popover_box.set_margin_start(8);
+    popover_box.set_margin_end(8);
+    popover_box.set_margin_top(8);
+    popover_box.set_margin_bottom(8);
+    popover_box.set_size_request(340, -1);
+
+    let model_search = gtk::SearchEntry::new();
+    model_search.set_placeholder_text(Some("Search models (fuzzy)..."));
+    model_search.add_css_class("model-picker-search");
+    popover_box.append(&model_search);
+
+    let model_list = gtk::ListBox::new();
+    model_list.set_selection_mode(gtk::SelectionMode::Single);
+    model_list.add_css_class("model-picker-list");
+
+    let model_scroll = gtk::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .vscrollbar_policy(gtk::PolicyType::Automatic)
+        .propagate_natural_height(true)
+        .max_content_height(280)
+        .min_content_height(100)
+        .child(&model_list)
+        .build();
+    popover_box.append(&model_scroll);
+
+    model_popover.set_child(Some(&popover_box));
+    let model_filtered_indices = Rc::new(RefCell::new(Vec::new()));
+
     let variant_store = gtk::StringList::new(&["Default"]);
     let variant_dropdown = gtk::DropDown::new(Some(variant_store.clone()), None::<gtk::Expression>);
     variant_dropdown.add_css_class("composer-menu");
@@ -937,7 +1089,7 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
     let composer_controls = gtk::Box::new(gtk::Orientation::Horizontal, 6);
     composer_controls.set_overflow(gtk::Overflow::Hidden);
     composer_controls.append(&attach_button);
-    composer_controls.append(&model_dropdown);
+    composer_controls.append(&model_button);
     composer_controls.append(&variant_dropdown);
     composer_controls.append(&context_usage);
     composer_controls.append(&send_button);
@@ -988,8 +1140,12 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
         composer,
         attachment_box,
         attach_button,
-        model_store,
-        model_dropdown,
+        model_button,
+        model_button_label,
+        model_popover,
+        model_search,
+        model_list,
+        model_filtered_indices,
         variant_store,
         variant_dropdown,
         context_usage,
@@ -1411,40 +1567,113 @@ fn wire_callbacks(controller: &Rc<RefCell<Controller>>) {
     controller
         .borrow()
         .widgets
-        .model_dropdown
-        .connect_selected_notify(move |dropdown| {
-            let Some(controller) = weak.upgrade() else {
-                return;
-            };
-            let Ok(mut controller) = controller.try_borrow_mut() else {
-                return;
-            };
-            if controller.controls_updating {
-                return;
+        .model_button
+        .connect_clicked(move |_| {
+            if let Some(controller) = weak.upgrade() {
+                Controller::show_model_picker(&controller);
             }
-            let Some(active) = controller.state.active.clone() else {
-                return;
-            };
-            let Some(model) = controller
-                .current_models
-                .get(dropdown.selected() as usize)
-                .cloned()
-            else {
-                return;
-            };
-            controller.state.selections.insert(
-                active,
-                ModelSelection {
-                    provider_id: model.provider_id,
-                    model_id: model.model_id,
-                    variant: None,
-                },
-            );
-            controller.refresh_variant_control();
-            controller.refresh_attachment_control();
-            controller.refresh_context_usage();
-            controller.persist_state();
-            controller.refresh_send_button();
+        });
+
+    let weak = Rc::downgrade(controller);
+    controller
+        .borrow()
+        .widgets
+        .model_search
+        .connect_search_changed(move |search| {
+            if let Some(controller) = weak.upgrade() {
+                Controller::filter_model_list(&controller, search.text().as_str());
+            }
+        });
+
+    let weak = Rc::downgrade(controller);
+    let search_keys = gtk::EventControllerKey::new();
+    search_keys.connect_key_pressed(move |_, key, _, _| {
+        let Some(controller) = weak.upgrade() else {
+            return glib::Propagation::Proceed;
+        };
+        let (list, popover, composer) = {
+            let this = controller.borrow();
+            (
+                this.widgets.model_list.clone(),
+                this.widgets.model_popover.clone(),
+                this.widgets.composer.clone(),
+            )
+        };
+        match key {
+            gdk::Key::Down => {
+                if let Some(selected) = list.selected_row() {
+                    let next_idx = selected.index() + 1;
+                    if let Some(next_row) = list.row_at_index(next_idx) {
+                        list.select_row(Some(&next_row));
+                        next_row.grab_focus();
+                    }
+                } else if let Some(first_row) = list.row_at_index(0) {
+                    list.select_row(Some(&first_row));
+                    first_row.grab_focus();
+                }
+                glib::Propagation::Stop
+            }
+            gdk::Key::Up => {
+                if let Some(selected) = list.selected_row() {
+                    let prev_idx = selected.index() - 1;
+                    if prev_idx >= 0 {
+                        if let Some(prev_row) = list.row_at_index(prev_idx) {
+                            list.select_row(Some(&prev_row));
+                            prev_row.grab_focus();
+                        }
+                    }
+                }
+                glib::Propagation::Stop
+            }
+            gdk::Key::Return | gdk::Key::KP_Enter => {
+                if let Some(selected) = list.selected_row() {
+                    let row_idx = selected.index() as usize;
+                    let model_idx = controller
+                        .borrow()
+                        .widgets
+                        .model_filtered_indices
+                        .borrow()
+                        .get(row_idx)
+                        .copied();
+                    if let Some(model_idx) = model_idx {
+                        Controller::select_model(&controller, model_idx);
+                    }
+                }
+                glib::Propagation::Stop
+            }
+            gdk::Key::Escape => {
+                popover.popdown();
+                composer.grab_focus();
+                glib::Propagation::Stop
+            }
+            _ => glib::Propagation::Proceed,
+        }
+    });
+    controller
+        .borrow()
+        .widgets
+        .model_search
+        .add_controller(search_keys);
+
+    let weak = Rc::downgrade(controller);
+    controller
+        .borrow()
+        .widgets
+        .model_list
+        .connect_row_activated(move |_, row| {
+            if let Some(controller) = weak.upgrade() {
+                let row_idx = row.index() as usize;
+                let model_idx = controller
+                    .borrow()
+                    .widgets
+                    .model_filtered_indices
+                    .borrow()
+                    .get(row_idx)
+                    .copied();
+                if let Some(model_idx) = model_idx {
+                    Controller::select_model(&controller, model_idx);
+                }
+            }
         });
 
     let weak = Rc::downgrade(controller);
@@ -1509,10 +1738,7 @@ fn wire_callbacks(controller: &Rc<RefCell<Controller>>) {
         match key {
             gdk::Key::b | gdk::Key::B => controller.borrow().toggle_sidebar(),
             gdk::Key::m | gdk::Key::M => {
-                let this = controller.borrow();
-                if this.widgets.model_dropdown.is_sensitive() {
-                    this.widgets.model_dropdown.activate();
-                }
+                Controller::show_model_picker(&controller);
             }
             gdk::Key::slash | gdk::Key::KP_Divide => {
                 let this = controller.borrow();
@@ -2910,15 +3136,15 @@ impl Controller {
 
     fn refresh_model_control(&mut self) {
         self.controls_updating = true;
-        self.widgets.model_dropdown.set_tooltip_text(None);
+        self.widgets.model_button.set_tooltip_text(None);
         self.widgets.attach_button.set_sensitive(false);
         self.widgets
             .attach_button
             .set_tooltip_text(Some("Select a model that accepts attachments"));
         let Some(active) = self.state.active.clone() else {
             self.current_models.clear();
-            replace_string_list(&self.widgets.model_store, &["No session"]);
-            self.widgets.model_dropdown.set_sensitive(false);
+            self.widgets.model_button_label.set_text("No session");
+            self.widgets.model_button.set_sensitive(false);
             self.refresh_variant_control();
             self.controls_updating = false;
             self.refresh_context_usage();
@@ -2936,45 +3162,36 @@ impl Controller {
             self.current_models.clear();
             let loading = self.state.loading_models.contains(&directory);
             let error = self.model_load_errors.get(&directory);
-            replace_string_list(
-                &self.widgets.model_store,
-                &[if loading {
-                    "Loading models..."
-                } else if error.is_some() {
-                    "Could not load models"
-                } else {
-                    "No models available"
-                }],
-            );
+            self.widgets.model_button_label.set_text(if loading {
+                "Loading models..."
+            } else if error.is_some() {
+                "Could not load models"
+            } else {
+                "No models available"
+            });
             self.widgets
-                .model_dropdown
+                .model_button
                 .set_tooltip_text(error.map(String::as_str));
-            self.widgets.model_dropdown.set_selected(0);
-            self.widgets.model_dropdown.set_sensitive(false);
+            self.widgets.model_button.set_sensitive(false);
             self.refresh_variant_control();
             self.controls_updating = false;
             self.refresh_context_usage();
             return;
         };
 
-        self.widgets.model_dropdown.set_tooltip_text(None);
+        self.widgets.model_button.set_tooltip_text(None);
         self.current_models = catalog.models.clone();
         if self.current_models.is_empty() {
             self.state.selections.remove(&active);
-            replace_string_list(&self.widgets.model_store, &["No models available"]);
-            self.widgets.model_dropdown.set_selected(0);
-            self.widgets.model_dropdown.set_sensitive(false);
+            self.widgets
+                .model_button_label
+                .set_text("No models available");
+            self.widgets.model_button.set_sensitive(false);
             self.refresh_variant_control();
             self.controls_updating = false;
             self.refresh_context_usage();
             return;
         }
-        let labels: Vec<_> = self
-            .current_models
-            .iter()
-            .map(|model| model.label.as_str())
-            .collect();
-        replace_string_list(&self.widgets.model_store, &labels);
         let session_selection = self
             .session(&active)
             .and_then(Session::model_selection)
@@ -3004,22 +3221,24 @@ impl Controller {
                 })
                 .unwrap_or_default();
             self.state.selections.insert(active, selection);
-            self.widgets.model_dropdown.set_selected(index as u32);
+            if let Some(model) = self.current_models.get(index) {
+                self.widgets.model_button_label.set_text(&model.label);
+            }
         }
         let model_ready = !self.state.loading_models.contains(&directory)
             && !self.model_load_errors.contains_key(&directory);
         if self.state.loading_models.contains(&directory) {
             self.widgets
-                .model_dropdown
+                .model_button
                 .set_tooltip_text(Some("Refreshing models..."));
         } else if let Some(error) = self.model_load_errors.get(&directory) {
-            self.widgets.model_dropdown.set_tooltip_text(Some(error));
+            self.widgets.model_button.set_tooltip_text(Some(error));
         } else {
             self.widgets
-                .model_dropdown
+                .model_button
                 .set_tooltip_text(Some("Select model (Ctrl+M)"));
         }
-        self.widgets.model_dropdown.set_sensitive(model_ready);
+        self.widgets.model_button.set_sensitive(model_ready);
         self.refresh_variant_control();
         self.refresh_attachment_control();
         self.controls_updating = false;
@@ -3179,7 +3398,7 @@ impl Controller {
         from_selection
             .or_else(|| {
                 self.current_models
-                    .get(self.widgets.model_dropdown.selected() as usize)
+                    .first()
                     .and_then(|model| model.context_limit)
             })
             .filter(|limit| *limit > 0)
@@ -3938,6 +4157,166 @@ impl Controller {
                 Err(error) => this.show_error(&format!("Could not paste image: {error}")),
             }
         });
+    }
+
+    fn show_model_picker(controller: &Rc<RefCell<Self>>) {
+        let (popover, search) = {
+            let this = controller.borrow();
+            if !this.widgets.model_button.is_sensitive() || this.current_models.is_empty() {
+                return;
+            }
+            (
+                this.widgets.model_popover.clone(),
+                this.widgets.model_search.clone(),
+            )
+        };
+        search.set_text("");
+        Self::filter_model_list(controller, "");
+        popover.popup();
+        search.grab_focus();
+    }
+
+    fn filter_model_list(controller: &Rc<RefCell<Self>>, query: &str) {
+        let (current_models, active_selection, list, filtered_indices) = {
+            let this = controller.borrow();
+            let active = this.state.active.clone();
+            let selection = active.and_then(|a| this.state.selections.get(&a).cloned());
+            (
+                this.current_models.clone(),
+                selection,
+                this.widgets.model_list.clone(),
+                this.widgets.model_filtered_indices.clone(),
+            )
+        };
+
+        while let Some(child) = list.first_child() {
+            list.remove(&child);
+        }
+
+        let query = query.trim();
+        let mut scored: Vec<(i64, usize, ModelOption)> = current_models
+            .into_iter()
+            .enumerate()
+            .filter_map(|(idx, model)| {
+                if query.is_empty() {
+                    Some((0, idx, model))
+                } else {
+                    let label_score = fuzzy_score(query, &model.label);
+                    let full_id = format!("{} / {}", model.provider_id, model.model_id);
+                    let id_score = fuzzy_score(query, &full_id);
+                    let score = match (label_score, id_score) {
+                        (Some(s1), Some(s2)) => Some(s1.max(s2)),
+                        (s1, s2) => s1.or(s2),
+                    };
+                    score.map(|s| (s, idx, model))
+                }
+            })
+            .collect();
+
+        if !query.is_empty() {
+            scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.2.label.cmp(&b.2.label)));
+        }
+
+        let mut indices = Vec::with_capacity(scored.len());
+
+        if scored.is_empty() {
+            *filtered_indices.borrow_mut() = Vec::new();
+            let empty = gtk::Label::new(Some("No matching models"));
+            empty.add_css_class("model-picker-empty");
+            empty.set_margin_top(16);
+            empty.set_margin_bottom(16);
+            list.append(&empty);
+            return;
+        }
+
+        let mut row_to_select = None;
+
+        for (rank, (_, idx, model)) in scored.iter().enumerate() {
+            indices.push(*idx);
+
+            let is_selected = active_selection.as_ref().is_some_and(|sel| {
+                sel.provider_id == model.provider_id && sel.model_id == model.model_id
+            });
+
+            let row = gtk::ListBoxRow::new();
+            row.add_css_class("model-picker-row");
+            if is_selected {
+                row.add_css_class("selected");
+            }
+
+            let box_row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+            box_row.set_margin_start(10);
+            box_row.set_margin_end(10);
+            box_row.set_margin_top(6);
+            box_row.set_margin_bottom(6);
+
+            let labels_box = gtk::Box::new(gtk::Orientation::Vertical, 2);
+            labels_box.set_hexpand(true);
+
+            let label = gtk::Label::new(Some(&model.label));
+            label.set_xalign(0.0);
+            label.add_css_class("model-picker-item-title");
+
+            let subtext =
+                gtk::Label::new(Some(&format!("{}/{}", model.provider_id, model.model_id)));
+            subtext.set_xalign(0.0);
+            subtext.add_css_class("model-picker-item-subtext");
+
+            labels_box.append(&label);
+            labels_box.append(&subtext);
+            box_row.append(&labels_box);
+
+            if is_selected {
+                let check = gtk::Label::new(Some("✓"));
+                check.add_css_class("model-picker-check");
+                box_row.append(&check);
+            }
+
+            row.set_child(Some(&box_row));
+            list.append(&row);
+
+            if is_selected {
+                row_to_select = Some(row.clone());
+            } else if rank == 0 && row_to_select.is_none() {
+                row_to_select = Some(row.clone());
+            }
+        }
+
+        if let Some(row) = row_to_select {
+            list.select_row(Some(&row));
+        }
+
+        *filtered_indices.borrow_mut() = indices;
+    }
+
+    fn select_model(controller: &Rc<RefCell<Self>>, index: usize) {
+        let (active, _model) = {
+            let mut this = controller.borrow_mut();
+            let Some(active) = this.state.active.clone() else {
+                return;
+            };
+            let Some(model) = this.current_models.get(index).cloned() else {
+                return;
+            };
+            this.state.selections.insert(
+                active.clone(),
+                ModelSelection {
+                    provider_id: model.provider_id.clone(),
+                    model_id: model.model_id.clone(),
+                    variant: None,
+                },
+            );
+            (active, model)
+        };
+        let mut this = controller.borrow_mut();
+        this.refresh_model_control();
+        this.refresh_variant_control();
+        this.refresh_attachment_control();
+        this.refresh_context_usage();
+        this.persist_state();
+        this.refresh_send_button();
+        this.widgets.model_popover.popdown();
+        this.widgets.composer.grab_focus();
     }
 
     fn show_session_picker(controller: &Rc<RefCell<Self>>) {
@@ -6623,5 +7002,24 @@ mod tests {
             "",
         )
         .is_err());
+    }
+
+    #[test]
+    fn fuzzy_search_matches_subsequences_and_ranks_exact_matches_higher() {
+        assert_eq!(fuzzy_score("", "claude-3-7-sonnet"), Some(0));
+        assert!(fuzzy_score("xyz", "claude-3-7-sonnet").is_none());
+
+        let c37 = fuzzy_score("c37", "anthropic / claude-3-7-sonnet");
+        assert!(c37.is_some());
+
+        let sonnet = fuzzy_score("sonnet", "anthropic / claude-3-7-sonnet").unwrap();
+        let sparse = fuzzy_score("son", "anthropic / session-open-now").unwrap();
+        assert!(sonnet > sparse);
+
+        assert!(fuzzy_score("CLAUDE", "Claude 3.7 Sonnet").is_some());
+        assert_eq!(
+            fuzzy_score("claude", "Claude 3.7 Sonnet"),
+            fuzzy_score("CLAUDE", "Claude 3.7 Sonnet")
+        );
     }
 }
