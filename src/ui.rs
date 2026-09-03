@@ -129,6 +129,8 @@ struct State {
 #[derive(Clone)]
 struct Widgets {
     window: gtk::ApplicationWindow,
+    sidebar: gtk::Box,
+    sidebar_toggle: gtk::Button,
     session_button: gtk::Button,
     new_button: gtk::Button,
     settings_button: gtk::Button,
@@ -286,6 +288,17 @@ fn sidebar_nav_button(icon: &str, label: &str, tooltip: &str) -> gtk::Button {
 }
 
 fn paperclip_icon(pixel_size: i32) -> gtk::DrawingArea {
+    drawn_icon(pixel_size, draw_paperclip)
+}
+
+fn panel_icon(pixel_size: i32) -> gtk::DrawingArea {
+    drawn_icon(pixel_size, draw_panel)
+}
+
+fn drawn_icon(
+    pixel_size: i32,
+    draw: fn(&gtk::DrawingArea, &cairo::Context, i32, i32, i32),
+) -> gtk::DrawingArea {
     let area = gtk::DrawingArea::builder()
         .content_width(pixel_size)
         .content_height(pixel_size)
@@ -294,7 +307,7 @@ fn paperclip_icon(pixel_size: i32) -> gtk::DrawingArea {
         .can_target(false)
         .build();
     area.set_draw_func(move |widget, cr, width, height| {
-        draw_paperclip(widget, cr, width, height, pixel_size);
+        draw(widget, cr, width, height, pixel_size);
     });
     area
 }
@@ -333,6 +346,41 @@ fn draw_paperclip(
     cr.line_to(7.8 * s, 7.4 * s);
     cr.arc(10.0 * s, 7.4 * s, 2.2 * s, std::f64::consts::PI, 0.0);
     cr.line_to(12.2 * s, 14.8 * s);
+    let _ = cr.stroke();
+    cr.restore().ok();
+}
+
+fn draw_panel(
+    widget: &gtk::DrawingArea,
+    cr: &cairo::Context,
+    width: i32,
+    height: i32,
+    pixel_size: i32,
+) {
+    let color = widget
+        .parent()
+        .map(|parent| parent.style_context().color())
+        .unwrap_or_else(|| widget.style_context().color());
+    cr.set_source_rgba(
+        f64::from(color.red()),
+        f64::from(color.green()),
+        f64::from(color.blue()),
+        f64::from(color.alpha()),
+    );
+    let size = f64::from(pixel_size);
+    let s = size / 16.0;
+    cr.save().ok();
+    cr.translate(
+        f64::from(width) / 2.0 - 8.0 * s,
+        f64::from(height) / 2.0 - 8.0 * s,
+    );
+    cr.set_line_width(1.5 * s);
+    cr.set_line_cap(cairo::LineCap::Round);
+    cr.set_line_join(cairo::LineJoin::Round);
+    cr.rectangle(2.5 * s, 3.0 * s, 11.0 * s, 10.0 * s);
+    let _ = cr.stroke();
+    cr.move_to(6.5 * s, 3.0 * s);
+    cr.line_to(6.5 * s, 13.0 * s);
     let _ = cr.stroke();
     cr.restore().ok();
 }
@@ -639,6 +687,12 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
         .build();
 
     let header = gtk::HeaderBar::new();
+    let sidebar_toggle = gtk::Button::new();
+    sidebar_toggle.set_child(Some(&panel_icon(16)));
+    sidebar_toggle.set_tooltip_text(Some("Hide sidebar"));
+    sidebar_toggle.add_css_class("flat");
+    sidebar_toggle.add_css_class("sidebar-toggle");
+    header.pack_start(&sidebar_toggle);
     let session_button = sidebar_nav_button(ICON_SESSIONS, "Sessions", "Open sessions (Ctrl+P)");
     let new_button = gtk::Button::new();
     let new_row = gtk::Box::new(gtk::Orientation::Horizontal, 0);
@@ -886,6 +940,8 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
 
     Widgets {
         window,
+        sidebar,
+        sidebar_toggle,
         session_button,
         new_button,
         settings_button,
@@ -1192,6 +1248,17 @@ fn wire_callbacks(controller: &Rc<RefCell<Controller>>) {
         }
         controller.queue_transcript_relayout(false);
     });
+
+    let weak = Rc::downgrade(controller);
+    controller
+        .borrow()
+        .widgets
+        .sidebar_toggle
+        .connect_clicked(move |_| {
+            if let Some(controller) = weak.upgrade() {
+                controller.borrow_mut().toggle_sidebar();
+            }
+        });
 
     let weak = Rc::downgrade(controller);
     controller
@@ -3096,6 +3163,18 @@ impl Controller {
             .context_usage
             .set_tooltip_text(Some(&format!("{used} / {limit} tokens")));
         self.widgets.context_usage.set_visible(true);
+    }
+
+    fn toggle_sidebar(&self) {
+        let visible = !self.widgets.sidebar.is_visible();
+        self.widgets.sidebar.set_visible(visible);
+        self.widgets
+            .sidebar_toggle
+            .set_tooltip_text(Some(if visible {
+                "Hide sidebar"
+            } else {
+                "Show sidebar"
+            }));
     }
 
     fn refresh_attachment_control(&self) {

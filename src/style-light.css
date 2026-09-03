@@ -8,6 +8,11 @@ headerbar {
   border-bottom-color: #d3cfc7;
 }
 
+headerbar button.sidebar-toggle:hover {
+  background: #e4e0d8;
+  background-image: none;
+}
+
 .connection-status {
   color: #6d716f;
 }

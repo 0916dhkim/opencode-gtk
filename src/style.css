@@ -14,6 +14,23 @@ headerbar {
   letter-spacing: 0.02em;
 }
 
+headerbar button.sidebar-toggle {
+  min-width: 28px;
+  min-height: 28px;
+  padding: 0;
+  margin-left: 4px;
+  background: transparent;
+  background-image: none;
+  box-shadow: none;
+  border: none;
+  border-radius: 6px;
+}
+
+headerbar button.sidebar-toggle:hover {
+  background: #22262a;
+  background-image: none;
+}
+
 .connection-status {
   color: #899097;
   font-size: 0.82em;
