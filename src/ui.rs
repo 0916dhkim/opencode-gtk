@@ -3545,10 +3545,11 @@ impl Controller {
         };
         let title = self
             .session(session_id)
-            .map(|session| format!("New output in {}", session.title))
-            .unwrap_or_else(|| "New OpenCode output".to_owned());
+            .map(|session| session.title.clone())
+            .filter(|title| !title.trim().is_empty())
+            .unwrap_or_else(|| "OpenCode".to_owned());
         let notification = gio::Notification::new(&title);
-        notification.set_body(Some("The session is ready for your next prompt."));
+        notification.set_body(Some("opencode session"));
         application.send_notification(
             Some(&session_notification_id(&self.server_key, session_id)),
             &notification,
