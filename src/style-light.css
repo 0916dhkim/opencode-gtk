@@ -270,7 +270,9 @@ button.markdown-code-copy.copied {
 }
 
 .sticky-message {
+  background: #f7f5f1;
   border-bottom-color: #c8c3ba;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
 }
 
 .transcript-status {
