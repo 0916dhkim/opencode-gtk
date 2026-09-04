@@ -780,6 +780,17 @@ impl Conversation {
             .unwrap_or("unknown");
         let index = self.ensure_message(message_id, Role::Assistant);
         let key = format!("tool:{call_id}");
+        let previous_title = self.messages[index]
+            .segments
+            .iter()
+            .find(|segment| segment.key == key)
+            .and_then(|segment| {
+                segment
+                    .text
+                    .split_once(" · ")
+                    .and_then(|(_, rest)| rest.split_once(" — "))
+                    .map(|(_, title)| title.to_owned())
+            });
         let previous_name = self.messages[index]
             .segments
             .iter()
@@ -797,6 +808,11 @@ impl Conversation {
             .map(str::to_owned)
             .or(previous_name)
             .unwrap_or_else(|| "tool".to_owned());
+        let title = tool_title(data)
+            .or(previous_title)
+            .filter(|title| !title.is_empty())
+            .map(|title| format!(" — {title}"))
+            .unwrap_or_default();
         let detail = data
             .get("error")
             .and_then(|error| error_text(Some(error)))
@@ -805,7 +821,7 @@ impl Conversation {
         self.messages[index].upsert_segment(Segment {
             key,
             kind: SegmentKind::Tool,
-            text: format!("{name} · {status}{detail}"),
+            text: format!("{name} · {status}{title}{detail}"),
             image_url: None,
             created: value_time(data),
         });
@@ -942,9 +958,7 @@ fn segment_from_part(part: &Value) -> Option<Segment> {
                 .pointer("/state/status")
                 .and_then(Value::as_str)
                 .unwrap_or("pending");
-            let title = part
-                .pointer("/state/title")
-                .and_then(Value::as_str)
+            let title = tool_title(part)
                 .filter(|title| !title.is_empty())
                 .map(|title| format!(" — {title}"))
                 .unwrap_or_default();
@@ -963,6 +977,74 @@ fn segment_from_part(part: &Value) -> Option<Segment> {
         }
         _ => None,
     }
+}
+
+fn tool_title(part: &Value) -> Option<String> {
+    let raw = part
+        .pointer("/state/title")
+        .or_else(|| part.get("title"))
+        .and_then(Value::as_str)
+        .filter(|t| !t.trim().is_empty())
+        .map(str::to_owned)
+        .or_else(|| {
+            let input = part.pointer("/state/input").or_else(|| part.get("input"))?;
+            let tool = part
+                .get("tool")
+                .or_else(|| part.get("name"))
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            match tool {
+                "bash" => input
+                    .get("command")
+                    .or_else(|| input.get("description"))
+                    .and_then(Value::as_str)
+                    .filter(|c| !c.trim().is_empty())
+                    .map(str::to_owned),
+                "task" => input
+                    .get("description")
+                    .or_else(|| input.get("subagent_type"))
+                    .and_then(Value::as_str)
+                    .filter(|d| !d.trim().is_empty())
+                    .map(str::to_owned),
+                "read" | "write" | "edit" => input
+                    .get("filePath")
+                    .and_then(Value::as_str)
+                    .filter(|p| !p.trim().is_empty())
+                    .map(str::to_owned),
+                "glob" | "grep" => input
+                    .get("pattern")
+                    .and_then(Value::as_str)
+                    .filter(|p| !p.trim().is_empty())
+                    .map(str::to_owned),
+                "webfetch" => input
+                    .get("url")
+                    .and_then(Value::as_str)
+                    .filter(|u| !u.trim().is_empty())
+                    .map(str::to_owned),
+                _ => input
+                    .get("command")
+                    .or_else(|| input.get("description"))
+                    .or_else(|| input.get("filePath"))
+                    .or_else(|| input.get("pattern"))
+                    .or_else(|| input.get("query"))
+                    .or_else(|| input.get("url"))
+                    .and_then(Value::as_str)
+                    .filter(|s| !s.trim().is_empty())
+                    .map(str::to_owned),
+            }
+        })?;
+
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let single_line = trimmed
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    Some(single_line)
 }
 
 fn stream_key(data: &Value, kind: &SegmentKind) -> String {
@@ -1517,5 +1599,25 @@ mod tests {
         assert_eq!(format_context_usage(12_400, 200_000), "12.4k / 200k");
         assert_eq!(format_context_usage(999, 8_192), "999 / 8.2k");
         assert_eq!(format_context_usage(1_500_000, 2_000_000), "1.5m / 2m");
+    }
+
+    #[test]
+    fn running_tool_extracts_command_from_input() {
+        let part = json!({
+            "id": "prt_1",
+            "type": "tool",
+            "tool": "bash",
+            "state": {
+                "status": "running",
+                "input": {
+                    "command": "pnpm exec playwright test e2e/tests/desktop/apps20-ad-resizer.spec.ts"
+                }
+            }
+        });
+        let segment = segment_from_part(&part).expect("valid segment");
+        assert_eq!(
+            segment.text,
+            "bash · running — pnpm exec playwright test e2e/tests/desktop/apps20-ad-resizer.spec.ts"
+        );
     }
 }
