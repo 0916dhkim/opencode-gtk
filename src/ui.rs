@@ -1511,14 +1511,27 @@ fn wire_callbacks(controller: &Rc<RefCell<Controller>>) {
         }
     });
     let weak = Rc::downgrade(controller);
-    transcript_adjustment.connect_changed(move |adjustment| {
+    transcript_adjustment.connect_upper_notify(move |adjustment| {
         let Some(controller) = weak.upgrade() else {
             return;
         };
         let Ok(mut controller) = controller.try_borrow_mut() else {
             return;
         };
-        if controller.transcript_at_bottom && distance_from_bottom(adjustment) > 40.0 {
+        if controller.transcript_at_bottom {
+            scroll_adjustment_to_bottom(adjustment);
+        }
+        controller.queue_transcript_relayout(false);
+    });
+    let weak = Rc::downgrade(controller);
+    transcript_adjustment.connect_page_size_notify(move |adjustment| {
+        let Some(controller) = weak.upgrade() else {
+            return;
+        };
+        let Ok(mut controller) = controller.try_borrow_mut() else {
+            return;
+        };
+        if controller.transcript_at_bottom {
             scroll_adjustment_to_bottom(adjustment);
         }
         controller.queue_transcript_relayout(false);
@@ -3978,15 +3991,18 @@ impl Controller {
         self.transcript_layout_width = width;
         let adjustment = self.widgets.transcript_scroll.vadjustment();
         let page = adjustment.page_size();
+        let (curr_start, curr_end) = visible_row_range(
+            &self.transcript_heights,
+            adjustment.value(),
+            page,
+            ROW_OVERSCAN,
+        );
         let (start, mut end) = if self.transcript_at_bottom {
-            visible_row_range_from_end(&self.transcript_heights, page, ROW_OVERSCAN)
+            let (end_start, end_end) =
+                visible_row_range_from_end(&self.transcript_heights, page, ROW_OVERSCAN);
+            (end_start.min(curr_start), end_end.max(curr_end))
         } else {
-            visible_row_range(
-                &self.transcript_heights,
-                adjustment.value(),
-                page,
-                ROW_OVERSCAN,
-            )
+            (curr_start, curr_end)
         };
         end = end.max(min_visible_end(start, self.transcript_heights.len(), page));
         self.sync_visible_rows(start, end);
