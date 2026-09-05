@@ -1510,32 +1510,6 @@ fn wire_callbacks(controller: &Rc<RefCell<Controller>>) {
             controller.queue_transcript_relayout(false);
         }
     });
-    let weak = Rc::downgrade(controller);
-    transcript_adjustment.connect_upper_notify(move |adjustment| {
-        let Some(controller) = weak.upgrade() else {
-            return;
-        };
-        let Ok(mut controller) = controller.try_borrow_mut() else {
-            return;
-        };
-        if controller.transcript_at_bottom {
-            scroll_adjustment_to_bottom(adjustment);
-        }
-        controller.queue_transcript_relayout(false);
-    });
-    let weak = Rc::downgrade(controller);
-    transcript_adjustment.connect_page_size_notify(move |adjustment| {
-        let Some(controller) = weak.upgrade() else {
-            return;
-        };
-        let Ok(mut controller) = controller.try_borrow_mut() else {
-            return;
-        };
-        if controller.transcript_at_bottom {
-            scroll_adjustment_to_bottom(adjustment);
-        }
-        controller.queue_transcript_relayout(false);
-    });
 
     let weak = Rc::downgrade(controller);
     controller
