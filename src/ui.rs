@@ -138,7 +138,6 @@ struct Widgets {
     status: gtk::Label,
     session_header_bar: gtk::Box,
     session_header_title: gtk::Label,
-    session_rename_btn: gtk::Button,
     tab_bar: gtk::Box,
     transcript: gtk::Box,
     transcript_spacer: gtk::Box,
@@ -1013,15 +1012,9 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
     session_header_hint.set_xalign(1.0);
     session_header_hint.set_valign(gtk::Align::Center);
 
-    let session_rename_btn = icon_button(ICON_EDIT, 14);
-    session_rename_btn.add_css_class("ghost-button");
-    session_rename_btn.add_css_class("session-header-action");
-    session_rename_btn.set_tooltip_text(Some("Rename session (F2)"));
-
     session_header_bar.append(&session_header_dot);
     session_header_bar.append(&session_header_title);
     session_header_bar.append(&session_header_hint);
-    session_header_bar.append(&session_rename_btn);
 
     let conversation = gtk::Box::new(gtk::Orientation::Vertical, 0);
     conversation.set_vexpand(true);
@@ -1220,7 +1213,6 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
         status,
         session_header_bar,
         session_header_title,
-        session_rename_btn,
         tab_bar,
         transcript,
         transcript_spacer,
@@ -1555,17 +1547,6 @@ fn wire_callbacks(controller: &Rc<RefCell<Controller>>) {
         .connect_clicked(move |_| {
             if let Some(controller) = weak.upgrade() {
                 controller.borrow_mut().toggle_sidebar();
-            }
-        });
-
-    let weak = Rc::downgrade(controller);
-    controller
-        .borrow()
-        .widgets
-        .session_rename_btn
-        .connect_clicked(move |_| {
-            if let Some(controller) = weak.upgrade() {
-                Controller::rename_active_session(&controller);
             }
         });
 
