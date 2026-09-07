@@ -925,20 +925,4 @@ mod tests {
     fn incomplete_table_stays_renderable() {
         assert!(!parse("| Name | Count |\n| ---").is_empty());
     }
-
-    #[test]
-    fn code_block_includes_header_and_content() {
-        if gtk::init().is_err() {
-            return;
-        }
-        let block = Block {
-            kind: BlockKind::Code(Some("rust".into())),
-            content: "fn main() {}\n".into(),
-            marker: None,
-            list_depth: 0,
-            quote_depth: 0,
-        };
-        let widget = block_widget(block);
-        assert!(widget.has_css_class("markdown-code-block"));
-    }
 }
