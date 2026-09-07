@@ -5321,11 +5321,12 @@ impl Controller {
         let scroll = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
             .vscrollbar_policy(gtk::PolicyType::Automatic)
-            .propagate_natural_height(true)
-            .min_content_height(220)
-            .max_content_height(420)
+            .propagate_natural_height(false)
+            .min_content_height(264)
+            .vexpand(true)
             .child(&list)
             .build();
+        root.set_vexpand(true);
         root.append(&search);
         root.append(&scroll);
 
@@ -5346,7 +5347,7 @@ impl Controller {
         });
         {
             let mut this = controller.borrow_mut();
-            this.open_app_modal(AppModalKind::Sessions, 420);
+            this.open_app_modal(AppModalKind::Sessions, 420, 310);
             populate_session_list(&list, &this.state.sessions, "", Rc::downgrade(controller));
             this.widgets.app_modal_card.append(&root);
             this.app_modal_focus = Some(search.clone().upcast());
@@ -5575,7 +5576,7 @@ impl Controller {
         root.add_controller(settings_shortcuts);
         {
             let mut this = controller.borrow_mut();
-            this.open_app_modal(AppModalKind::Settings, 520);
+            this.open_app_modal(AppModalKind::Settings, 520, -1);
             this.widgets.window.set_default_widget(Some(&apply));
             this.widgets.app_modal_card.append(&root);
             this.app_modal_focus = Some(server.clone().upcast());
@@ -5847,11 +5848,11 @@ impl Controller {
         self.widgets.composer.grab_focus();
     }
 
-    fn open_app_modal(&mut self, kind: AppModalKind, width: i32) {
+    fn open_app_modal(&mut self, kind: AppModalKind, width: i32, height: i32) {
         self.close_new_session_overlay();
         clear_box(&self.widgets.app_modal_card);
         self.widgets.app_modal_card.set_sensitive(true);
-        self.widgets.app_modal_card.set_size_request(width, -1);
+        self.widgets.app_modal_card.set_size_request(width, height);
         self.widgets.app_modal_overlay.set_visible(true);
         self.app_modal = Some(kind);
         self.app_modal_focus = None;
@@ -5968,7 +5969,7 @@ impl Controller {
         });
         {
             let mut this = controller.borrow_mut();
-            this.open_app_modal(AppModalKind::Rename, 350);
+            this.open_app_modal(AppModalKind::Rename, 350, -1);
             this.widgets.window.set_default_widget(Some(&save));
             this.widgets.app_modal_card.append(&root);
             this.app_modal_focus = Some(title.clone().upcast());
