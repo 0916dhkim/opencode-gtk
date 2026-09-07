@@ -137,6 +137,7 @@ struct Widgets {
     settings_button: gtk::Button,
     status: gtk::Label,
     session_header_bar: gtk::Box,
+    session_header_status: gtk::Box,
     session_header_title: gtk::Label,
     tab_bar: gtk::Box,
     transcript: gtk::Box,
@@ -997,9 +998,10 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
     session_header_bar.add_css_class("session-header-bar");
     session_header_bar.set_visible(false);
 
-    let session_header_dot = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-    session_header_dot.add_css_class("session-header-dot");
-    session_header_dot.set_valign(gtk::Align::Center);
+    let session_header_status = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    session_header_status.set_size_request(14, 14);
+    session_header_status.set_halign(gtk::Align::Center);
+    session_header_status.set_valign(gtk::Align::Center);
 
     let session_header_title = gtk::Label::new(Some("OpenCode"));
     session_header_title.add_css_class("session-header-title");
@@ -1012,7 +1014,7 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
     session_header_hint.set_xalign(1.0);
     session_header_hint.set_valign(gtk::Align::Center);
 
-    session_header_bar.append(&session_header_dot);
+    session_header_bar.append(&session_header_status);
     session_header_bar.append(&session_header_title);
     session_header_bar.append(&session_header_hint);
 
@@ -1212,6 +1214,7 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
         settings_button,
         status,
         session_header_bar,
+        session_header_status,
         session_header_title,
         tab_bar,
         transcript,
@@ -3753,10 +3756,8 @@ impl Controller {
         let visible = !self.widgets.sidebar.is_visible();
         self.widgets.session_header_bar.set_visible(visible);
         if visible {
-            let active_title = self
-                .state
-                .active
-                .as_ref()
+            let active_id = self.state.active.as_deref();
+            let active_title = active_id
                 .and_then(|id| self.session(id))
                 .map(|session| session.title.trim())
                 .filter(|title| !title.is_empty())
@@ -3765,6 +3766,44 @@ impl Controller {
             self.widgets
                 .session_header_title
                 .set_tooltip_text(Some(active_title));
+
+            let busy = active_id.is_some_and(|id| {
+                self.state
+                    .statuses
+                    .get(id)
+                    .is_some_and(|status| status.is_busy())
+            });
+            let unread = active_id.is_some_and(|id| self.state.unread.contains(id));
+
+            clear_box(&self.widgets.session_header_status);
+            let status_widget = if busy {
+                let spinner = gtk::Spinner::new();
+                spinner.set_size_request(14, 14);
+                spinner.start();
+                spinner.upcast::<gtk::Widget>()
+            } else {
+                let dot = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+                dot.set_size_request(14, 14);
+                dot.upcast::<gtk::Widget>()
+            };
+            status_widget.add_css_class("session-tab-status");
+            status_widget.add_css_class(if busy {
+                "busy"
+            } else if unread {
+                "unread"
+            } else {
+                "idle"
+            });
+            status_widget.set_halign(gtk::Align::Center);
+            status_widget.set_valign(gtk::Align::Center);
+            status_widget.set_tooltip_text(Some(if busy {
+                "Session is working"
+            } else if unread {
+                "Session has unread output"
+            } else {
+                "Session is idle"
+            }));
+            self.widgets.session_header_status.append(&status_widget);
         }
     }
 

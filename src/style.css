@@ -43,14 +43,6 @@ headerbar button.sidebar-toggle:hover {
   border-bottom: 1px solid #23272c;
 }
 
-.session-header-dot {
-  min-width: 6px;
-  min-height: 6px;
-  border-radius: 999px;
-  background: #8b949e;
-  margin-right: 2px;
-}
-
 .session-header-title {
   font-size: 0.9em;
   font-weight: 600;
