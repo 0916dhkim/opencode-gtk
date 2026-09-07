@@ -1984,7 +1984,6 @@ fn wire_callbacks(controller: &Rc<RefCell<Controller>>) {
         }
         if key == gdk::Key::Escape && modifiers.is_empty() {
             Controller::acknowledge_active_unread(&controller);
-            controller.borrow().widgets.composer.grab_focus();
             return glib::Propagation::Stop;
         }
         let alt = modifiers.contains(gdk::ModifierType::ALT_MASK)
@@ -2009,6 +2008,10 @@ fn wire_callbacks(controller: &Rc<RefCell<Controller>>) {
             }
             gdk::Key::slash | gdk::Key::KP_Divide => {
                 Controller::show_variant_picker(&controller);
+            }
+            gdk::Key::g | gdk::Key::G => {
+                controller.borrow().widgets.composer.grab_focus();
+                return glib::Propagation::Stop;
             }
             gdk::Key::comma => Controller::show_settings(&controller),
             gdk::Key::p => Controller::show_session_picker(&controller),
