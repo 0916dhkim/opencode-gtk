@@ -168,6 +168,7 @@ struct Widgets {
     variant_list: gtk::ListBox,
     variant_filtered_indices: Rc<RefCell<Vec<usize>>>,
     new_session_overlay: gtk::Box,
+    new_session_card: gtk::Box,
     new_session_search: gtk::Entry,
     new_session_list: gtk::ListBox,
     new_session_filtered_paths: Rc<RefCell<Vec<String>>>,
@@ -1301,6 +1302,7 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
         variant_list,
         variant_filtered_indices,
         new_session_overlay,
+        new_session_card: modal_card,
         new_session_search,
         new_session_list,
         new_session_filtered_paths,
@@ -1648,6 +1650,26 @@ fn wire_callbacks(controller: &Rc<RefCell<Controller>>) {
                 Controller::show_new_session(&controller);
             }
         });
+
+    let weak = Rc::downgrade(controller);
+    let backdrop_click = gtk::GestureClick::new();
+    backdrop_click.set_button(1);
+    backdrop_click.connect_pressed(move |_, _, x, y| {
+        if let Some(controller) = weak.upgrade() {
+            let this = controller.borrow();
+            let overlay = this.widgets.new_session_overlay.clone();
+            let card = this.widgets.new_session_card.clone();
+            drop(this);
+            if !pointer_hits_widget(&card, &overlay, x, y) {
+                controller.borrow().close_new_session_overlay();
+            }
+        }
+    });
+    controller
+        .borrow()
+        .widgets
+        .new_session_overlay
+        .add_controller(backdrop_click);
 
     let weak = Rc::downgrade(controller);
     controller
