@@ -1215,6 +1215,7 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
 
     let modal_card = gtk::Box::new(gtk::Orientation::Vertical, 0);
     modal_card.add_css_class("new-session-palette");
+    modal_card.set_overflow(gtk::Overflow::Hidden);
     modal_card.set_halign(gtk::Align::Center);
     modal_card.set_valign(gtk::Align::Center);
     modal_card.set_size_request(350, -1);

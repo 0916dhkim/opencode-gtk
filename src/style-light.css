@@ -48,9 +48,8 @@ headerbar button.sidebar-toggle:hover {
 .new-session-palette {
   background: #fbf9f4;
   border: 1px solid #d0ccc4;
-  border-radius: 10px;
+  border-radius: 12px;
   box-shadow: 0 20px 48px rgba(0, 0, 0, 0.2);
-  overflow: hidden;
 }
 
 .new-session-search {
@@ -60,7 +59,10 @@ headerbar button.sidebar-toggle:hover {
   border-top: none;
   border-left: none;
   border-right: none;
-  border-radius: 0;
+  border-top-left-radius: 11px;
+  border-top-right-radius: 11px;
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
   box-shadow: none;
   font-size: 13px;
   font-weight: 500;
