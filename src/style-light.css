@@ -42,7 +42,7 @@ headerbar button.sidebar-toggle:hover {
 }
 
 .modal-backdrop {
-  background: rgba(0, 0, 0, 0.35);
+  background-color: rgba(0, 0, 0, 0.4);
 }
 
 .new-session-palette {

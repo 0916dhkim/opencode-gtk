@@ -1239,13 +1239,25 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
     modal_card.append(&new_session_search);
     modal_card.append(&new_session_scroll);
 
+    let top_spacer = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    top_spacer.set_vexpand(true);
+    top_spacer.set_can_target(false);
+
+    let bottom_spacer = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    bottom_spacer.set_vexpand(true);
+    bottom_spacer.set_can_target(false);
+
+    new_session_overlay.append(&top_spacer);
     new_session_overlay.append(&modal_card);
+    new_session_overlay.append(&bottom_spacer);
 
     let new_session_filtered_paths = Rc::new(RefCell::new(Vec::new()));
 
     let window_overlay = gtk::Overlay::new();
     window_overlay.set_child(Some(&root));
     window_overlay.add_overlay(&new_session_overlay);
+    window_overlay.set_measure_overlay(&new_session_overlay, false);
+    window_overlay.set_clip_overlay(&new_session_overlay, false);
     window.set_child(Some(&window_overlay));
 
     Widgets {
