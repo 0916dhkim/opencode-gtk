@@ -36,6 +36,40 @@ headerbar button.sidebar-toggle:hover {
   font-size: 0.82em;
 }
 
+.session-header-bar {
+  padding: 5px 28px;
+  min-height: 34px;
+  background: #131619;
+  border-bottom: 1px solid #23272c;
+}
+
+.session-header-dot {
+  min-width: 6px;
+  min-height: 6px;
+  border-radius: 999px;
+  background: #8b949e;
+  margin-right: 2px;
+}
+
+.session-header-title {
+  font-size: 0.9em;
+  font-weight: 600;
+  color: #f0ede7;
+}
+
+.session-header-hint {
+  font-size: 0.8em;
+  color: #6a7279;
+  margin-right: 4px;
+}
+
+.session-header-action {
+  min-width: 24px;
+  min-height: 24px;
+  padding: 0;
+  border-radius: 4px;
+}
+
 .connection-status.error,
 .error {
   color: #e68178;

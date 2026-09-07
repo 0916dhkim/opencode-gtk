@@ -136,6 +136,9 @@ struct Widgets {
     new_button: gtk::Button,
     settings_button: gtk::Button,
     status: gtk::Label,
+    session_header_bar: gtk::Box,
+    session_header_title: gtk::Label,
+    session_rename_btn: gtk::Button,
     tab_bar: gtk::Box,
     transcript: gtk::Box,
     transcript_spacer: gtk::Box,
@@ -991,8 +994,38 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
     overlay.set_child(Some(&transcript_scroll));
     overlay.add_overlay(&sticky_message);
 
+    let session_header_bar = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    session_header_bar.add_css_class("session-header-bar");
+    session_header_bar.set_visible(false);
+
+    let session_header_dot = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    session_header_dot.add_css_class("session-header-dot");
+    session_header_dot.set_valign(gtk::Align::Center);
+
+    let session_header_title = gtk::Label::new(Some("OpenCode"));
+    session_header_title.add_css_class("session-header-title");
+    session_header_title.set_xalign(0.0);
+    session_header_title.set_hexpand(true);
+    session_header_title.set_ellipsize(pango::EllipsizeMode::End);
+
+    let session_header_hint = gtk::Label::new(Some("Ctrl+P to switch"));
+    session_header_hint.add_css_class("session-header-hint");
+    session_header_hint.set_xalign(1.0);
+    session_header_hint.set_valign(gtk::Align::Center);
+
+    let session_rename_btn = icon_button(ICON_EDIT, 14);
+    session_rename_btn.add_css_class("ghost-button");
+    session_rename_btn.add_css_class("session-header-action");
+    session_rename_btn.set_tooltip_text(Some("Rename session (F2)"));
+
+    session_header_bar.append(&session_header_dot);
+    session_header_bar.append(&session_header_title);
+    session_header_bar.append(&session_header_hint);
+    session_header_bar.append(&session_rename_btn);
+
     let conversation = gtk::Box::new(gtk::Orientation::Vertical, 0);
     conversation.set_vexpand(true);
+    conversation.append(&session_header_bar);
     conversation.append(&load_earlier);
     conversation.append(&overlay);
     conversation.append(&transcript_status);
@@ -1185,6 +1218,9 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
         new_button,
         settings_button,
         status,
+        session_header_bar,
+        session_header_title,
+        session_rename_btn,
         tab_bar,
         transcript,
         transcript_spacer,
@@ -1521,6 +1557,31 @@ fn wire_callbacks(controller: &Rc<RefCell<Controller>>) {
                 controller.borrow_mut().toggle_sidebar();
             }
         });
+
+    let weak = Rc::downgrade(controller);
+    controller
+        .borrow()
+        .widgets
+        .session_rename_btn
+        .connect_clicked(move |_| {
+            if let Some(controller) = weak.upgrade() {
+                Controller::rename_active_session(&controller);
+            }
+        });
+
+    let weak = Rc::downgrade(controller);
+    let header_click = gtk::GestureClick::new();
+    header_click.set_button(1);
+    header_click.connect_released(move |_, _, _, _| {
+        if let Some(controller) = weak.upgrade() {
+            Controller::show_session_picker(&controller);
+        }
+    });
+    controller
+        .borrow()
+        .widgets
+        .session_header_bar
+        .add_controller(header_click);
 
     let weak = Rc::downgrade(controller);
     controller
@@ -3207,6 +3268,7 @@ impl Controller {
             tab.add_controller(drop_target);
             self.widgets.tab_bar.append(&tab);
         }
+        self.refresh_session_header();
     }
 
     fn open_tab(controller: &Rc<RefCell<Self>>, id: &str) {
@@ -3703,6 +3765,26 @@ impl Controller {
             } else {
                 "Show sidebar (Ctrl+B)"
             }));
+        self.refresh_session_header();
+    }
+
+    fn refresh_session_header(&self) {
+        let visible = !self.widgets.sidebar.is_visible();
+        self.widgets.session_header_bar.set_visible(visible);
+        if visible {
+            let active_title = self
+                .state
+                .active
+                .as_ref()
+                .and_then(|id| self.session(id))
+                .map(|session| session.title.trim())
+                .filter(|title| !title.is_empty())
+                .unwrap_or("OpenCode");
+            self.widgets.session_header_title.set_label(active_title);
+            self.widgets
+                .session_header_title
+                .set_tooltip_text(Some(active_title));
+        }
     }
 
     fn refresh_attachment_control(&self) {
