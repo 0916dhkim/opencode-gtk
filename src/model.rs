@@ -76,10 +76,29 @@ pub struct ModelCatalog {
 
 impl ModelCatalog {
     pub fn from_values(providers: &Value, config: &Value) -> Self {
+        let configured_variant = config
+            .get("agent")
+            .and_then(|a| a.get("build"))
+            .and_then(|b| b.get("variant"))
+            .and_then(Value::as_str)
+            .map(str::to_owned);
         let configured = config
             .get("model")
             .and_then(Value::as_str)
-            .and_then(split_model_id);
+            .or_else(|| {
+                config
+                    .get("agent")
+                    .and_then(|a| a.get("build"))
+                    .and_then(|b| b.get("model"))
+                    .and_then(Value::as_str)
+            })
+            .and_then(split_model_id)
+            .map(|mut selection| {
+                if selection.variant.is_none() {
+                    selection.variant = configured_variant.clone();
+                }
+                selection
+            });
         let defaults = providers.get("default").and_then(Value::as_object);
         let mut models = Vec::new();
 
@@ -154,7 +173,7 @@ impl ModelCatalog {
                         let selection = ModelSelection {
                             provider_id: provider_id.to_owned(),
                             model_id: model_id.to_owned(),
-                            variant: None,
+                            variant: configured_variant.clone(),
                         };
                         contains_model(&models, &selection).then_some(selection)
                     })
@@ -163,7 +182,7 @@ impl ModelCatalog {
                 models.first().map(|model| ModelSelection {
                     provider_id: model.provider_id.clone(),
                     model_id: model.model_id.clone(),
-                    variant: None,
+                    variant: configured_variant.clone(),
                 })
             });
 
@@ -1240,6 +1259,40 @@ mod tests {
                 provider_id: "openai".into(),
                 model_id: "gpt-5.6".into(),
                 variant: None,
+            })
+        );
+    }
+
+    #[test]
+    fn catalog_prefers_build_agent_model_and_variant() {
+        let providers = json!({
+            "providers": [{
+                "id": "openrouter",
+                "name": "OpenRouter",
+                "models": {
+                    "google/gemini-3.8-flash": {
+                        "id": "google/gemini-3.8-flash",
+                        "name": "Gemini 3.8 Flash",
+                        "variants": { "high": {}, "low": {} }
+                    }
+                }
+            }]
+        });
+        let config = json!({
+            "agent": {
+                "build": {
+                    "model": "openrouter/google/gemini-3.8-flash",
+                    "variant": "high"
+                }
+            }
+        });
+        let catalog = ModelCatalog::from_values(&providers, &config);
+        assert_eq!(
+            catalog.preferred,
+            Some(ModelSelection {
+                provider_id: "openrouter".into(),
+                model_id: "google/gemini-3.8-flash".into(),
+                variant: Some("high".into()),
             })
         );
     }
