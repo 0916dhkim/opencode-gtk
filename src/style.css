@@ -712,13 +712,13 @@ popover.model-picker-popover {
 popover.background.model-picker-popover > arrow,
 popover.background.model-picker-popover > contents {
   background-color: #171a1d;
-  background-clip: padding-box;
-  border: 1px solid #30353a;
+  background-clip: border-box;
+  border: none;
 }
 
 popover.background.model-picker-popover > contents {
   border-radius: 10px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  box-shadow: 0 0 0 1px #30353a, 0 8px 24px rgba(0, 0, 0, 0.45);
   padding: 6px;
 }
 
