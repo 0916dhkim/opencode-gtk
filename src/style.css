@@ -439,6 +439,10 @@ button.markdown-code-copy.copied {
   border-right: none;
 }
 
+.markdown-table-row-last {
+  border-bottom: none;
+}
+
 .message-content link {
   color: #e0a75e;
 }

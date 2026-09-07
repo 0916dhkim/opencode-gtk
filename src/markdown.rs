@@ -490,13 +490,37 @@ fn table_widget(table: TableBlock) -> gtk::Widget {
     grid.add_css_class("markdown-table");
     grid.set_column_spacing(0);
     grid.set_row_spacing(0);
+    let total_rows = if table.header.is_empty() {
+        table.rows.len()
+    } else {
+        table.rows.len() + 1
+    };
     let mut row_index = 0;
     if !table.header.is_empty() {
-        attach_table_row(&grid, &table.header, &table.alignments, columns, 0, true);
+        let is_last = total_rows == 1;
+        attach_table_row(
+            &grid,
+            &table.header,
+            &table.alignments,
+            columns,
+            0,
+            true,
+            is_last,
+        );
         row_index = 1;
     }
-    for row in table.rows {
-        attach_table_row(&grid, &row, &table.alignments, columns, row_index, false);
+    let rows_len = table.rows.len();
+    for (i, row) in table.rows.into_iter().enumerate() {
+        let is_last = i + 1 == rows_len;
+        attach_table_row(
+            &grid,
+            &row,
+            &table.alignments,
+            columns,
+            row_index,
+            false,
+            is_last,
+        );
         row_index += 1;
     }
     let scroll = gtk::ScrolledWindow::builder()
@@ -504,9 +528,9 @@ fn table_widget(table: TableBlock) -> gtk::Widget {
         .vscrollbar_policy(gtk::PolicyType::Never)
         .overlay_scrolling(false)
         .propagate_natural_height(true)
-        .propagate_natural_width(false)
-        .hexpand(true)
-        .halign(gtk::Align::Fill)
+        .propagate_natural_width(true)
+        .hexpand(false)
+        .halign(gtk::Align::Start)
         .child(&grid)
         .build();
     scroll.add_css_class("markdown-table-scroll");
@@ -520,6 +544,7 @@ fn attach_table_row(
     columns: usize,
     row: i32,
     header: bool,
+    is_last: bool,
 ) {
     for column in 0..columns {
         let markup = cells.get(column).map(String::as_str).unwrap_or("");
@@ -538,6 +563,9 @@ fn attach_table_row(
         ));
         if column + 1 == columns {
             label.add_css_class("markdown-table-last");
+        }
+        if is_last {
+            label.add_css_class("markdown-table-row-last");
         }
         grid.attach(&label, column as i32, row, 1, 1);
     }

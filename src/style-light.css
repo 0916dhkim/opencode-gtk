@@ -271,6 +271,10 @@ button.markdown-code-copy.copied {
   background: #eeece7;
 }
 
+.markdown-table-row-last {
+  border-bottom: none;
+}
+
 .message-content link {
   color: #8f5d1c;
 }
