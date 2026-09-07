@@ -7451,6 +7451,109 @@ fn system_theme_is_dark(mode: dark_light::Mode, theme_name: &str, prefer_dark: b
 mod tests {
     use super::*;
 
+    fn gtk_debug_init() {
+        std::env::set_var("GTK_A11Y", "none");
+        std::env::set_var("GSK_RENDERER", "cairo");
+        assert!(
+            gtk::init().is_ok(),
+            "gtk::init failed; run with DISPLAY (Xvfb :99) and cargo test -- --ignored"
+        );
+        let provider = gtk::CssProvider::new();
+        provider.load_from_data(include_str!("style.css"));
+        let display = gdk::Display::default().expect("gdk display");
+        gtk::style_context_add_provider_for_display(
+            &display,
+            &provider,
+            gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+        );
+    }
+
+    fn pump_until_allocated(widget: &impl IsA<gtk::Widget>) {
+        let context = glib::MainContext::default();
+        for _ in 0..200 {
+            while context.iteration(false) {}
+            if widget.width() > 0 && widget.height() > 0 {
+                return;
+            }
+            context.iteration(true);
+        }
+        panic!(
+            "widget never allocated ({}x{})",
+            widget.width(),
+            widget.height()
+        );
+    }
+
+    fn sessions_overlay_card() -> (gtk::Window, gtk::Box, gtk::ListBox) {
+        let card = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        card.add_css_class("app-modal-palette");
+        card.add_css_class("sessions");
+        card.set_overflow(gtk::Overflow::Hidden);
+        card.set_hexpand(false);
+        card.set_vexpand(false);
+        card.set_halign(gtk::Align::Center);
+        card.set_valign(gtk::Align::Center);
+        card.set_size_request(420, 310);
+        let (root, list, _) = sessions_picker_body();
+        card.append(&root);
+        let window = gtk::Window::new();
+        window.set_decorated(false);
+        window.set_default_size(800, 600);
+        window.set_child(Some(&card));
+        (window, card, list)
+    }
+
+    fn fill_session_rows(list: &gtk::ListBox, count: usize) {
+        while let Some(child) = list.first_child() {
+            list.remove(&child);
+        }
+        for index in 0..count {
+            let button = gtk::Button::new();
+            button.add_css_class("session-picker-row");
+            let labels = gtk::Box::new(gtk::Orientation::Vertical, 3);
+            let title = gtk::Label::new(Some(&format!("Session {index}")));
+            title.set_xalign(0.0);
+            title.add_css_class("session-picker-title");
+            let path = gtk::Label::new(Some("/tmp/project"));
+            path.set_xalign(0.0);
+            path.add_css_class("session-picker-path");
+            let time = gtk::Label::new(Some("2026-09-07 13:16"));
+            time.set_xalign(0.0);
+            time.add_css_class("session-picker-time");
+            labels.append(&title);
+            labels.append(&path);
+            labels.append(&time);
+            button.set_child(Some(&labels));
+            list.append(&button);
+        }
+    }
+
+    #[test]
+    #[ignore]
+    fn debug_sessions_overlay_allocated_size() {
+        gtk_debug_init();
+        let (window, card, list) = sessions_overlay_card();
+        fill_session_rows(&list, 1);
+        window.present();
+        pump_until_allocated(&card);
+        let few = (card.width(), card.height());
+        fill_session_rows(&list, 20);
+        card.queue_resize();
+        pump_until_allocated(&card);
+        let many = (card.width(), card.height());
+        window.close();
+        assert_eq!(
+            few, many,
+            "allocated size changed with row count: {few:?} vs {many:?}"
+        );
+        assert_eq!(few.0, 420);
+        assert!(
+            few.1 >= 310,
+            "allocated height {} is shorter than 310",
+            few.1
+        );
+    }
+
     fn config_with_cloudflare() -> ApiConfig {
         ApiConfig {
             base_url: "https://opencode.example.com".into(),
