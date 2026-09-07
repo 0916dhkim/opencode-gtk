@@ -3730,25 +3730,7 @@ impl Controller {
             self.refresh_context_usage();
             return;
         }
-        let session_selection = self
-            .session(&active)
-            .and_then(Session::model_selection)
-            .filter(|selection| catalog.find(selection).is_some());
-        let selection = self
-            .state
-            .selections
-            .get(&active)
-            .filter(|selection| catalog.find(selection).is_some())
-            .cloned()
-            .or(session_selection)
-            .or(catalog.preferred)
-            .or_else(|| {
-                self.current_models.first().map(|model| ModelSelection {
-                    provider_id: model.provider_id.clone(),
-                    model_id: model.model_id.clone(),
-                    variant: None,
-                })
-            });
+        let selection = self.current_model_selection_for_active();
         if let Some(selection) = selection {
             let index = self
                 .current_models
@@ -3782,13 +3764,32 @@ impl Controller {
         self.refresh_context_usage();
     }
 
+    fn current_model_selection_for_active(&self) -> Option<ModelSelection> {
+        let active = self.state.active.as_deref()?;
+        let session = self.session(active);
+        let directory = session.map(|s| s.directory.as_str()).unwrap_or("");
+        let catalog = self.state.catalogs.get(directory)?;
+        let session_selection = session
+            .and_then(Session::model_selection)
+            .filter(|selection| catalog.find(selection).is_some());
+        self.state
+            .selections
+            .get(active)
+            .filter(|selection| catalog.find(selection).is_some())
+            .cloned()
+            .or(session_selection)
+            .or_else(|| catalog.preferred.clone())
+            .or_else(|| {
+                self.current_models.first().map(|model| ModelSelection {
+                    provider_id: model.provider_id.clone(),
+                    model_id: model.model_id.clone(),
+                    variant: None,
+                })
+            })
+    }
+
     fn refresh_variant_control(&mut self) {
-        let selection = self
-            .state
-            .active
-            .as_ref()
-            .and_then(|active| self.state.selections.get(active))
-            .cloned();
+        let selection = self.current_model_selection_for_active();
         let model = selection.as_ref().and_then(|selection| {
             self.current_models.iter().find(|model| {
                 model.provider_id == selection.provider_id && model.model_id == selection.model_id
@@ -4831,8 +4832,7 @@ impl Controller {
     fn filter_model_list(controller: &Rc<RefCell<Self>>, query: &str) {
         let (current_models, active_selection, list, filtered_indices) = {
             let this = controller.borrow();
-            let active = this.state.active.clone();
-            let selection = active.and_then(|a| this.state.selections.get(&a).cloned());
+            let selection = this.current_model_selection_for_active();
             (
                 this.current_models.clone(),
                 selection,
@@ -5017,8 +5017,7 @@ impl Controller {
     fn filter_variant_list(controller: &Rc<RefCell<Self>>, query: &str) {
         let (current_variants, active_selection, list, filtered_indices) = {
             let this = controller.borrow();
-            let active = this.state.active.clone();
-            let selection = active.and_then(|a| this.state.selections.get(&a).cloned());
+            let selection = this.current_model_selection_for_active();
             (
                 this.current_variants.clone(),
                 selection,
@@ -5156,6 +5155,9 @@ impl Controller {
             let variant = this.current_variants.get(index).cloned().flatten();
             if let Some(selection) = this.state.selections.get_mut(&active) {
                 selection.variant = variant;
+            } else if let Some(mut selection) = this.current_model_selection_for_active() {
+                selection.variant = variant;
+                this.state.selections.insert(active.clone(), selection);
             }
             active
         };
