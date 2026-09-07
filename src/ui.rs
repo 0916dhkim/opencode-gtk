@@ -6552,6 +6552,7 @@ fn sessions_picker_body() -> (gtk::Box, gtk::ListBox, gtk::Entry) {
     let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
     let search = gtk::Entry::new();
     search.set_placeholder_text(Some("Search sessions..."));
+    search.set_hexpand(true);
     search.add_css_class("new-session-search");
     let list = gtk::ListBox::new();
     list.set_selection_mode(gtk::SelectionMode::None);
@@ -6561,6 +6562,8 @@ fn sessions_picker_body() -> (gtk::Box, gtk::ListBox, gtk::Entry) {
         .vscrollbar_policy(gtk::PolicyType::Automatic)
         .propagate_natural_height(false)
         .propagate_natural_width(false)
+        .min_content_width(420)
+        .max_content_width(420)
         .min_content_height(264)
         .max_content_height(264)
         .vexpand(true)
@@ -6601,9 +6604,12 @@ fn populate_session_list(
         let labels = gtk::Box::new(gtk::Orientation::Vertical, 3);
         let title = gtk::Label::new(Some(&session.title));
         title.set_xalign(0.0);
+        title.set_hexpand(true);
+        title.set_ellipsize(pango::EllipsizeMode::End);
         title.add_css_class("session-picker-title");
         let path = gtk::Label::new(Some(&session.directory));
         path.set_xalign(0.0);
+        path.set_hexpand(true);
         path.set_ellipsize(pango::EllipsizeMode::Middle);
         path.add_css_class("session-picker-path");
         let time = gtk::Label::new(Some(&format_local_timestamp(session.time.updated)));
@@ -7503,19 +7509,23 @@ mod tests {
         (window, card, list)
     }
 
-    fn fill_session_rows(list: &gtk::ListBox, count: usize) {
+    fn fill_session_rows(list: &gtk::ListBox, titles: &[&str]) {
         while let Some(child) = list.first_child() {
             list.remove(&child);
         }
-        for index in 0..count {
+        for title_text in titles {
             let button = gtk::Button::new();
             button.add_css_class("session-picker-row");
             let labels = gtk::Box::new(gtk::Orientation::Vertical, 3);
-            let title = gtk::Label::new(Some(&format!("Session {index}")));
+            let title = gtk::Label::new(Some(title_text));
             title.set_xalign(0.0);
+            title.set_hexpand(true);
+            title.set_ellipsize(pango::EllipsizeMode::End);
             title.add_css_class("session-picker-title");
-            let path = gtk::Label::new(Some("/tmp/project"));
+            let path = gtk::Label::new(Some("/Users/danny/.opencode-root-project"));
             path.set_xalign(0.0);
+            path.set_hexpand(true);
+            path.set_ellipsize(pango::EllipsizeMode::Middle);
             path.add_css_class("session-picker-path");
             let time = gtk::Label::new(Some("2026-09-07 13:16"));
             time.set_xalign(0.0);
@@ -7533,24 +7543,32 @@ mod tests {
     fn debug_sessions_overlay_allocated_size() {
         gtk_debug_init();
         let (window, card, list) = sessions_overlay_card();
-        fill_session_rows(&list, 1);
+        fill_session_rows(
+            &list,
+            &[
+                "opencode-gtk 2",
+                "Model Cache Efficiency Review",
+                "Performance - resize",
+            ],
+        );
         window.present();
         pump_until_allocated(&card);
-        let few = (card.width(), card.height());
-        fill_session_rows(&list, 20);
+        let wide = (card.width(), card.height());
+        fill_session_rows(&list, &["reflection rescue", "reflection dev", "refle"]);
         card.queue_resize();
         pump_until_allocated(&card);
-        let many = (card.width(), card.height());
+        let narrow = (card.width(), card.height());
         window.close();
+        eprintln!("sessions overlay allocated long titles {wide:?} short titles {narrow:?}");
         assert_eq!(
-            few, many,
-            "allocated size changed with row count: {few:?} vs {many:?}"
+            wide, narrow,
+            "allocated size changed with title length: {wide:?} vs {narrow:?}"
         );
-        assert_eq!(few.0, 420);
+        assert_eq!(wide.0, 420);
         assert!(
-            few.1 >= 310,
+            wide.1 >= 310,
             "allocated height {} is shorter than 310",
-            few.1
+            wide.1
         );
     }
 
