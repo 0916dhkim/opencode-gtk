@@ -69,6 +69,7 @@ headerbar button.sidebar-toggle:hover {
   border: 1px solid #2a3038;
   border-radius: 12px;
   box-shadow: 0 20px 48px rgba(0, 0, 0, 0.65);
+  min-height: 310px;
 }
 
 .new-session-search {

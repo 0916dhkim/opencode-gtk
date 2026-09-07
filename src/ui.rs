@@ -1218,7 +1218,7 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
     modal_card.set_overflow(gtk::Overflow::Hidden);
     modal_card.set_halign(gtk::Align::Center);
     modal_card.set_valign(gtk::Align::Center);
-    modal_card.set_size_request(350, -1);
+    modal_card.set_size_request(350, 310);
 
     let new_session_search = gtk::Entry::new();
     new_session_search.set_placeholder_text(Some("Search projects..."));
@@ -1231,9 +1231,9 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
     let new_session_scroll = gtk::ScrolledWindow::builder()
         .hscrollbar_policy(gtk::PolicyType::Never)
         .vscrollbar_policy(gtk::PolicyType::Automatic)
-        .propagate_natural_height(true)
-        .max_content_height(260)
-        .min_content_height(80)
+        .propagate_natural_height(false)
+        .min_content_height(264)
+        .vexpand(true)
         .child(&new_session_list)
         .build();
 
