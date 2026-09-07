@@ -72,6 +72,13 @@ headerbar button.sidebar-toggle:hover {
   min-height: 310px;
 }
 
+.app-modal-palette {
+  background: #15181c;
+  border: 1px solid #2a3038;
+  border-radius: 12px;
+  box-shadow: 0 20px 48px rgba(0, 0, 0, 0.65);
+}
+
 .new-session-search {
   padding: 12px 14px;
   background: #181c21;
@@ -604,6 +611,13 @@ button.markdown-code-copy.copied {
   border: 1px solid #30353a;
   border-radius: 12px;
   min-width: 0;
+}
+
+.composer-prompt {
+  background: #15181c;
+  border: 1px solid #2a3038;
+  border-radius: 12px;
+  padding: 14px;
 }
 
 .composer-action {

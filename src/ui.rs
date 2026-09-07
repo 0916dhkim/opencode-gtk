@@ -107,6 +107,28 @@ struct QuestionInputs {
     multiple: bool,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AppModalKind {
+    Sessions,
+    Settings,
+    Rename,
+}
+
+#[derive(Clone, Copy)]
+enum ComposerPromptKind {
+    Permission,
+    Question,
+}
+
+#[derive(Clone)]
+struct ComposerPrompt {
+    request_id: String,
+    session_id: Option<String>,
+    directory: String,
+    kind: ComposerPromptKind,
+    widget: gtk::Widget,
+}
+
 #[derive(Default)]
 struct State {
     sessions: Vec<Session>,
@@ -152,6 +174,9 @@ struct Widgets {
     transcript_spinner: gtk::Spinner,
     transcript_status_label: gtk::Label,
     load_earlier: gtk::Button,
+    composer_frame: gtk::Frame,
+    composer_stack: gtk::Stack,
+    prompt_host: gtk::Box,
     composer: gtk::TextView,
     attachment_box: gtk::Box,
     attach_button: gtk::Button,
@@ -169,6 +194,8 @@ struct Widgets {
     variant_filtered_indices: Rc<RefCell<Vec<usize>>>,
     new_session_overlay: gtk::Box,
     new_session_card: gtk::Box,
+    app_modal_overlay: gtk::Box,
+    app_modal_card: gtk::Box,
     new_session_search: gtk::Entry,
     new_session_list: gtk::ListBox,
     new_session_filtered_paths: Rc<RefCell<Vec<String>>>,
@@ -233,11 +260,14 @@ struct Controller {
     bootstrap_retry_token: u64,
     bootstrap_retry_delay: Duration,
     self_weak: Weak<RefCell<Controller>>,
-    dialogs: HashMap<String, gtk::Window>,
+    dialogs: HashMap<String, gtk::Widget>,
     pending_actions: HashSet<String>,
-    rename_session_dialog: Option<gtk::Window>,
-    session_dialog: Option<gtk::Window>,
-    settings_dialog: Option<gtk::Window>,
+    composer_prompts: Vec<ComposerPrompt>,
+    shown_composer_prompt: Option<String>,
+    app_modal: Option<AppModalKind>,
+    app_modal_focus: Option<gtk::Widget>,
+    session_picker: Option<(gtk::ListBox, gtk::Entry)>,
+    rename_session_id: Option<String>,
     next_session_request_id: u64,
     pending_session_request: Option<u64>,
     pending_rename_request: Option<u64>,
@@ -636,9 +666,12 @@ pub fn launch(
         self_weak: Weak::new(),
         dialogs: HashMap::new(),
         pending_actions: HashSet::new(),
-        rename_session_dialog: None,
-        session_dialog: None,
-        settings_dialog: None,
+        composer_prompts: Vec::new(),
+        shown_composer_prompt: None,
+        app_modal: None,
+        app_modal_focus: None,
+        session_picker: None,
+        rename_session_id: None,
         next_session_request_id: 0,
         pending_session_request: None,
         pending_rename_request: None,
@@ -1199,11 +1232,26 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
     composer_frame.set_hexpand(true);
     composer_frame.set_vexpand(false);
     composer_frame.set_valign(gtk::Align::End);
-    composer_frame.set_margin_start(18);
-    composer_frame.set_margin_end(18);
-    composer_frame.set_margin_bottom(16);
     composer_frame.set_child(Some(&composer_box));
-    main.append(&composer_frame);
+    let prompt_host = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    let prompt_frame = gtk::Frame::new(None);
+    prompt_frame.add_css_class("composer-frame");
+    prompt_frame.add_css_class("composer-prompt");
+    prompt_frame.set_hexpand(true);
+    prompt_frame.set_vexpand(false);
+    prompt_frame.set_valign(gtk::Align::End);
+    prompt_frame.set_child(Some(&prompt_host));
+    let composer_stack = gtk::Stack::new();
+    composer_stack.set_hexpand(true);
+    composer_stack.set_vexpand(false);
+    composer_stack.set_valign(gtk::Align::End);
+    composer_stack.set_margin_start(18);
+    composer_stack.set_margin_end(18);
+    composer_stack.set_margin_bottom(16);
+    composer_stack.add_named(&composer_frame, Some("composer"));
+    composer_stack.add_named(&prompt_frame, Some("prompt"));
+    composer_stack.set_visible_child_name("composer");
+    main.append(&composer_stack);
     root.set_end_child(Some(&main));
 
     let new_session_overlay = gtk::Box::new(gtk::Orientation::Vertical, 0);
@@ -1253,6 +1301,30 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
     new_session_overlay.append(&modal_card);
     new_session_overlay.append(&bottom_spacer);
 
+    let app_modal_overlay = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    app_modal_overlay.add_css_class("modal-backdrop");
+    app_modal_overlay.set_hexpand(true);
+    app_modal_overlay.set_vexpand(true);
+    app_modal_overlay.set_halign(gtk::Align::Fill);
+    app_modal_overlay.set_valign(gtk::Align::Fill);
+    app_modal_overlay.set_visible(false);
+
+    let app_modal_card = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    app_modal_card.add_css_class("app-modal-palette");
+    app_modal_card.set_overflow(gtk::Overflow::Hidden);
+    app_modal_card.set_halign(gtk::Align::Center);
+    app_modal_card.set_valign(gtk::Align::Center);
+
+    let app_modal_top_spacer = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    app_modal_top_spacer.set_vexpand(true);
+    app_modal_top_spacer.set_can_target(false);
+    let app_modal_bottom_spacer = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    app_modal_bottom_spacer.set_vexpand(true);
+    app_modal_bottom_spacer.set_can_target(false);
+    app_modal_overlay.append(&app_modal_top_spacer);
+    app_modal_overlay.append(&app_modal_card);
+    app_modal_overlay.append(&app_modal_bottom_spacer);
+
     let new_session_filtered_paths = Rc::new(RefCell::new(Vec::new()));
 
     let window_overlay = gtk::Overlay::new();
@@ -1260,6 +1332,9 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
     window_overlay.add_overlay(&new_session_overlay);
     window_overlay.set_measure_overlay(&new_session_overlay, false);
     window_overlay.set_clip_overlay(&new_session_overlay, false);
+    window_overlay.add_overlay(&app_modal_overlay);
+    window_overlay.set_measure_overlay(&app_modal_overlay, false);
+    window_overlay.set_clip_overlay(&app_modal_overlay, false);
     window.set_child(Some(&window_overlay));
 
     Widgets {
@@ -1286,6 +1361,9 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
         transcript_spinner,
         transcript_status_label,
         load_earlier,
+        composer_frame,
+        composer_stack,
+        prompt_host,
         composer,
         attachment_box,
         attach_button,
@@ -1303,6 +1381,8 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
         variant_filtered_indices,
         new_session_overlay,
         new_session_card: modal_card,
+        app_modal_overlay,
+        app_modal_card,
         new_session_search,
         new_session_list,
         new_session_filtered_paths,
@@ -1670,6 +1750,26 @@ fn wire_callbacks(controller: &Rc<RefCell<Controller>>) {
         .widgets
         .new_session_overlay
         .add_controller(backdrop_click);
+
+    let weak = Rc::downgrade(controller);
+    let app_modal_backdrop_click = gtk::GestureClick::new();
+    app_modal_backdrop_click.set_button(1);
+    app_modal_backdrop_click.connect_pressed(move |_, _, x, y| {
+        if let Some(controller) = weak.upgrade() {
+            let this = controller.borrow();
+            let overlay = this.widgets.app_modal_overlay.clone();
+            let card = this.widgets.app_modal_card.clone();
+            drop(this);
+            if !pointer_hits_widget(&card, &overlay, x, y) {
+                controller.borrow_mut().close_app_modal();
+            }
+        }
+    });
+    controller
+        .borrow()
+        .widgets
+        .app_modal_overlay
+        .add_controller(app_modal_backdrop_click);
 
     let weak = Rc::downgrade(controller);
     controller
@@ -2257,10 +2357,19 @@ fn wire_callbacks(controller: &Rc<RefCell<Controller>>) {
             return glib::Propagation::Stop;
         }
         if key == gdk::Key::Escape && modifiers.is_empty() {
-            if controller.borrow().widgets.new_session_overlay.is_visible() {
-                controller.borrow().close_new_session_overlay();
+            let mut this = controller.borrow_mut();
+            if this.widgets.new_session_overlay.is_visible() {
+                this.close_new_session_overlay();
                 return glib::Propagation::Stop;
             }
+            if this.widgets.app_modal_overlay.is_visible() {
+                this.close_app_modal();
+                return glib::Propagation::Stop;
+            }
+            if this.widgets.composer_stack.visible_child_name().as_deref() == Some("prompt") {
+                return glib::Propagation::Stop;
+            }
+            drop(this);
             Controller::acknowledge_active_unread(&controller);
             return glib::Propagation::Stop;
         }
@@ -2499,32 +2608,23 @@ impl Controller {
                 result,
             } => match result {
                 Ok(session) => {
-                    let dialog = {
-                        let mut this = controller.borrow_mut();
-                        if this.session(&session.id).is_some() {
-                            this.upsert_session(session);
-                        }
-                        this.persist_state();
-                        let weak = this.self_weak.clone();
-                        this.refresh_tabs(&weak);
-                        if this.pending_rename_request == Some(request_id) {
-                            this.pending_rename_request = None;
-                            this.rename_session_dialog.take()
-                        } else {
-                            None
-                        }
-                    };
-                    if let Some(dialog) = dialog {
-                        dialog.close();
+                    let mut this = controller.borrow_mut();
+                    if this.session(&session.id).is_some() {
+                        this.upsert_session(session);
+                    }
+                    this.persist_state();
+                    let weak = this.self_weak.clone();
+                    this.refresh_tabs(&weak);
+                    if this.pending_rename_request == Some(request_id) {
+                        this.pending_rename_request = None;
+                        this.close_app_modal();
                     }
                 }
                 Err(error) => {
                     let mut this = controller.borrow_mut();
                     if this.pending_rename_request == Some(request_id) {
                         this.pending_rename_request = None;
-                        if let Some(dialog) = &this.rename_session_dialog {
-                            dialog.set_sensitive(true);
-                        }
+                        this.widgets.app_modal_card.set_sensitive(true);
                     }
                     this.show_error(&format!("Could not rename session {session_id}: {error}"));
                 }
@@ -2622,22 +2722,16 @@ impl Controller {
                 }
             }
             UiEvent::ActionFinished { request_id, result } => {
-                let dialog = {
-                    let mut this = controller.borrow_mut();
-                    this.pending_actions.remove(&request_id);
-                    match result {
-                        Ok(()) => this.dialogs.remove(&request_id),
-                        Err(error) => {
-                            if let Some(dialog) = this.dialogs.get(&request_id) {
-                                dialog.set_sensitive(true);
-                            }
-                            this.show_error(&error);
-                            None
+                let mut this = controller.borrow_mut();
+                this.pending_actions.remove(&request_id);
+                match result {
+                    Ok(()) => this.remove_composer_prompt(&request_id),
+                    Err(error) => {
+                        if let Some(dialog) = this.dialogs.get(&request_id) {
+                            dialog.set_sensitive(true);
                         }
+                        this.show_error(&error);
                     }
-                };
-                if let Some(dialog) = dialog {
-                    dialog.close();
                 }
             }
             UiEvent::ServerEvent(event) => Self::enqueue_server_event(controller, event),
@@ -2682,7 +2776,6 @@ impl Controller {
         let statuses_complete = bootstrap.statuses_complete;
         let retry_needed = bootstrap.retry_needed;
         let warnings = bootstrap.warnings;
-        let mut stale_dialogs = Vec::new();
         let mut api_commands = Vec::new();
         let mut retry_immediately = None;
         {
@@ -2812,10 +2905,7 @@ impl Controller {
                     .cloned()
                     .collect();
                 for id in resolved_dialogs {
-                    if let Some(dialog) = this.dialogs.remove(&id) {
-                        this.pending_actions.remove(&id);
-                        stale_dialogs.push(dialog);
-                    }
+                    this.remove_composer_prompt(&id);
                 }
             }
             let known: HashSet<_> = this
@@ -2890,9 +2980,6 @@ impl Controller {
                 retry_immediately = Some(this.api.clone());
             }
             this.persist_state();
-        }
-        for dialog in stale_dialogs {
-            dialog.close();
         }
         for command in api_commands {
             controller.borrow().api.send(command);
@@ -3021,7 +3108,6 @@ impl Controller {
         let mut permission_events = Vec::new();
         let mut question_events = Vec::new();
         let mut resolved_requests = HashSet::new();
-        let mut dialogs_to_close = Vec::new();
         let mut api_commands = Vec::new();
         let mut this = controller.borrow_mut();
         this.event_flush_scheduled = false;
@@ -3143,10 +3229,7 @@ impl Controller {
                             this.resolved_requests_during_bootstrap
                                 .insert(request_id.to_owned());
                         }
-                        if let Some(dialog) = this.dialogs.remove(request_id) {
-                            this.pending_actions.remove(request_id);
-                            dialogs_to_close.push(dialog);
-                        }
+                        this.remove_composer_prompt(request_id);
                     }
                 }
                 Some("server.instance.disposed") => {
@@ -3217,9 +3300,6 @@ impl Controller {
         }
         for command in api_commands {
             controller.borrow().api.send(command);
-        }
-        for dialog in dialogs_to_close {
-            dialog.close();
         }
         for (directory, payload) in permission_events {
             Self::show_permission(controller, directory, payload);
@@ -3541,7 +3621,9 @@ impl Controller {
                 directory: session.directory,
             });
         }
-        this.widgets.composer.grab_focus();
+        if this.widgets.composer_stack.visible_child_name().as_deref() == Some("composer") {
+            this.widgets.composer.grab_focus();
+        }
     }
 
     fn commit_tab_order(controller: &Rc<RefCell<Self>>, source_id: &str) -> bool {
@@ -3670,6 +3752,60 @@ impl Controller {
         self.controls_updating = false;
         self.refresh_send_button();
         self.refresh_context_usage();
+        self.refresh_composer_prompt();
+    }
+
+    fn refresh_composer_prompt(&mut self) {
+        let active = self.state.active.as_deref();
+        let shown_matches = self
+            .shown_composer_prompt
+            .as_ref()
+            .is_some_and(|request_id| {
+                self.composer_prompts
+                    .iter()
+                    .find(|prompt| &prompt.request_id == request_id)
+                    .is_some_and(|prompt| {
+                        prompt
+                            .session_id
+                            .as_deref()
+                            .is_none_or(|session_id| Some(session_id) == active)
+                    })
+            });
+        if !shown_matches {
+            clear_box(&self.widgets.prompt_host);
+            self.shown_composer_prompt = None;
+            self.widgets
+                .composer_stack
+                .set_visible_child_name("composer");
+        }
+        if self.shown_composer_prompt.is_none() {
+            if let Some(prompt) = self.composer_prompts.iter().find(|prompt| {
+                prompt
+                    .session_id
+                    .as_deref()
+                    .is_none_or(|session_id| Some(session_id) == active)
+            }) {
+                clear_box(&self.widgets.prompt_host);
+                self.widgets.prompt_host.append(&prompt.widget);
+                self.shown_composer_prompt = Some(prompt.request_id.clone());
+                self.widgets.composer_stack.set_visible_child_name("prompt");
+            }
+        }
+    }
+
+    fn remove_composer_prompt(&mut self, request_id: &str) {
+        self.dialogs.remove(request_id);
+        self.pending_actions.remove(request_id);
+        self.composer_prompts
+            .retain(|prompt| prompt.request_id != request_id);
+        if self.shown_composer_prompt.as_deref() == Some(request_id) {
+            clear_box(&self.widgets.prompt_host);
+            self.shown_composer_prompt = None;
+            self.widgets
+                .composer_stack
+                .set_visible_child_name("composer");
+        }
+        self.refresh_composer_prompt();
     }
 
     fn refresh_model_control(&mut self) {
@@ -5169,46 +5305,43 @@ impl Controller {
     }
 
     fn show_session_picker(controller: &Rc<RefCell<Self>>) {
-        if let Some(dialog) = controller.borrow().session_dialog.clone() {
-            dialog.present();
-            return;
+        {
+            let this = controller.borrow();
+            if this.app_modal == Some(AppModalKind::Sessions) {
+                if let Some((list, search)) = &this.session_picker {
+                    populate_session_list(
+                        list,
+                        &this.state.sessions,
+                        search.text().as_str(),
+                        Rc::downgrade(controller),
+                    );
+                    this.widgets.app_modal_overlay.set_visible(true);
+                    search.grab_focus();
+                    return;
+                }
+            }
         }
-        let this = controller.borrow();
-        let dialog = gtk::Window::builder()
-            .title("Sessions")
-            .transient_for(&this.widgets.window)
-            .modal(true)
-            .default_width(560)
-            .default_height(640)
-            .build();
-        let root = gtk::Box::new(gtk::Orientation::Vertical, 10);
-        root.set_margin_top(14);
-        root.set_margin_bottom(14);
-        root.set_margin_start(14);
-        root.set_margin_end(14);
-        let heading = gtk::Label::new(Some("Sessions"));
-        heading.set_xalign(0.0);
-        heading.add_css_class("modal-heading");
-        let search = gtk::SearchEntry::new();
-        search.set_placeholder_text(Some("Search sessions or directories"));
+        let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        let search = gtk::Entry::new();
+        search.set_placeholder_text(Some("Search sessions..."));
+        search.add_css_class("new-session-search");
         let list = gtk::ListBox::new();
         list.set_selection_mode(gtk::SelectionMode::None);
+        list.add_css_class("new-session-list");
         let scroll = gtk::ScrolledWindow::builder()
-            .vexpand(true)
             .hscrollbar_policy(gtk::PolicyType::Never)
+            .vscrollbar_policy(gtk::PolicyType::Automatic)
             .propagate_natural_height(true)
+            .min_content_height(220)
+            .max_content_height(420)
             .child(&list)
             .build();
-        root.append(&heading);
         root.append(&search);
         root.append(&scroll);
-        dialog.set_child(Some(&root));
-        drop(this);
 
-        search.connect_search_changed({
+        search.connect_changed({
             let list = list.clone();
             let weak = Rc::downgrade(controller);
-            let dialog = dialog.clone();
             move |search| {
                 if let Some(controller) = weak.upgrade() {
                     let this = controller.borrow();
@@ -5217,62 +5350,33 @@ impl Controller {
                         &this.state.sessions,
                         search.text().as_str(),
                         Rc::downgrade(&controller),
-                        dialog.clone(),
                     );
                 }
             }
         });
-        dialog.connect_map({
-            let list = list.clone();
-            let search = search.clone();
-            let weak = Rc::downgrade(controller);
-            move |dialog| {
-                if search.text().is_empty() {
-                    if let Some(controller) = weak.upgrade() {
-                        let this = controller.borrow();
-                        populate_session_list(
-                            &list,
-                            &this.state.sessions,
-                            "",
-                            Rc::downgrade(&controller),
-                            dialog.clone(),
-                        );
-                    }
-                } else {
-                    search.set_text("");
-                }
-                search.grab_focus();
-            }
-        });
-        dialog.connect_close_request({
-            let weak = Rc::downgrade(controller);
-            move |_| {
-                if let Some(controller) = weak.upgrade() {
-                    controller.borrow_mut().session_dialog = None;
-                }
-                glib::Propagation::Proceed
-            }
-        });
-        close_window_on_escape(&dialog);
-        controller.borrow_mut().session_dialog = Some(dialog.clone());
-        dialog.present();
+        {
+            let mut this = controller.borrow_mut();
+            this.open_app_modal(AppModalKind::Sessions, 420);
+            populate_session_list(&list, &this.state.sessions, "", Rc::downgrade(controller));
+            this.widgets.app_modal_card.append(&root);
+            this.app_modal_focus = Some(search.clone().upcast());
+            this.session_picker = Some((list.clone(), search.clone()));
+        }
+        search.grab_focus();
     }
 
     fn show_settings(controller: &Rc<RefCell<Self>>) {
-        if let Some(dialog) = controller.borrow().settings_dialog.clone() {
-            dialog.present();
-            return;
-        }
-        let (parent, config) = {
+        {
             let this = controller.borrow();
-            (this.widgets.window.clone(), this.connection_config.clone())
-        };
-        let dialog = gtk::Window::builder()
-            .title("Settings")
-            .transient_for(&parent)
-            .modal(true)
-            .default_width(560)
-            .build();
+            if this.app_modal == Some(AppModalKind::Settings) {
+                this.widgets.app_modal_overlay.set_visible(true);
+                if let Some(focus) = &this.app_modal_focus {
+                    focus.grab_focus();
+                }
+                return;
+            }
+        }
+        let config = controller.borrow().connection_config.clone();
         let root = gtk::Box::new(gtk::Orientation::Vertical, 10);
         root.set_margin_top(18);
         root.set_margin_bottom(18);
@@ -5363,8 +5467,6 @@ impl Controller {
         root.append(&cloudflare_hint);
         root.append(&validation);
         root.append(&actions);
-        dialog.set_child(Some(&root));
-        dialog.set_default_widget(Some(&apply));
         server.set_activates_default(true);
         username.set_activates_default(true);
         password.set_activates_default(true);
@@ -5377,12 +5479,15 @@ impl Controller {
         cloudflare_client_secret_label.set_mnemonic_widget(Some(&cloudflare_client_secret));
 
         cancel.connect_clicked({
-            let dialog = dialog.clone();
-            move |_| dialog.close()
+            let weak = Rc::downgrade(controller);
+            move |_| {
+                if let Some(controller) = weak.upgrade() {
+                    controller.borrow_mut().close_app_modal();
+                }
+            }
         });
         apply.connect_clicked({
             let weak = Rc::downgrade(controller);
-            let dialog = dialog.clone();
             let server = server.clone();
             let username = username.clone();
             let password = password.clone();
@@ -5433,8 +5538,7 @@ impl Controller {
                     }
                     let mut this = controller.borrow_mut();
                     this.apply_preferences(&config);
-                    drop(this);
-                    dialog.close();
+                    this.close_app_modal();
                     return;
                 }
 
@@ -5446,12 +5550,21 @@ impl Controller {
                             return;
                         }
                         Self::switch_connection(&controller, config, api, events, server_key);
-                        dialog.close();
                     }
                     Err(error) => validation.set_label(&error.to_string()),
                 }
             }
         });
+        for entry in [
+            server.clone(),
+            username.clone(),
+            password.clone(),
+            cloudflare_client_id.clone(),
+            cloudflare_client_secret.clone(),
+        ] {
+            let apply = apply.clone();
+            entry.connect_activate(move |_| apply.emit_clicked());
+        }
         let settings_shortcuts = gtk::EventControllerKey::new();
         settings_shortcuts.set_propagation_phase(gtk::PropagationPhase::Capture);
         settings_shortcuts.connect_key_pressed({
@@ -5469,25 +5582,15 @@ impl Controller {
                 glib::Propagation::Proceed
             }
         });
-        dialog.add_controller(settings_shortcuts);
-        dialog.connect_map({
-            let server = server.clone();
-            move |_| {
-                server.grab_focus();
-            }
-        });
-        dialog.connect_close_request({
-            let weak = Rc::downgrade(controller);
-            move |_| {
-                if let Some(controller) = weak.upgrade() {
-                    controller.borrow_mut().settings_dialog = None;
-                }
-                glib::Propagation::Proceed
-            }
-        });
-        close_window_on_escape(&dialog);
-        controller.borrow_mut().settings_dialog = Some(dialog.clone());
-        dialog.present();
+        root.add_controller(settings_shortcuts);
+        {
+            let mut this = controller.borrow_mut();
+            this.open_app_modal(AppModalKind::Settings, 520);
+            this.widgets.window.set_default_widget(Some(&apply));
+            this.widgets.app_modal_card.append(&root);
+            this.app_modal_focus = Some(server.clone().upcast());
+        }
+        server.grab_focus();
     }
 
     fn apply_preferences(&mut self, config: &ApiConfig) {
@@ -5508,7 +5611,7 @@ impl Controller {
         events: Receiver<UiEvent>,
         server_key: String,
     ) {
-        let (old_dialogs, old_windows, generation) = {
+        let generation = {
             let mut this = controller.borrow_mut();
             this.persist_state();
             if let Some(application) = this.widgets.window.application() {
@@ -5522,15 +5625,15 @@ impl Controller {
             this.events.close();
             this.connection_generation += 1;
             let generation = this.connection_generation;
-            let old_dialogs = std::mem::take(&mut this.dialogs)
-                .into_values()
-                .collect::<Vec<_>>();
+            this.dialogs.clear();
+            this.composer_prompts.clear();
+            this.shown_composer_prompt = None;
+            clear_box(&this.widgets.prompt_host);
+            this.widgets
+                .composer_stack
+                .set_visible_child_name("composer");
             this.close_new_session_overlay();
-            let old_windows = [
-                this.rename_session_dialog.take(),
-                this.session_dialog.take(),
-                this.settings_dialog.take(),
-            ];
+            this.close_app_modal();
 
             this.api = api;
             this.events = events.clone();
@@ -5584,15 +5687,8 @@ impl Controller {
                 .set_label(&format!("Connecting to {server_key}"));
             this.widgets.status.set_tooltip_text(Some(&server_key));
             this.persist_state();
-            (old_dialogs, old_windows, generation)
+            generation
         };
-
-        for dialog in old_dialogs {
-            dialog.hide();
-        }
-        for dialog in old_windows.into_iter().flatten() {
-            dialog.hide();
-        }
         Self::refresh_all(controller);
         start_event_loop(controller, events, generation);
         controller.borrow().api.send(Command::Bootstrap);
@@ -5761,6 +5857,31 @@ impl Controller {
         self.widgets.composer.grab_focus();
     }
 
+    fn open_app_modal(&mut self, kind: AppModalKind, width: i32) {
+        self.close_new_session_overlay();
+        clear_box(&self.widgets.app_modal_card);
+        self.widgets.app_modal_card.set_sensitive(true);
+        self.widgets.app_modal_card.set_size_request(width, -1);
+        self.widgets.app_modal_overlay.set_visible(true);
+        self.app_modal = Some(kind);
+        self.app_modal_focus = None;
+        self.session_picker = None;
+        self.rename_session_id = None;
+    }
+
+    fn close_app_modal(&mut self) {
+        self.widgets.app_modal_overlay.set_visible(false);
+        self.widgets.window.set_default_widget(None::<&gtk::Widget>);
+        clear_box(&self.widgets.app_modal_card);
+        self.app_modal = None;
+        self.app_modal_focus = None;
+        self.session_picker = None;
+        self.rename_session_id = None;
+        if self.widgets.composer_stack.visible_child_name().as_deref() == Some("composer") {
+            self.widgets.composer.grab_focus();
+        }
+    }
+
     fn rename_active_session(controller: &Rc<RefCell<Self>>) {
         let active = controller.borrow().state.active.clone();
         if let Some(active) = active {
@@ -5769,20 +5890,21 @@ impl Controller {
     }
 
     fn show_rename_session(controller: &Rc<RefCell<Self>>, session_id: &str) {
-        if let Some(dialog) = controller.borrow().rename_session_dialog.clone() {
-            dialog.present();
-            return;
+        {
+            let this = controller.borrow();
+            if this.app_modal == Some(AppModalKind::Rename)
+                && this.rename_session_id.as_deref() == Some(session_id)
+            {
+                this.widgets.app_modal_overlay.set_visible(true);
+                if let Some(focus) = &this.app_modal_focus {
+                    focus.grab_focus();
+                }
+                return;
+            }
         }
-        let this = controller.borrow();
-        let Some(session) = this.session(session_id).cloned() else {
+        let Some(session) = controller.borrow().session(session_id).cloned() else {
             return;
         };
-        let dialog = gtk::Window::builder()
-            .title("Rename session")
-            .transient_for(&this.widgets.window)
-            .modal(true)
-            .default_width(460)
-            .build();
         let root = gtk::Box::new(gtk::Orientation::Vertical, 10);
         root.set_margin_top(18);
         root.set_margin_bottom(18);
@@ -5804,17 +5926,17 @@ impl Controller {
         root.append(&title_label);
         root.append(&title);
         root.append(&actions);
-        dialog.set_child(Some(&root));
-        dialog.set_default_widget(Some(&save));
-        drop(this);
 
         cancel.connect_clicked({
-            let dialog = dialog.clone();
-            move |_| dialog.close()
+            let weak = Rc::downgrade(controller);
+            move |_| {
+                if let Some(controller) = weak.upgrade() {
+                    controller.borrow_mut().close_app_modal();
+                }
+            }
         });
         save.connect_clicked({
             let weak = Rc::downgrade(controller);
-            let dialog = dialog.clone();
             let title = title.clone();
             move |_| {
                 let value = title.text().trim().to_owned();
@@ -5823,7 +5945,9 @@ impl Controller {
                     return;
                 }
                 if value == session.title {
-                    dialog.close();
+                    if let Some(controller) = weak.upgrade() {
+                        controller.borrow_mut().close_app_modal();
+                    }
                     return;
                 }
                 if let Some(controller) = weak.upgrade() {
@@ -5840,22 +5964,26 @@ impl Controller {
                         }
                     };
                     controller.borrow().api.send(command);
-                    dialog.set_sensitive(false);
+                    controller
+                        .borrow()
+                        .widgets
+                        .app_modal_card
+                        .set_sensitive(false);
                 }
             }
         });
-        dialog.connect_close_request({
-            let weak = Rc::downgrade(controller);
-            move |_| {
-                if let Some(controller) = weak.upgrade() {
-                    controller.borrow_mut().rename_session_dialog = None;
-                }
-                glib::Propagation::Proceed
-            }
+        title.connect_activate({
+            let save = save.clone();
+            move |_| save.emit_clicked()
         });
-        controller.borrow_mut().rename_session_dialog = Some(dialog.clone());
-        close_window_on_escape(&dialog);
-        dialog.present();
+        {
+            let mut this = controller.borrow_mut();
+            this.open_app_modal(AppModalKind::Rename, 350);
+            this.widgets.window.set_default_widget(Some(&save));
+            this.widgets.app_modal_card.append(&root);
+            this.app_modal_focus = Some(title.clone().upcast());
+            this.rename_session_id = Some(session_id.to_owned());
+        }
         title.select_region(0, -1);
         title.grab_focus();
     }
@@ -5929,19 +6057,7 @@ impl Controller {
             })
             .filter(|patterns| !patterns.is_empty());
 
-        let parent = controller.borrow().widgets.window.clone();
-        let dialog = gtk::Window::builder()
-            .title("Permission required")
-            .transient_for(&parent)
-            .modal(true)
-            .default_width(620)
-            .default_height(480)
-            .build();
         let root = gtk::Box::new(gtk::Orientation::Vertical, 12);
-        root.set_margin_top(18);
-        root.set_margin_bottom(18);
-        root.set_margin_start(18);
-        root.set_margin_end(18);
         let heading = gtk::Label::new(Some(&format!("Allow {permission}?")));
         heading.set_xalign(0.0);
         heading.add_css_class("prompt-heading");
@@ -6005,7 +6121,6 @@ impl Controller {
             button
         });
         root.append(&actions);
-        dialog.set_child(Some(&root));
 
         let mut replies = vec![(reject, "reject"), (once, "once")];
         if let Some(always) = always {
@@ -6027,32 +6142,17 @@ impl Controller {
                 );
             });
         }
-        dialog.connect_close_request({
-            let weak = Rc::downgrade(controller);
-            let request_id = request_id.clone();
-            let directory = directory.clone();
-            move |_| {
-                let waiting = submit_request(
-                    &weak,
-                    &request_id,
-                    Command::ReplyPermission {
-                        request_id: request_id.clone(),
-                        directory: directory.clone(),
-                        reply: "reject".to_owned(),
-                    },
-                );
-                if waiting {
-                    glib::Propagation::Stop
-                } else {
-                    glib::Propagation::Proceed
-                }
-            }
+        let widget = root.upcast::<gtk::Widget>();
+        let mut this = controller.borrow_mut();
+        this.dialogs.insert(request_id.clone(), widget.clone());
+        this.composer_prompts.push(ComposerPrompt {
+            request_id,
+            session_id,
+            directory,
+            kind: ComposerPromptKind::Permission,
+            widget,
         });
-        controller
-            .borrow_mut()
-            .dialogs
-            .insert(request_id, dialog.clone());
-        dialog.present();
+        this.refresh_composer_prompt();
     }
 
     fn show_question(
@@ -6106,19 +6206,7 @@ impl Controller {
             return;
         }
 
-        let parent = controller.borrow().widgets.window.clone();
-        let dialog = gtk::Window::builder()
-            .title("OpenCode needs your input")
-            .transient_for(&parent)
-            .modal(true)
-            .default_width(680)
-            .default_height(560)
-            .build();
         let root = gtk::Box::new(gtk::Orientation::Vertical, 12);
-        root.set_margin_top(18);
-        root.set_margin_bottom(18);
-        root.set_margin_start(18);
-        root.set_margin_end(18);
         let context = gtk::Label::new(Some(&request_context));
         context.set_xalign(0.0);
         context.set_wrap(true);
@@ -6241,7 +6329,6 @@ impl Controller {
         root.append(&scroll);
         root.append(&validation);
         root.append(&actions);
-        dialog.set_child(Some(&root));
 
         submit.connect_clicked({
             let weak = Rc::downgrade(controller);
@@ -6303,31 +6390,17 @@ impl Controller {
                 );
             }
         });
-        dialog.connect_close_request({
-            let weak = Rc::downgrade(controller);
-            let request_id = request_id.clone();
-            let directory = directory.clone();
-            move |_| {
-                let waiting = submit_request(
-                    &weak,
-                    &request_id,
-                    Command::RejectQuestion {
-                        request_id: request_id.clone(),
-                        directory: directory.clone(),
-                    },
-                );
-                if waiting {
-                    glib::Propagation::Stop
-                } else {
-                    glib::Propagation::Proceed
-                }
-            }
+        let widget = root.upcast::<gtk::Widget>();
+        let mut this = controller.borrow_mut();
+        this.dialogs.insert(request_id.clone(), widget.clone());
+        this.composer_prompts.push(ComposerPrompt {
+            request_id,
+            session_id,
+            directory,
+            kind: ComposerPromptKind::Question,
+            widget,
         });
-        controller
-            .borrow_mut()
-            .dialogs
-            .insert(request_id, dialog.clone());
-        dialog.present();
+        this.refresh_composer_prompt();
     }
 
     fn active_directory(&self) -> Option<String> {
@@ -6502,7 +6575,6 @@ fn populate_session_list(
     sessions: &[Session],
     query: &str,
     controller: Weak<RefCell<Controller>>,
-    dialog: gtk::Window,
 ) {
     while let Some(child) = list.first_child() {
         list.remove(&child);
@@ -6539,12 +6611,11 @@ fn populate_session_list(
         button.set_child(Some(&labels));
         let id = session.id.clone();
         let weak = controller.clone();
-        let dialog = dialog.clone();
         button.connect_clicked(move |_| {
             if let Some(controller) = weak.upgrade() {
                 Controller::open_tab(&controller, &id);
+                controller.borrow_mut().close_app_modal();
             }
-            dialog.close();
         });
         list.append(&button);
     }
@@ -6828,21 +6899,6 @@ fn resolved_variant_index(
         }
     }
     (0, false)
-}
-
-fn close_window_on_escape(window: &gtk::Window) {
-    let key = gtk::EventControllerKey::new();
-    key.set_propagation_phase(gtk::PropagationPhase::Capture);
-    let window_for_key = window.clone();
-    key.connect_key_pressed(move |_, key, _, _| {
-        if key == gdk::Key::Escape {
-            window_for_key.close();
-            glib::Propagation::Stop
-        } else {
-            glib::Propagation::Proceed
-        }
-    });
-    window.add_controller(key);
 }
 
 fn project_paths(projects: &[Project], sessions: &[Session]) -> Vec<String> {
