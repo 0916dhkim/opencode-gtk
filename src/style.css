@@ -43,6 +43,11 @@ headerbar button.sidebar-toggle:hover {
   border-bottom: 1px solid #23272c;
 }
 
+.session-header-bar .session-tab-status {
+  margin-left: 0;
+  margin-right: 0;
+}
+
 .session-header-title {
   font-size: 0.9em;
   font-weight: 600;

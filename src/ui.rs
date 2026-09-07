@@ -1000,7 +1000,7 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
 
     let session_header_status = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     session_header_status.set_size_request(14, 14);
-    session_header_status.set_halign(gtk::Align::Center);
+    session_header_status.set_halign(gtk::Align::Start);
     session_header_status.set_valign(gtk::Align::Center);
 
     let session_header_title = gtk::Label::new(Some("OpenCode"));
