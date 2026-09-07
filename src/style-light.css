@@ -476,6 +476,11 @@ popover.model-picker-popover > contents {
   padding: 6px;
 }
 
+popover.model-picker-popover > arrow {
+  background: #f7f5f1;
+  border: 1px solid #d3cfc7;
+}
+
 .model-picker-search {
   background: #ffffff;
   border: 1px solid #d3cfc7;
