@@ -114,18 +114,10 @@ enum AppModalKind {
     Rename,
 }
 
-#[derive(Clone, Copy)]
-enum ComposerPromptKind {
-    Permission,
-    Question,
-}
-
 #[derive(Clone)]
 struct ComposerPrompt {
     request_id: String,
     session_id: Option<String>,
-    directory: String,
-    kind: ComposerPromptKind,
     widget: gtk::Widget,
 }
 
@@ -174,7 +166,6 @@ struct Widgets {
     transcript_spinner: gtk::Spinner,
     transcript_status_label: gtk::Label,
     load_earlier: gtk::Button,
-    composer_frame: gtk::Frame,
     composer_stack: gtk::Stack,
     prompt_host: gtk::Box,
     composer: gtk::TextView,
@@ -1361,7 +1352,6 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
         transcript_spinner,
         transcript_status_label,
         load_earlier,
-        composer_frame,
         composer_stack,
         prompt_host,
         composer,
@@ -6148,8 +6138,6 @@ impl Controller {
         this.composer_prompts.push(ComposerPrompt {
             request_id,
             session_id,
-            directory,
-            kind: ComposerPromptKind::Permission,
             widget,
         });
         this.refresh_composer_prompt();
@@ -6396,8 +6384,6 @@ impl Controller {
         this.composer_prompts.push(ComposerPrompt {
             request_id,
             session_id,
-            directory,
-            kind: ComposerPromptKind::Question,
             widget,
         });
         this.refresh_composer_prompt();
