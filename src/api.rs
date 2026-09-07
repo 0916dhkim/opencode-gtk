@@ -67,7 +67,7 @@ pub enum Command {
         session_id: String,
         directory: String,
         text: String,
-        selection: ModelSelection,
+        selection: Option<ModelSelection>,
         agent: Option<String>,
         attachments: Vec<PathBuf>,
     },
@@ -678,21 +678,23 @@ impl Api {
         session_id: &str,
         directory: &str,
         text: &str,
-        selection: &ModelSelection,
+        selection: Option<&ModelSelection>,
         agent: Option<&str>,
         attachments: &[PathBuf],
     ) -> Result<()> {
         let mut parts = vec![json!({ "type": "text", "text": text })];
         parts.extend(encode_attachments(attachments)?);
         let mut body = json!({
-            "model": {
-                "providerID": selection.provider_id,
-                "modelID": selection.model_id
-            },
             "parts": parts
         });
-        if let Some(variant) = &selection.variant {
-            body["variant"] = Value::String(variant.clone());
+        if let Some(selection) = selection {
+            body["model"] = json!({
+                "providerID": selection.provider_id,
+                "modelID": selection.model_id
+            });
+            if let Some(variant) = &selection.variant {
+                body["variant"] = Value::String(variant.clone());
+            }
         }
         if let Some(agent) = agent {
             body["agent"] = Value::String(agent.to_owned());
@@ -822,7 +824,7 @@ fn spawn_command_worker(api: Api, commands: Receiver<Command>, ui: Sender<UiEven
                             &session_id,
                             &directory,
                             &text,
-                            &selection,
+                            selection.as_ref(),
                             agent.as_deref(),
                             &attachments,
                         )

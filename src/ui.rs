@@ -3758,7 +3758,6 @@ impl Controller {
                         && model.model_id == selection.model_id
                 })
                 .unwrap_or_default();
-            self.state.selections.insert(active, selection);
             if let Some(model) = self.current_models.get(index) {
                 self.widgets.model_button_label.set_text(&model.label);
             }
@@ -4588,21 +4587,7 @@ impl Controller {
                     })
                 }
             } else {
-                let Some(selection) = this.state.selections.get(&active).cloned() else {
-                    this.show_error("Select a model before sending");
-                    return;
-                };
-                if this.state.loading_models.contains(&session.directory)
-                    || this.model_load_errors.contains_key(&session.directory)
-                    || this
-                        .state
-                        .catalogs
-                        .get(&session.directory)
-                        .is_none_or(|catalog| catalog.find(&selection).is_none())
-                {
-                    this.show_error("Wait for the model list to refresh before sending");
-                    return;
-                }
+                let selection = this.state.selections.get(&active).cloned();
                 let supports_attachments = this.selected_model_supports_attachments();
                 let draft = this.state.drafts.entry(active.clone()).or_default();
                 if draft.text.trim() == "/debug error" {
