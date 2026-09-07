@@ -167,6 +167,10 @@ struct Widgets {
     variant_search: gtk::SearchEntry,
     variant_list: gtk::ListBox,
     variant_filtered_indices: Rc<RefCell<Vec<usize>>>,
+    new_session_overlay: gtk::Box,
+    new_session_search: gtk::SearchEntry,
+    new_session_list: gtk::ListBox,
+    new_session_filtered_paths: Rc<RefCell<Vec<String>>>,
     context_usage: gtk::Label,
     send_button: gtk::Button,
     transcript_user_scrolling: Rc<Cell<bool>>,
@@ -230,7 +234,6 @@ struct Controller {
     self_weak: Weak<RefCell<Controller>>,
     dialogs: HashMap<String, gtk::Window>,
     pending_actions: HashSet<String>,
-    new_session_dialog: Option<gtk::Window>,
     rename_session_dialog: Option<gtk::Window>,
     session_dialog: Option<gtk::Window>,
     settings_dialog: Option<gtk::Window>,
@@ -632,7 +635,6 @@ pub fn launch(
         self_weak: Weak::new(),
         dialogs: HashMap::new(),
         pending_actions: HashSet::new(),
-        new_session_dialog: None,
         rename_session_dialog: None,
         session_dialog: None,
         settings_dialog: None,
@@ -1203,7 +1205,62 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
     main.append(&composer_frame);
     root.set_end_child(Some(&main));
 
-    window.set_child(Some(&root));
+    let new_session_overlay = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    new_session_overlay.add_css_class("modal-backdrop");
+    new_session_overlay.set_hexpand(true);
+    new_session_overlay.set_vexpand(true);
+    new_session_overlay.set_halign(gtk::Align::Fill);
+    new_session_overlay.set_valign(gtk::Align::Fill);
+    new_session_overlay.set_visible(false);
+
+    let modal_card = gtk::Box::new(gtk::Orientation::Vertical, 12);
+    modal_card.add_css_class("modal-card");
+    modal_card.set_halign(gtk::Align::Center);
+    modal_card.set_valign(gtk::Align::Center);
+    modal_card.set_size_request(480, -1);
+
+    let modal_header = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    let modal_title = gtk::Label::new(Some("New Session"));
+    modal_title.set_xalign(0.0);
+    modal_title.set_hexpand(true);
+    modal_title.add_css_class("modal-heading");
+
+    let modal_close_btn = icon_button(ICON_CLOSE, 14);
+    modal_close_btn.add_css_class("ghost-button");
+    modal_close_btn.set_tooltip_text(Some("Close (Esc)"));
+
+    modal_header.append(&modal_title);
+    modal_header.append(&modal_close_btn);
+
+    let new_session_search = gtk::SearchEntry::new();
+    new_session_search.set_placeholder_text(Some("Search projects (fuzzy)..."));
+    new_session_search.add_css_class("model-picker-search");
+
+    let new_session_list = gtk::ListBox::new();
+    new_session_list.set_selection_mode(gtk::SelectionMode::Single);
+    new_session_list.add_css_class("model-picker-list");
+
+    let new_session_scroll = gtk::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .vscrollbar_policy(gtk::PolicyType::Automatic)
+        .propagate_natural_height(true)
+        .max_content_height(280)
+        .min_content_height(100)
+        .child(&new_session_list)
+        .build();
+
+    modal_card.append(&modal_header);
+    modal_card.append(&new_session_search);
+    modal_card.append(&new_session_scroll);
+
+    new_session_overlay.append(&modal_card);
+
+    let new_session_filtered_paths = Rc::new(RefCell::new(Vec::new()));
+
+    let window_overlay = gtk::Overlay::new();
+    window_overlay.set_child(Some(&root));
+    window_overlay.add_overlay(&new_session_overlay);
+    window.set_child(Some(&window_overlay));
 
     Widgets {
         window,
@@ -1244,6 +1301,10 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
         variant_search,
         variant_list,
         variant_filtered_indices,
+        new_session_overlay,
+        new_session_search,
+        new_session_list,
+        new_session_filtered_paths,
         context_usage,
         send_button,
         transcript_user_scrolling,
@@ -1586,6 +1647,153 @@ fn wire_callbacks(controller: &Rc<RefCell<Controller>>) {
         .connect_clicked(move |_| {
             if let Some(controller) = weak.upgrade() {
                 Controller::show_new_session(&controller);
+            }
+        });
+
+    let weak = Rc::downgrade(controller);
+    controller
+        .borrow()
+        .widgets
+        .new_session_search
+        .connect_search_changed(move |search| {
+            if let Some(controller) = weak.upgrade() {
+                Controller::filter_new_session_projects(&controller, search.text().as_str());
+            }
+        });
+
+    let weak = Rc::downgrade(controller);
+    controller
+        .borrow()
+        .widgets
+        .new_session_search
+        .connect_activate(move |_| {
+            if let Some(controller) = weak.upgrade() {
+                Controller::activate_current_new_session_selection(&controller);
+            }
+        });
+
+    let weak = Rc::downgrade(controller);
+    let new_session_search_keys = gtk::EventControllerKey::new();
+    new_session_search_keys.set_propagation_phase(gtk::PropagationPhase::Capture);
+    new_session_search_keys.connect_key_pressed(move |_, key, _, _| {
+        let Some(controller) = weak.upgrade() else {
+            return glib::Propagation::Proceed;
+        };
+        let (list, search) = {
+            let this = controller.borrow();
+            (
+                this.widgets.new_session_list.clone(),
+                this.widgets.new_session_search.clone(),
+            )
+        };
+        match key {
+            gdk::Key::Down => {
+                if let Some(selected) = list.selected_row() {
+                    let next_idx = selected.index() + 1;
+                    if let Some(next_row) = list.row_at_index(next_idx) {
+                        list.select_row(Some(&next_row));
+                        next_row.grab_focus();
+                    } else {
+                        selected.grab_focus();
+                    }
+                } else if let Some(first_row) = list.row_at_index(0) {
+                    list.select_row(Some(&first_row));
+                    first_row.grab_focus();
+                }
+                glib::Propagation::Stop
+            }
+            gdk::Key::Up => {
+                if let Some(selected) = list.selected_row() {
+                    let prev_idx = selected.index() - 1;
+                    if prev_idx >= 0 {
+                        if let Some(prev_row) = list.row_at_index(prev_idx) {
+                            list.select_row(Some(&prev_row));
+                            prev_row.grab_focus();
+                        }
+                    } else {
+                        search.grab_focus();
+                    }
+                } else {
+                    search.grab_focus();
+                }
+                glib::Propagation::Stop
+            }
+            gdk::Key::Return | gdk::Key::KP_Enter => {
+                Controller::activate_current_new_session_selection(&controller);
+                glib::Propagation::Stop
+            }
+            gdk::Key::Escape => {
+                controller.borrow().close_new_session_overlay();
+                glib::Propagation::Stop
+            }
+            _ => glib::Propagation::Proceed,
+        }
+    });
+    controller
+        .borrow()
+        .widgets
+        .new_session_search
+        .add_controller(new_session_search_keys);
+
+    let weak = Rc::downgrade(controller);
+    let new_session_list_keys = gtk::EventControllerKey::new();
+    new_session_list_keys.set_propagation_phase(gtk::PropagationPhase::Capture);
+    new_session_list_keys.connect_key_pressed(move |_, key, _, _| {
+        let Some(controller) = weak.upgrade() else {
+            return glib::Propagation::Proceed;
+        };
+        let (list, search) = {
+            let this = controller.borrow();
+            (
+                this.widgets.new_session_list.clone(),
+                this.widgets.new_session_search.clone(),
+            )
+        };
+        match key {
+            gdk::Key::Return | gdk::Key::KP_Enter => {
+                Controller::activate_current_new_session_selection(&controller);
+                glib::Propagation::Stop
+            }
+            gdk::Key::Escape => {
+                controller.borrow().close_new_session_overlay();
+                glib::Propagation::Stop
+            }
+            gdk::Key::Up => {
+                if let Some(selected) = list.selected_row() {
+                    if selected.index() <= 0 {
+                        search.grab_focus();
+                        return glib::Propagation::Stop;
+                    }
+                }
+                glib::Propagation::Proceed
+            }
+            _ => glib::Propagation::Proceed,
+        }
+    });
+    controller
+        .borrow()
+        .widgets
+        .new_session_list
+        .add_controller(new_session_list_keys);
+
+    let weak = Rc::downgrade(controller);
+    controller
+        .borrow()
+        .widgets
+        .new_session_list
+        .connect_row_activated(move |_, row| {
+            if let Some(controller) = weak.upgrade() {
+                let row_idx = row.index() as usize;
+                let path = controller
+                    .borrow()
+                    .widgets
+                    .new_session_filtered_paths
+                    .borrow()
+                    .get(row_idx)
+                    .cloned();
+                if let Some(path) = path {
+                    Controller::create_session_for_project(&controller, &path);
+                }
             }
         });
 
@@ -2028,6 +2236,10 @@ fn wire_callbacks(controller: &Rc<RefCell<Controller>>) {
             return glib::Propagation::Stop;
         }
         if key == gdk::Key::Escape && modifiers.is_empty() {
+            if controller.borrow().widgets.new_session_overlay.is_visible() {
+                controller.borrow().close_new_session_overlay();
+                return glib::Propagation::Stop;
+            }
             Controller::acknowledge_active_unread(&controller);
             return glib::Propagation::Stop;
         }
@@ -2242,28 +2454,20 @@ impl Controller {
             }
             UiEvent::SessionCreated { request_id, result } => match result {
                 Ok(session) => {
-                    let dialog = {
-                        let mut this = controller.borrow_mut();
-                        this.upsert_session(session.clone());
-                        if this.pending_session_request == Some(request_id) {
-                            this.pending_session_request = None;
-                            this.new_session_dialog.take()
-                        } else {
-                            None
-                        }
-                    };
-                    if let Some(dialog) = dialog {
-                        dialog.close();
+                    let mut this = controller.borrow_mut();
+                    this.upsert_session(session.clone());
+                    if this.pending_session_request == Some(request_id) {
+                        this.pending_session_request = None;
+                        this.close_new_session_overlay();
                     }
+                    drop(this);
                     Self::open_tab(controller, &session.id);
                 }
                 Err(error) => {
                     let mut this = controller.borrow_mut();
                     if this.pending_session_request == Some(request_id) {
                         this.pending_session_request = None;
-                        if let Some(dialog) = &this.new_session_dialog {
-                            dialog.set_sensitive(true);
-                        }
+                        this.widgets.new_session_overlay.set_sensitive(true);
                     }
                     this.show_error(&error);
                 }
@@ -5313,8 +5517,8 @@ impl Controller {
             let old_dialogs = std::mem::take(&mut this.dialogs)
                 .into_values()
                 .collect::<Vec<_>>();
+            this.close_new_session_overlay();
             let old_windows = [
-                this.new_session_dialog.take(),
                 this.rename_session_dialog.take(),
                 this.session_dialog.take(),
                 this.settings_dialog.take(),
@@ -5387,120 +5591,179 @@ impl Controller {
     }
 
     fn show_new_session(controller: &Rc<RefCell<Self>>) {
-        if let Some(dialog) = controller.borrow().new_session_dialog.clone() {
-            dialog.present();
+        let (overlay, search) = {
+            let this = controller.borrow();
+            (
+                this.widgets.new_session_overlay.clone(),
+                this.widgets.new_session_search.clone(),
+            )
+        };
+        search.set_text("");
+        Self::filter_new_session_projects(controller, "");
+        overlay.set_visible(true);
+        search.grab_focus();
+    }
+
+    fn filter_new_session_projects(controller: &Rc<RefCell<Self>>, query: &str) {
+        let (projects, active_dir, list, filtered_paths) = {
+            let this = controller.borrow();
+            let known = project_paths(&this.state.projects, &this.state.sessions);
+            let active = this.active_directory();
+            (
+                known,
+                active,
+                this.widgets.new_session_list.clone(),
+                this.widgets.new_session_filtered_paths.clone(),
+            )
+        };
+
+        while let Some(child) = list.first_child() {
+            list.remove(&child);
+        }
+
+        let query = query.trim();
+        let mut scored: Vec<(i64, String, String)> = projects
+            .into_iter()
+            .filter_map(|path| {
+                let name = std::path::Path::new(&path)
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or(&path)
+                    .to_owned();
+                if query.is_empty() {
+                    let priority = if active_dir.as_deref() == Some(&path) {
+                        1000
+                    } else {
+                        0
+                    };
+                    Some((priority, name, path))
+                } else {
+                    let name_score = fuzzy_score(query, &name);
+                    let path_score = fuzzy_score(query, &path);
+                    let score = match (name_score, path_score) {
+                        (Some(s1), Some(s2)) => Some(s1.max(s2)),
+                        (s1, s2) => s1.or(s2),
+                    };
+                    score.map(|s| (s, name, path))
+                }
+            })
+            .collect();
+
+        scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+
+        if scored.is_empty() {
+            *filtered_paths.borrow_mut() = Vec::new();
+            let empty = gtk::Label::new(Some("No matching projects"));
+            empty.add_css_class("model-picker-empty");
+            empty.set_margin_top(16);
+            empty.set_margin_bottom(16);
+            list.append(&empty);
             return;
         }
-        let this = controller.borrow();
-        let dialog = gtk::Window::builder()
-            .title("New session")
-            .transient_for(&this.widgets.window)
-            .modal(true)
-            .default_width(560)
-            .build();
-        let root = gtk::Box::new(gtk::Orientation::Vertical, 10);
-        root.set_margin_top(18);
-        root.set_margin_bottom(18);
-        root.set_margin_start(18);
-        root.set_margin_end(18);
-        let project_label = gtk::Label::new(Some("Project"));
-        project_label.set_xalign(0.0);
-        let known_projects = project_paths(&this.state.projects, &this.state.sessions);
-        let project = gtk::ComboBoxText::with_entry();
-        project.set_hexpand(true);
-        for path in &known_projects {
-            project.append_text(path);
-        }
-        let initial = this
-            .active_directory()
-            .or_else(|| known_projects.first().cloned())
-            .unwrap_or_default();
-        if let Some(index) = known_projects.iter().position(|path| path == &initial) {
-            project.set_active(Some(index as u32));
-        } else if !initial.is_empty() {
-            project.prepend_text(&initial);
-            project.set_active(Some(0));
-        }
-        if let Some(entry) = project.child().and_downcast::<gtk::Entry>() {
-            entry.set_placeholder_text(Some("/path/to/project"));
-            entry.set_activates_default(true);
-            project_label.set_mnemonic_widget(Some(&entry));
-        }
-        let project_hint = gtk::Label::new(Some("Pick a project or type a new path."));
-        project_hint.set_xalign(0.0);
-        project_hint.add_css_class("session-picker-path");
-        let title_label = gtk::Label::new(Some("Title (optional)"));
-        title_label.set_xalign(0.0);
-        let title = gtk::Entry::new();
-        title.set_activates_default(true);
-        let actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        actions.set_halign(gtk::Align::End);
-        let cancel = gtk::Button::with_label("Cancel");
-        let create = gtk::Button::with_label("Create");
-        create.add_css_class("suggested-action");
-        actions.append(&cancel);
-        actions.append(&create);
-        root.append(&project_label);
-        root.append(&project);
-        root.append(&project_hint);
-        root.append(&title_label);
-        root.append(&title);
-        root.append(&actions);
-        dialog.set_child(Some(&root));
-        dialog.set_default_widget(Some(&create));
-        title_label.set_mnemonic_widget(Some(&title));
-        drop(this);
 
-        cancel.connect_clicked({
-            let dialog = dialog.clone();
-            move |_| dialog.close()
-        });
-        create.connect_clicked({
-            let weak = Rc::downgrade(controller);
-            let dialog = dialog.clone();
-            let project = project.clone();
-            let title = title.clone();
-            move |_| {
-                let value = combo_text(&project);
-                if value.is_empty() {
-                    if let Some(entry) = project.child().and_downcast::<gtk::Entry>() {
-                        entry.add_css_class("error");
-                    }
-                    return;
-                }
-                if let Some(controller) = weak.upgrade() {
-                    let (api, request_id) = {
-                        let mut this = controller.borrow_mut();
-                        this.next_session_request_id += 1;
-                        let request_id = this.next_session_request_id;
-                        this.pending_session_request = Some(request_id);
-                        (this.api.clone(), request_id)
-                    };
-                    api.send(Command::CreateSession {
-                        request_id,
-                        directory: value,
-                        title: (!title.text().trim().is_empty())
-                            .then(|| title.text().trim().to_owned()),
-                    });
-                    dialog.set_sensitive(false);
-                }
+        let mut paths = Vec::with_capacity(scored.len());
+        let mut row_to_select = None;
+
+        for (rank, (_, name, path)) in scored.into_iter().enumerate() {
+            let is_active = active_dir.as_deref() == Some(&path);
+            paths.push(path.clone());
+
+            let row = gtk::ListBoxRow::new();
+            row.add_css_class("model-picker-row");
+            if is_active {
+                row.add_css_class("selected");
             }
-        });
-        dialog.connect_close_request({
-            let weak = Rc::downgrade(controller);
-            move |_| {
-                if let Some(controller) = weak.upgrade() {
-                    controller.borrow_mut().new_session_dialog = None;
-                }
-                glib::Propagation::Proceed
+
+            let box_row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+            box_row.set_margin_start(10);
+            box_row.set_margin_end(10);
+            box_row.set_margin_top(6);
+            box_row.set_margin_bottom(6);
+
+            let labels_box = gtk::Box::new(gtk::Orientation::Vertical, 2);
+            labels_box.set_hexpand(true);
+
+            let title_lbl = gtk::Label::new(Some(&name));
+            title_lbl.set_xalign(0.0);
+            title_lbl.add_css_class("model-picker-item-title");
+
+            let path_lbl = gtk::Label::new(Some(&path));
+            path_lbl.set_xalign(0.0);
+            path_lbl.add_css_class("model-picker-item-subtext");
+            path_lbl.set_ellipsize(pango::EllipsizeMode::Middle);
+
+            labels_box.append(&title_lbl);
+            labels_box.append(&path_lbl);
+            box_row.append(&labels_box);
+
+            if is_active {
+                let badge = gtk::Label::new(Some("Current"));
+                badge.add_css_class("model-picker-check");
+                box_row.append(&badge);
             }
-        });
-        close_window_on_escape(&dialog);
-        controller.borrow_mut().new_session_dialog = Some(dialog.clone());
-        dialog.present();
-        if let Some(entry) = project.child().and_downcast::<gtk::Entry>() {
-            entry.grab_focus();
+
+            row.set_child(Some(&box_row));
+            list.append(&row);
+
+            if is_active && row_to_select.is_none() {
+                row_to_select = Some(row.clone());
+            } else if rank == 0 && row_to_select.is_none() {
+                row_to_select = Some(row.clone());
+            }
         }
+
+        if let Some(row) = row_to_select {
+            list.select_row(Some(&row));
+        }
+
+        *filtered_paths.borrow_mut() = paths;
+    }
+
+    fn activate_current_new_session_selection(controller: &Rc<RefCell<Self>>) {
+        let (list, filtered_paths) = {
+            let this = controller.borrow();
+            (
+                this.widgets.new_session_list.clone(),
+                this.widgets.new_session_filtered_paths.clone(),
+            )
+        };
+        let row_idx = list
+            .selected_row()
+            .map(|row| row.index() as usize)
+            .or_else(|| {
+                if list.row_at_index(0).is_some() {
+                    Some(0)
+                } else {
+                    None
+                }
+            });
+        let path = row_idx
+            .and_then(|idx| filtered_paths.borrow().get(idx).cloned())
+            .or_else(|| filtered_paths.borrow().first().cloned());
+        if let Some(path) = path {
+            Self::create_session_for_project(controller, &path);
+        }
+    }
+
+    fn create_session_for_project(controller: &Rc<RefCell<Self>>, directory: &str) {
+        let (api, request_id) = {
+            let mut this = controller.borrow_mut();
+            this.close_new_session_overlay();
+            this.next_session_request_id += 1;
+            let request_id = this.next_session_request_id;
+            this.pending_session_request = Some(request_id);
+            (this.api.clone(), request_id)
+        };
+        api.send(Command::CreateSession {
+            request_id,
+            directory: directory.to_owned(),
+            title: None,
+        });
+    }
+
+    fn close_new_session_overlay(&self) {
+        self.widgets.new_session_overlay.set_visible(false);
+        self.widgets.composer.grab_focus();
     }
 
     fn rename_active_session(controller: &Rc<RefCell<Self>>) {
@@ -6602,21 +6865,6 @@ fn push_unique_path(paths: &mut Vec<String>, path: String) {
     if !path.is_empty() && !paths.iter().any(|existing| existing == &path) {
         paths.push(path);
     }
-}
-
-fn combo_text(combo: &gtk::ComboBoxText) -> String {
-    combo
-        .active_text()
-        .map(|text| text.to_string())
-        .or_else(|| {
-            combo
-                .child()
-                .and_downcast::<gtk::Entry>()
-                .map(|entry| entry.text().to_string())
-        })
-        .unwrap_or_default()
-        .trim()
-        .to_owned()
 }
 
 fn format_local_timestamp(timestamp: u64) -> String {

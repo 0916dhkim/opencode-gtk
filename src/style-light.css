@@ -41,6 +41,18 @@ headerbar button.sidebar-toggle:hover {
   margin-right: 4px;
 }
 
+.modal-backdrop {
+  background: rgba(0, 0, 0, 0.35);
+}
+
+.modal-card {
+  background: #fbf9f4;
+  border: 1px solid #d0ccc4;
+  border-radius: 12px;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.2);
+  padding: 16px 18px 18px;
+}
+
 .connection-status.error,
 .error {
   color: #a13c34;
