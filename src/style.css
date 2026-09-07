@@ -61,15 +61,73 @@ headerbar button.sidebar-toggle:hover {
 }
 
 .modal-backdrop {
-  background: rgba(0, 0, 0, 0.65);
+  background: rgba(0, 0, 0, 0.68);
 }
 
-.modal-card {
-  background: #16191d;
-  border: 1px solid #2d333b;
-  border-radius: 12px;
-  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.55);
-  padding: 16px 18px 18px;
+.new-session-palette {
+  background: #15181c;
+  border: 1px solid #2a3038;
+  border-radius: 10px;
+  box-shadow: 0 20px 48px rgba(0, 0, 0, 0.65);
+  overflow: hidden;
+}
+
+.new-session-search {
+  padding: 12px 14px;
+  background: #181c21;
+  border-bottom: 1px solid #242930;
+  border-top: none;
+  border-left: none;
+  border-right: none;
+  border-radius: 0;
+  box-shadow: none;
+  font-size: 13px;
+  font-weight: 500;
+  color: #f0ede7;
+}
+
+.new-session-search:focus {
+  box-shadow: none;
+  outline: none;
+  border-color: #242930;
+}
+
+.new-session-list {
+  background: transparent;
+  padding: 4px 6px 6px;
+}
+
+.new-session-row {
+  padding: 7px 10px;
+  border-radius: 6px;
+  margin: 1px 0;
+}
+
+.new-session-row:hover,
+.new-session-row:selected,
+.new-session-row.selected {
+  background: #252d37;
+}
+
+.new-session-name {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #f0ede7;
+}
+
+.new-session-path {
+  font-size: 11px;
+  color: #7d8590;
+}
+
+.new-session-row:selected .new-session-name,
+.new-session-row.selected .new-session-name {
+  color: #ffffff;
+}
+
+.new-session-row:selected .new-session-path,
+.new-session-row.selected .new-session-path {
+  color: #9ba5b2;
 }
 
 .connection-status.error,

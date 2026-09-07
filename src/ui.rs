@@ -168,7 +168,7 @@ struct Widgets {
     variant_list: gtk::ListBox,
     variant_filtered_indices: Rc<RefCell<Vec<usize>>>,
     new_session_overlay: gtk::Box,
-    new_session_search: gtk::SearchEntry,
+    new_session_search: gtk::Entry,
     new_session_list: gtk::ListBox,
     new_session_filtered_paths: Rc<RefCell<Vec<String>>>,
     context_usage: gtk::Label,
@@ -1213,43 +1213,29 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
     new_session_overlay.set_valign(gtk::Align::Fill);
     new_session_overlay.set_visible(false);
 
-    let modal_card = gtk::Box::new(gtk::Orientation::Vertical, 12);
-    modal_card.add_css_class("modal-card");
+    let modal_card = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    modal_card.add_css_class("new-session-palette");
     modal_card.set_halign(gtk::Align::Center);
     modal_card.set_valign(gtk::Align::Center);
-    modal_card.set_size_request(480, -1);
+    modal_card.set_size_request(350, -1);
 
-    let modal_header = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-    let modal_title = gtk::Label::new(Some("New Session"));
-    modal_title.set_xalign(0.0);
-    modal_title.set_hexpand(true);
-    modal_title.add_css_class("modal-heading");
-
-    let modal_close_btn = icon_button(ICON_CLOSE, 14);
-    modal_close_btn.add_css_class("ghost-button");
-    modal_close_btn.set_tooltip_text(Some("Close (Esc)"));
-
-    modal_header.append(&modal_title);
-    modal_header.append(&modal_close_btn);
-
-    let new_session_search = gtk::SearchEntry::new();
-    new_session_search.set_placeholder_text(Some("Search projects (fuzzy)..."));
-    new_session_search.add_css_class("model-picker-search");
+    let new_session_search = gtk::Entry::new();
+    new_session_search.set_placeholder_text(Some("Search projects..."));
+    new_session_search.add_css_class("new-session-search");
 
     let new_session_list = gtk::ListBox::new();
     new_session_list.set_selection_mode(gtk::SelectionMode::Single);
-    new_session_list.add_css_class("model-picker-list");
+    new_session_list.add_css_class("new-session-list");
 
     let new_session_scroll = gtk::ScrolledWindow::builder()
         .hscrollbar_policy(gtk::PolicyType::Never)
         .vscrollbar_policy(gtk::PolicyType::Automatic)
         .propagate_natural_height(true)
-        .max_content_height(280)
-        .min_content_height(100)
+        .max_content_height(260)
+        .min_content_height(80)
         .child(&new_session_list)
         .build();
 
-    modal_card.append(&modal_header);
     modal_card.append(&new_session_search);
     modal_card.append(&new_session_scroll);
 
@@ -1655,7 +1641,7 @@ fn wire_callbacks(controller: &Rc<RefCell<Controller>>) {
         .borrow()
         .widgets
         .new_session_search
-        .connect_search_changed(move |search| {
+        .connect_changed(move |search| {
             if let Some(controller) = weak.upgrade() {
                 Controller::filter_new_session_projects(&controller, search.text().as_str());
             }
@@ -5665,55 +5651,42 @@ impl Controller {
         let mut row_to_select = None;
 
         for (rank, (_, name, path)) in scored.into_iter().enumerate() {
-            let is_active = active_dir.as_deref() == Some(&path);
             paths.push(path.clone());
 
             let row = gtk::ListBoxRow::new();
-            row.add_css_class("model-picker-row");
-            if is_active {
-                row.add_css_class("selected");
-            }
+            row.add_css_class("new-session-row");
 
-            let box_row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+            let box_row = gtk::Box::new(gtk::Orientation::Horizontal, 12);
             box_row.set_margin_start(10);
             box_row.set_margin_end(10);
             box_row.set_margin_top(6);
             box_row.set_margin_bottom(6);
 
-            let labels_box = gtk::Box::new(gtk::Orientation::Vertical, 2);
-            labels_box.set_hexpand(true);
-
             let title_lbl = gtk::Label::new(Some(&name));
             title_lbl.set_xalign(0.0);
-            title_lbl.add_css_class("model-picker-item-title");
+            title_lbl.add_css_class("new-session-name");
 
             let path_lbl = gtk::Label::new(Some(&path));
-            path_lbl.set_xalign(0.0);
-            path_lbl.add_css_class("model-picker-item-subtext");
+            path_lbl.set_xalign(1.0);
+            path_lbl.set_hexpand(true);
+            path_lbl.add_css_class("new-session-path");
             path_lbl.set_ellipsize(pango::EllipsizeMode::Middle);
 
-            labels_box.append(&title_lbl);
-            labels_box.append(&path_lbl);
-            box_row.append(&labels_box);
-
-            if is_active {
-                let badge = gtk::Label::new(Some("Current"));
-                badge.add_css_class("model-picker-check");
-                box_row.append(&badge);
-            }
+            box_row.append(&title_lbl);
+            box_row.append(&path_lbl);
 
             row.set_child(Some(&box_row));
             list.append(&row);
 
-            if is_active && row_to_select.is_none() {
-                row_to_select = Some(row.clone());
-            } else if rank == 0 && row_to_select.is_none() {
+            if !query.is_empty() && rank == 0 {
                 row_to_select = Some(row.clone());
             }
         }
 
         if let Some(row) = row_to_select {
             list.select_row(Some(&row));
+        } else {
+            list.select_row(None::<&gtk::ListBoxRow>);
         }
 
         *filtered_paths.borrow_mut() = paths;

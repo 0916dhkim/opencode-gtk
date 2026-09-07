@@ -45,12 +45,70 @@ headerbar button.sidebar-toggle:hover {
   background: rgba(0, 0, 0, 0.35);
 }
 
-.modal-card {
+.new-session-palette {
   background: #fbf9f4;
   border: 1px solid #d0ccc4;
-  border-radius: 12px;
-  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.2);
-  padding: 16px 18px 18px;
+  border-radius: 10px;
+  box-shadow: 0 20px 48px rgba(0, 0, 0, 0.2);
+  overflow: hidden;
+}
+
+.new-session-search {
+  padding: 12px 14px;
+  background: #f4f0e6;
+  border-bottom: 1px solid #dedad0;
+  border-top: none;
+  border-left: none;
+  border-right: none;
+  border-radius: 0;
+  box-shadow: none;
+  font-size: 13px;
+  font-weight: 500;
+  color: #1f1e1c;
+}
+
+.new-session-search:focus {
+  box-shadow: none;
+  outline: none;
+  border-color: #dedad0;
+}
+
+.new-session-list {
+  background: transparent;
+  padding: 4px 6px 6px;
+}
+
+.new-session-row {
+  padding: 7px 10px;
+  border-radius: 6px;
+  margin: 1px 0;
+}
+
+.new-session-row:hover,
+.new-session-row:selected,
+.new-session-row.selected {
+  background: #e8e4db;
+}
+
+.new-session-name {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #1f1e1c;
+}
+
+.new-session-path {
+  font-size: 11px;
+  color: #8b918e;
+}
+
+.new-session-row:selected .new-session-name,
+.new-session-row.selected .new-session-name {
+  color: #111110;
+}
+
+.new-session-row:selected .new-session-path,
+.new-session-row.selected .new-session-path {
+  color: #555b58;
 }
 
 .connection-status.error,
