@@ -5323,6 +5323,8 @@ impl Controller {
             .vscrollbar_policy(gtk::PolicyType::Automatic)
             .propagate_natural_height(false)
             .propagate_natural_width(false)
+            .min_content_height(264)
+            .max_content_height(264)
             .vexpand(true)
             .hexpand(true)
             .child(&list)

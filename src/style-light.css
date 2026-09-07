@@ -62,9 +62,7 @@ headerbar button.sidebar-toggle:hover {
 
 .app-modal-palette.sessions {
   min-width: 420px;
-  max-width: 420px;
   min-height: 310px;
-  max-height: 310px;
 }
 
 .new-session-search {

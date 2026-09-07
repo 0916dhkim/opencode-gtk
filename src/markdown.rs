@@ -425,6 +425,7 @@ fn block_widget(block: Block) -> gtk::Widget {
         BlockKind::Code(language) => {
             let code_block = gtk::Box::new(gtk::Orientation::Vertical, 0);
             code_block.add_css_class("markdown-code-block");
+            code_block.set_overflow(gtk::Overflow::Hidden);
 
             let header = gtk::Box::new(gtk::Orientation::Horizontal, 8);
             header.add_css_class("markdown-code-header");
