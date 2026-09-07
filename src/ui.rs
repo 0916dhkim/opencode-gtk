@@ -135,6 +135,7 @@ struct Widgets {
     session_button: gtk::Button,
     new_button: gtk::Button,
     settings_button: gtk::Button,
+    title_label: gtk::Label,
     status: gtk::Label,
     tab_bar: gtk::Box,
     transcript: gtk::Box,
@@ -843,6 +844,8 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
         sidebar_nav_button(ICON_SETTINGS, "Settings", "Server connection (Ctrl+,)");
     let title = gtk::Label::new(Some("OpenCode"));
     title.add_css_class("app-title");
+    title.set_ellipsize(pango::EllipsizeMode::End);
+    title.set_max_width_chars(40);
     let status = gtk::Label::new(Some("Connecting"));
     status.add_css_class("connection-status");
     let title_box = gtk::Box::new(gtk::Orientation::Horizontal, 10);
@@ -1184,6 +1187,7 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
         session_button,
         new_button,
         settings_button,
+        title_label: title,
         status,
         tab_bar,
         transcript,
@@ -3207,6 +3211,7 @@ impl Controller {
             tab.add_controller(drop_target);
             self.widgets.tab_bar.append(&tab);
         }
+        self.refresh_window_title();
     }
 
     fn open_tab(controller: &Rc<RefCell<Self>>, id: &str) {
@@ -3703,6 +3708,31 @@ impl Controller {
             } else {
                 "Show sidebar (Ctrl+B)"
             }));
+        self.refresh_window_title();
+    }
+
+    fn refresh_window_title(&self) {
+        if self.widgets.sidebar.is_visible() {
+            self.widgets.title_label.set_label("OpenCode");
+            self.widgets.title_label.set_tooltip_text(None);
+        } else {
+            let active_title = self
+                .state
+                .active
+                .as_ref()
+                .and_then(|id| self.session(id))
+                .map(|session| session.title.trim())
+                .filter(|title| !title.is_empty());
+            if let Some(session_title) = active_title {
+                self.widgets.title_label.set_label(session_title);
+                self.widgets
+                    .title_label
+                    .set_tooltip_text(Some(session_title));
+            } else {
+                self.widgets.title_label.set_label("OpenCode");
+                self.widgets.title_label.set_tooltip_text(None);
+            }
+        }
     }
 
     fn refresh_attachment_control(&self) {
