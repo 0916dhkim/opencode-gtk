@@ -5322,10 +5322,12 @@ impl Controller {
             .hscrollbar_policy(gtk::PolicyType::Never)
             .vscrollbar_policy(gtk::PolicyType::Automatic)
             .propagate_natural_height(false)
-            .min_content_height(264)
+            .propagate_natural_width(false)
             .vexpand(true)
+            .hexpand(true)
             .child(&list)
             .build();
+        root.set_hexpand(true);
         root.set_vexpand(true);
         root.append(&search);
         root.append(&scroll);
@@ -5852,6 +5854,12 @@ impl Controller {
         self.close_new_session_overlay();
         clear_box(&self.widgets.app_modal_card);
         self.widgets.app_modal_card.set_sensitive(true);
+        self.widgets.app_modal_card.remove_css_class("sessions");
+        if kind == AppModalKind::Sessions {
+            self.widgets.app_modal_card.add_css_class("sessions");
+        }
+        self.widgets.app_modal_card.set_hexpand(false);
+        self.widgets.app_modal_card.set_vexpand(false);
         self.widgets.app_modal_card.set_size_request(width, height);
         self.widgets.app_modal_overlay.set_visible(true);
         self.app_modal = Some(kind);
@@ -5864,6 +5872,8 @@ impl Controller {
         self.widgets.app_modal_overlay.set_visible(false);
         self.widgets.window.set_default_widget(None::<&gtk::Widget>);
         clear_box(&self.widgets.app_modal_card);
+        self.widgets.app_modal_card.remove_css_class("sessions");
+        self.widgets.app_modal_card.set_size_request(-1, -1);
         self.app_modal = None;
         self.app_modal_focus = None;
         self.session_picker = None;

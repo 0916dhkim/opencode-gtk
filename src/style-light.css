@@ -60,6 +60,13 @@ headerbar button.sidebar-toggle:hover {
   box-shadow: 0 20px 48px rgba(0, 0, 0, 0.2);
 }
 
+.app-modal-palette.sessions {
+  min-width: 420px;
+  max-width: 420px;
+  min-height: 310px;
+  max-height: 310px;
+}
+
 .new-session-search {
   padding: 12px 14px;
   background: #f4f0e6;
