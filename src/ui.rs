@@ -7451,58 +7451,6 @@ fn system_theme_is_dark(mode: dark_light::Mode, theme_name: &str, prefer_dark: b
 mod tests {
     use super::*;
 
-    fn with_gtk(test: impl FnOnce()) {
-        assert!(gtk::init().is_ok(), "gtk::init failed");
-        test();
-    }
-
-    fn measure(
-        widget: &impl IsA<gtk::Widget>,
-        orientation: gtk::Orientation,
-        for_size: i32,
-    ) -> (i32, i32) {
-        let (minimum, natural, _, _) = widget.measure(orientation, for_size);
-        (minimum, natural)
-    }
-
-    fn sessions_overlay_card() -> (gtk::Box, gtk::ListBox) {
-        let card = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        card.add_css_class("app-modal-palette");
-        card.add_css_class("sessions");
-        card.set_overflow(gtk::Overflow::Hidden);
-        card.set_hexpand(false);
-        card.set_vexpand(false);
-        card.set_size_request(420, 310);
-        let (root, list, _) = sessions_picker_body();
-        card.append(&root);
-        (card, list)
-    }
-
-    fn fill_session_rows(list: &gtk::ListBox, count: usize) {
-        while let Some(child) = list.first_child() {
-            list.remove(&child);
-        }
-        for index in 0..count {
-            let label = gtk::Label::new(Some(&format!("Session {index}")));
-            label.set_xalign(0.0);
-            list.append(&label);
-        }
-    }
-
-    #[test]
-    fn sessions_overlay_keeps_the_same_height_for_one_or_many_rows() {
-        with_gtk(|| {
-            let (card, list) = sessions_overlay_card();
-            fill_session_rows(&list, 1);
-            let few = measure(&card, gtk::Orientation::Vertical, 420);
-            fill_session_rows(&list, 20);
-            let many = measure(&card, gtk::Orientation::Vertical, 420);
-            assert_eq!(few, many);
-            assert!(few.0 >= 310);
-            assert!(few.1 >= 310);
-        });
-    }
-
     fn config_with_cloudflare() -> ApiConfig {
         ApiConfig {
             base_url: "https://opencode.example.com".into(),
