@@ -84,6 +84,44 @@ headerbar button.sidebar-toggle:hover {
   min-height: 310px;
 }
 
+.session-id-field {
+  min-height: 32px;
+  padding: 2px 4px 2px 10px;
+  border-radius: 6px;
+  background: #101214;
+  border: 1px solid #282c32;
+}
+
+.session-id-value {
+  font-family: monospace;
+  font-size: 0.85em;
+  color: #c8c4bc;
+}
+
+button.session-id-copy {
+  min-width: 26px;
+  min-height: 26px;
+  padding: 0;
+  margin: 0;
+  border: none;
+  background: transparent;
+  background-image: none;
+  box-shadow: none;
+  border-radius: 5px;
+  color: #8b949e;
+}
+
+button.session-id-copy:hover {
+  background: rgba(255, 255, 255, 0.08);
+  background-image: none;
+  color: #f0ede7;
+}
+
+button.session-id-copy.copied {
+  color: #56d364;
+  background: rgba(86, 211, 100, 0.12);
+}
+
 .new-session-search {
   padding: 12px 14px;
   background: #181c21;
@@ -718,6 +756,8 @@ popover.background.model-picker-popover > contents {
 
 popover.background.model-picker-popover > contents {
   border-radius: 10px;
+  border-top: 2px solid transparent;
+  border-bottom: 2px solid transparent;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
   padding: 6px;
 }

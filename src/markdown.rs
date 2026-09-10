@@ -730,11 +730,11 @@ fn safe_link(target: &str) -> bool {
         .is_ok_and(|url| !matches!(url.scheme(), "javascript" | "data" | "vbscript" | "file"))
 }
 
-fn copy_icon(pixel_size: i32) -> gtk::DrawingArea {
+pub(crate) fn copy_icon(pixel_size: i32) -> gtk::DrawingArea {
     drawn_icon(pixel_size, draw_copy)
 }
 
-fn check_icon(pixel_size: i32) -> gtk::DrawingArea {
+pub(crate) fn check_icon(pixel_size: i32) -> gtk::DrawingArea {
     drawn_icon(pixel_size, draw_check)
 }
 

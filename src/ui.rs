@@ -287,6 +287,38 @@ fn icon_button(name: &str, pixel_size: i32) -> gtk::Button {
     button
 }
 
+fn copy_text_button(text: &str, tooltip: &str) -> gtk::Button {
+    let button = gtk::Button::new();
+    button.set_child(Some(&markdown::copy_icon(14)));
+    button.set_tooltip_text(Some(tooltip));
+    button.set_valign(gtk::Align::Center);
+    button.add_css_class("flat");
+    button.add_css_class("session-id-copy");
+    let copy_text = text.to_owned();
+    let idle_tooltip = tooltip.to_owned();
+    let generation = Rc::new(Cell::new(0u32));
+    button.connect_clicked(move |btn| {
+        btn.display().clipboard().set_text(&copy_text);
+        btn.set_child(Some(&markdown::check_icon(14)));
+        btn.add_css_class("copied");
+        btn.set_tooltip_text(Some("Copied"));
+        let next = generation.get().wrapping_add(1);
+        generation.set(next);
+        let btn = btn.clone();
+        let generation = generation.clone();
+        let idle_tooltip = idle_tooltip.clone();
+        glib::timeout_add_local_once(Duration::from_millis(1200), move || {
+            if generation.get() != next || !btn.is_visible() {
+                return;
+            }
+            btn.set_child(Some(&markdown::copy_icon(14)));
+            btn.remove_css_class("copied");
+            btn.set_tooltip_text(Some(&idle_tooltip));
+        });
+    });
+    button
+}
+
 fn tab_index_from_key(key: gdk::Key) -> Option<usize> {
     match key {
         gdk::Key::_1 | gdk::Key::KP_1 => Some(0),
@@ -1102,6 +1134,7 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
     let model_popover = gtk::Popover::new();
     model_popover.set_parent(&model_button);
     model_popover.set_position(gtk::PositionType::Top);
+    model_popover.set_offset(0, -6);
     model_popover.set_autohide(true);
     model_popover.add_css_class("model-picker-popover");
 
@@ -1157,6 +1190,7 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
     let variant_popover = gtk::Popover::new();
     variant_popover.set_parent(&variant_button);
     variant_popover.set_position(gtk::PositionType::Top);
+    variant_popover.set_offset(0, -6);
     variant_popover.set_autohide(true);
     variant_popover.add_css_class("model-picker-popover");
 
@@ -3026,6 +3060,7 @@ impl Controller {
                     } else {
                         TranscriptUpdate::Content
                     });
+                    this.refresh_context_usage();
                 }
             }
             Err(error) => {
@@ -3036,6 +3071,7 @@ impl Controller {
                 this.show_error(&error);
                 if this.state.active.as_deref() == Some(session_id.as_str()) {
                     this.refresh_transcript(TranscriptUpdate::Content);
+                    this.refresh_context_usage();
                 }
             }
         }
@@ -4018,10 +4054,11 @@ impl Controller {
         let attachments_valid = draft.is_none_or(|draft| {
             draft.attachments.is_empty() || self.selected_model_supports_attachments()
         });
+        let model_selection = self.current_model_selection_for_active();
         let model_ready = self.session(active).is_some_and(|session| {
             !self.state.loading_models.contains(&session.directory)
                 && !self.model_load_errors.contains_key(&session.directory)
-                && self.state.selections.get(active).is_some_and(|selection| {
+                && model_selection.as_ref().is_some_and(|selection| {
                     self.state
                         .catalogs
                         .get(&session.directory)
@@ -4034,10 +4071,7 @@ impl Controller {
     }
 
     fn selected_model_supports_attachments(&self) -> bool {
-        let Some(active) = self.state.active.as_ref() else {
-            return false;
-        };
-        let Some(selection) = self.state.selections.get(active) else {
+        let Some(selection) = self.current_model_selection_for_active() else {
             return false;
         };
         self.current_models.iter().any(|model| {
@@ -4048,22 +4082,13 @@ impl Controller {
     }
 
     fn selected_context_limit(&self) -> Option<u64> {
-        let from_selection = self.state.active.as_ref().and_then(|active| {
-            let selection = self.state.selections.get(active)?;
-            self.current_models
-                .iter()
-                .find(|model| {
-                    model.provider_id == selection.provider_id
-                        && model.model_id == selection.model_id
-                })
-                .and_then(|model| model.context_limit)
-        });
-        from_selection
-            .or_else(|| {
-                self.current_models
-                    .first()
-                    .and_then(|model| model.context_limit)
+        let selection = self.current_model_selection_for_active()?;
+        self.current_models
+            .iter()
+            .find(|model| {
+                model.provider_id == selection.provider_id && model.model_id == selection.model_id
             })
+            .and_then(|model| model.context_limit)
             .filter(|limit| *limit > 0)
     }
 
@@ -4074,10 +4099,15 @@ impl Controller {
             self.widgets.context_usage.set_visible(false);
             return;
         };
-        let used = self
-            .state
-            .active
-            .as_ref()
+        let active = self.state.active.as_ref();
+        let loading = active.is_some_and(|id| self.state.loading_messages.contains(id));
+        if loading {
+            self.widgets.context_usage.set_text("");
+            self.widgets.context_usage.set_tooltip_text(None);
+            self.widgets.context_usage.set_visible(false);
+            return;
+        }
+        let used = active
             .and_then(|id| self.state.conversations.get(id))
             .and_then(Conversation::context_tokens)
             .unwrap_or(0);
@@ -5898,6 +5928,20 @@ impl Controller {
         title.set_text(&session.title);
         title.set_activates_default(true);
         title_label.set_mnemonic_widget(Some(&title));
+        let id_label = gtk::Label::new(Some("Session ID"));
+        id_label.set_xalign(0.0);
+        let id_field = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+        id_field.add_css_class("session-id-field");
+        id_field.set_hexpand(true);
+        let id_value = gtk::Label::new(Some(&session.id));
+        id_value.set_xalign(0.0);
+        id_value.set_hexpand(true);
+        id_value.set_selectable(true);
+        id_value.set_ellipsize(pango::EllipsizeMode::Middle);
+        id_value.add_css_class("session-id-value");
+        let copy = copy_text_button(&session.id, "Copy session ID");
+        id_field.append(&id_value);
+        id_field.append(&copy);
         let actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         actions.set_halign(gtk::Align::End);
         let cancel = gtk::Button::with_label("Cancel");
@@ -5907,6 +5951,8 @@ impl Controller {
         actions.append(&save);
         root.append(&title_label);
         root.append(&title);
+        root.append(&id_label);
+        root.append(&id_field);
         root.append(&actions);
 
         cancel.connect_clicked({
