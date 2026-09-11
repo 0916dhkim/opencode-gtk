@@ -22,13 +22,15 @@ for _ in {1..50}; do
 done
 [[ -n "${main_window}" ]]
 
-xdotool windowfocus "${main_window}"
-xdotool key --window "${main_window}" ctrl+t
-for _ in {1..50}; do
-  if xdotool search --onlyvisible --name '^New session$' >/dev/null 2>&1; then
-    exit 0
-  fi
-  sleep 0.1
+for _ in {1..20}; do
+  xdotool windowfocus "${main_window}" 2>/dev/null || true
+  xdotool key --window "${main_window}" ctrl+t
+  for _ in {1..5}; do
+    if xdotool search --onlyvisible --name '^New session$' >/dev/null 2>&1; then
+      exit 0
+    fi
+    sleep 0.1
+  done
 done
 
 printf '%s\n' 'Ctrl+T did not open the new-session dialog' >&2
