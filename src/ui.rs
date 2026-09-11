@@ -5481,31 +5481,37 @@ impl Controller {
         root.set_hexpand(true);
         root.set_vexpand(true);
 
-        // Left rail
-        let rail = gtk::Box::new(gtk::Orientation::Vertical, 4);
+        // Left rail (Variant 3: Minimalist Tabular Row, 170px width)
+        let rail = gtk::Box::new(gtk::Orientation::Vertical, 2);
         rail.add_css_class("settings-rail");
-        rail.set_size_request(190, -1);
+        rail.set_size_request(170, -1);
         rail.set_vexpand(true);
 
         let rail_header = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        rail_header.set_margin_start(8);
-        rail_header.set_margin_bottom(12);
-        let gear = icon_image(ICON_SETTINGS, 16);
-        gear.add_css_class("sidebar-nav-icon");
+        rail_header.set_margin_start(4);
+        rail_header.set_margin_end(4);
+        rail_header.set_margin_bottom(8);
         let rail_heading = gtk::Label::new(Some("Settings"));
         rail_heading.add_css_class("modal-heading");
-        rail_header.append(&gear);
+        rail_heading.set_hexpand(true);
+        rail_heading.set_xalign(0.0);
+        let online_status = gtk::Label::new(Some("● online"));
+        online_status.add_css_class("session-badge");
+        online_status.add_css_class("open");
+        online_status.set_xalign(1.0);
         rail_header.append(&rail_heading);
+        rail_header.append(&online_status);
         rail.append(&rail_header);
 
         let rail_sep = gtk::Separator::new(gtk::Orientation::Horizontal);
         rail_sep.add_css_class("sidebar-nav-separator");
+        rail_sep.set_margin_bottom(6);
         rail.append(&rail_sep);
 
         let btn_connection = gtk::Button::new();
         btn_connection.add_css_class("flat");
         btn_connection.add_css_class("settings-rail-item");
-        let conn_row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        let conn_row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         let conn_icon = gtk::Label::new(Some("📡"));
         let conn_text = gtk::Label::new(Some("Connection"));
         conn_text.set_hexpand(true);
@@ -5518,7 +5524,7 @@ impl Controller {
         let btn_sessions = gtk::Button::new();
         btn_sessions.add_css_class("flat");
         btn_sessions.add_css_class("settings-rail-item");
-        let sess_row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        let sess_row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         let sess_icon = gtk::Label::new(Some("💬"));
         let sess_text = gtk::Label::new(Some("Sessions"));
         sess_text.set_hexpand(true);
@@ -5528,12 +5534,28 @@ impl Controller {
         if session_count > 0 {
             let count_badge = gtk::Label::new(Some(&session_count.to_string()));
             count_badge.add_css_class("rail-badge");
+            count_badge.set_xalign(1.0);
             sess_row.append(&count_badge);
         }
         btn_sessions.set_child(Some(&sess_row));
 
         rail.append(&btn_connection);
         rail.append(&btn_sessions);
+
+        let rail_footer = gtk::Box::new(gtk::Orientation::Vertical, 2);
+        rail_footer.add_css_class("settings-rail-footer");
+        let host_name = url::Url::parse(&config.base_url)
+            .ok()
+            .and_then(|u| u.host_str().map(str::to_owned))
+            .unwrap_or_else(|| "remote".to_owned());
+        let host_label = gtk::Label::new(Some(&host_name));
+        host_label.set_xalign(0.0);
+        host_label.set_ellipsize(pango::EllipsizeMode::Middle);
+        let version_label = gtk::Label::new(Some("opencode-gtk v0.1.0"));
+        version_label.set_xalign(0.0);
+        rail_footer.append(&host_label);
+        rail_footer.append(&version_label);
+        rail.append(&rail_footer);
 
         // Stack for pages
         let stack = gtk::Stack::new();

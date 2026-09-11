@@ -894,35 +894,35 @@ button.suggested-action {
 .settings-rail {
   background: #111418;
   border-right: 1px solid #232930;
-  padding: 18px 12px;
+  padding: 14px 8px;
   border-top-left-radius: 11px;
   border-bottom-left-radius: 11px;
 }
 
 button.settings-rail-item {
-  min-height: 36px;
-  padding: 8px 12px;
-  border-radius: 7px;
+  min-height: 24px;
+  padding: 3px 8px;
+  border-radius: 4px;
   background: transparent;
   background-image: none;
-  border: 1px solid transparent;
+  border: none;
   box-shadow: none;
   color: #8b949e;
   font-weight: 500;
-  font-size: 0.92em;
-  margin-bottom: 3px;
+  font-size: 0.9em;
+  margin-bottom: 2px;
 }
 
 button.settings-rail-item:hover {
-  background: rgba(255, 255, 255, 0.05);
+  background: rgba(255, 255, 255, 0.04);
   background-image: none;
   color: #edf1f5;
 }
 
 button.settings-rail-item.active {
-  background: #222b37;
+  background: rgba(255, 255, 255, 0.08);
   background-image: none;
-  border: 1px solid #344153;
+  border: none;
   color: #edf1f5;
   font-weight: 600;
 }
@@ -930,15 +930,26 @@ button.settings-rail-item.active {
 .rail-badge {
   font-size: 10px;
   font-family: monospace;
-  padding: 1px 6px;
-  border-radius: 10px;
-  background: #1c222a;
+  padding: 0 2px;
+  background: transparent;
   color: #6a7482;
 }
 
 button.settings-rail-item.active .rail-badge {
-  background: #2b3644;
-  color: #9aa5b1;
+  background: transparent;
+  color: #edf1f5;
+  font-weight: 600;
+}
+
+.settings-rail-footer {
+  margin-top: auto;
+  padding: 10px 6px 2px;
+  border-top: 1px solid #232932;
+  font-size: 10px;
+  color: #6a7482;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
 }
 
 .settings-topbar {
