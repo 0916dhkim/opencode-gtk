@@ -5449,7 +5449,7 @@ impl Controller {
 
         {
             let mut this = controller.borrow_mut();
-            this.open_app_modal(AppModalKind::Sessions, 420, 310);
+            this.open_app_modal(AppModalKind::Sessions, 520, -1);
             let sessions = this.tab_sessions();
             let active = this.state.active.clone();
             populate_session_list(
@@ -7046,30 +7046,76 @@ fn submit_request(
 
 fn sessions_picker_body() -> (gtk::Box, gtk::ListBox, gtk::Entry) {
     let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    root.add_css_class("tab-picker-modal");
+
+    let header = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+    header.add_css_class("tab-picker-header");
+    let search_icon = icon_image(ICON_SEARCH, 15);
+    search_icon.add_css_class("tab-picker-search-icon");
     let search = gtk::Entry::new();
     search.set_placeholder_text(Some("Search tabs..."));
     search.set_hexpand(true);
-    search.add_css_class("new-session-search");
+    search.add_css_class("tab-picker-search-entry");
+    header.append(&search_icon);
+    header.append(&search);
+
     let list = gtk::ListBox::new();
     list.set_selection_mode(gtk::SelectionMode::None);
-    list.add_css_class("new-session-list");
+    list.add_css_class("tab-picker-list");
     let scroll = gtk::ScrolledWindow::builder()
         .hscrollbar_policy(gtk::PolicyType::Never)
         .vscrollbar_policy(gtk::PolicyType::Automatic)
-        .propagate_natural_height(false)
+        .propagate_natural_height(true)
         .propagate_natural_width(false)
-        .min_content_width(420)
-        .max_content_width(420)
-        .min_content_height(264)
-        .max_content_height(264)
-        .vexpand(true)
+        .min_content_width(520)
+        .max_content_width(520)
+        .max_content_height(340)
+        .vexpand(false)
         .hexpand(true)
         .child(&list)
         .build();
-    root.set_hexpand(true);
-    root.set_vexpand(true);
-    root.append(&search);
+    scroll.add_css_class("tab-picker-scroll");
+
+    let footer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    footer.add_css_class("tab-picker-footer");
+
+    let hints_left = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+    hints_left.set_hexpand(true);
+
+    let nav_hint = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+    let chip_up = gtk::Label::new(Some("↑"));
+    chip_up.add_css_class("key-chip");
+    let chip_down = gtk::Label::new(Some("↓"));
+    chip_down.add_css_class("key-chip");
+    let nav_text = gtk::Label::new(Some("navigate"));
+    nav_hint.append(&chip_up);
+    nav_hint.append(&chip_down);
+    nav_hint.append(&nav_text);
+
+    let switch_hint = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+    let chip_enter = gtk::Label::new(Some("↵"));
+    chip_enter.add_css_class("key-chip");
+    let switch_text = gtk::Label::new(Some("switch"));
+    switch_hint.append(&chip_enter);
+    switch_hint.append(&switch_text);
+
+    hints_left.append(&nav_hint);
+    hints_left.append(&switch_hint);
+
+    let close_hint = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+    let chip_esc = gtk::Label::new(Some("esc"));
+    chip_esc.add_css_class("key-chip");
+    let close_text = gtk::Label::new(Some("close"));
+    close_hint.append(&chip_esc);
+    close_hint.append(&close_text);
+
+    footer.append(&hints_left);
+    footer.append(&close_hint);
+
+    root.append(&header);
     root.append(&scroll);
+    root.append(&footer);
+
     (root, list, search)
 }
 
@@ -7118,36 +7164,27 @@ fn populate_session_list(
         }
         shown += 1;
         let button = gtk::Button::new();
-        button.add_css_class("session-picker-row");
+        button.add_css_class("flat");
+        button.add_css_class("tab-picker-row");
         let is_active = active_id == Some(session.id.as_str());
         if is_active {
             button.add_css_class("active");
         }
-        let labels = gtk::Box::new(gtk::Orientation::Vertical, 3);
-        let title_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        let row = gtk::Box::new(gtk::Orientation::Horizontal, 16);
         let title = gtk::Label::new(Some(&session.title));
         title.set_xalign(0.0);
         title.set_hexpand(true);
         title.set_ellipsize(pango::EllipsizeMode::End);
-        title.add_css_class("session-picker-title");
-        title_box.append(&title);
-        if is_active {
-            let current = gtk::Label::new(Some("current"));
-            current.add_css_class("session-picker-time");
-            title_box.append(&current);
-        }
+        title.add_css_class("tab-picker-title");
+
         let path = gtk::Label::new(Some(&session.directory));
-        path.set_xalign(0.0);
-        path.set_hexpand(true);
+        path.set_xalign(1.0);
         path.set_ellipsize(pango::EllipsizeMode::Middle);
-        path.add_css_class("session-picker-path");
-        let time = gtk::Label::new(Some(&format_local_timestamp(session.time.updated)));
-        time.set_xalign(0.0);
-        time.add_css_class("session-picker-time");
-        labels.append(&title_box);
-        labels.append(&path);
-        labels.append(&time);
-        button.set_child(Some(&labels));
+        path.add_css_class("tab-picker-path");
+
+        row.append(&title);
+        row.append(&path);
+        button.set_child(Some(&row));
         let id = session.id.clone();
         let weak = controller.clone();
         button.connect_clicked(move |_| {
@@ -8156,7 +8193,7 @@ mod tests {
         card.set_vexpand(false);
         card.set_halign(gtk::Align::Center);
         card.set_valign(gtk::Align::Center);
-        card.set_size_request(420, 310);
+        card.set_size_request(520, -1);
         let (root, list, _) = sessions_picker_body();
         card.append(&root);
         let window = gtk::Window::new();

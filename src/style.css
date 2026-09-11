@@ -80,8 +80,10 @@ headerbar button.sidebar-toggle:hover {
 }
 
 .app-modal-palette.sessions {
-  min-width: 420px;
-  min-height: 310px;
+  background: #18181b;
+  border: 1px solid #27272a;
+  min-width: 520px;
+  min-height: 0;
 }
 
 .session-id-field {
@@ -1031,4 +1033,95 @@ button.session-picker-row.active {
   border-top: 1px solid #232932;
   background: #14171d;
   border-bottom-right-radius: 11px;
+}
+
+/* Tab Picker (Ctrl+P) - Dark Theme */
+.tab-picker-modal {
+  background: #18181b;
+  border-radius: 12px;
+}
+
+.tab-picker-header {
+  padding: 12px 16px;
+  background: #141416;
+  border-bottom: 1px solid #27272a;
+}
+
+.tab-picker-search-icon {
+  color: #71717a;
+}
+
+entry.tab-picker-search-entry,
+entry.tab-picker-search-entry:focus,
+.tab-picker-search-entry,
+.tab-picker-search-entry:focus,
+.tab-picker-search-entry text,
+.tab-picker-search-entry text:focus {
+  border: none;
+  border-width: 0;
+  box-shadow: none;
+  outline: none;
+  background: transparent;
+  background-image: none;
+  font-size: 13.5px;
+  font-weight: 500;
+  color: #f4f4f5;
+  padding: 0;
+  min-height: 0;
+}
+
+.tab-picker-list {
+  background: transparent;
+  padding: 8px 10px;
+}
+
+button.tab-picker-row {
+  padding: 8px 12px;
+  border-radius: 6px;
+  border: none;
+  background: transparent;
+  background-image: none;
+  box-shadow: none;
+  margin-bottom: 2px;
+}
+
+button.tab-picker-row:hover {
+  background: rgba(255, 255, 255, 0.04);
+  background-image: none;
+}
+
+button.tab-picker-row.active {
+  background: #27272a;
+  background-image: none;
+}
+
+.tab-picker-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #f4f4f5;
+}
+
+.tab-picker-path {
+  font-size: 11px;
+  color: #a1a1aa;
+}
+
+.tab-picker-footer {
+  padding: 8px 16px;
+  background: #141416;
+  border-top: 1px solid #27272a;
+  font-size: 11px;
+  color: #71717a;
+  border-bottom-left-radius: 12px;
+  border-bottom-right-radius: 12px;
+}
+
+.key-chip {
+  background: #27272a;
+  border: 1px solid #3f3f46;
+  border-radius: 3px;
+  padding: 1px 4px;
+  font-family: monospace;
+  font-size: 10px;
+  color: #d4d4d8;
 }
