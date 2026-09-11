@@ -5509,7 +5509,6 @@ impl Controller {
         conn_row.append(&conn_text);
         btn_connection.set_child(Some(&conn_row));
 
-        let session_count = controller.borrow().state.sessions.len();
         let btn_sessions = gtk::Button::new();
         btn_sessions.add_css_class("flat");
         btn_sessions.add_css_class("settings-rail-item");
@@ -5520,12 +5519,6 @@ impl Controller {
         sess_text.set_xalign(0.0);
         sess_row.append(&sess_icon);
         sess_row.append(&sess_text);
-        if session_count > 0 {
-            let count_badge = gtk::Label::new(Some(&session_count.to_string()));
-            count_badge.add_css_class("rail-badge");
-            count_badge.set_xalign(1.0);
-            sess_row.append(&count_badge);
-        }
         btn_sessions.set_child(Some(&sess_row));
 
         rail.append(&btn_connection);
@@ -5806,8 +5799,9 @@ impl Controller {
         let sess_title = gtk::Label::new(Some("All Sessions"));
         sess_title.set_xalign(0.0);
         sess_title.add_css_class("modal-heading");
+        let count = controller.borrow().state.sessions.len();
         let sess_sub = gtk::Label::new(Some(&format!(
-            "Search all {session_count} workspace sessions on this server"
+            "Search all {count} workspace sessions on this server"
         )));
         sess_sub.set_xalign(0.0);
         sess_sub.add_css_class("session-picker-path");
