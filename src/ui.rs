@@ -5489,26 +5489,12 @@ impl Controller {
         rail.set_size_request(170, -1);
         rail.set_vexpand(true);
 
-        let rail_header = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        rail_header.set_margin_start(4);
-        rail_header.set_margin_end(4);
-        rail_header.set_margin_bottom(8);
         let rail_heading = gtk::Label::new(Some("Settings"));
-        rail_heading.add_css_class("modal-heading");
-        rail_heading.set_hexpand(true);
         rail_heading.set_xalign(0.0);
-        let online_status = gtk::Box::new(gtk::Orientation::Horizontal, 5);
-        online_status.add_css_class("online-badge");
-        online_status.set_valign(gtk::Align::Center);
-        let dot = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-        dot.add_css_class("status-dot-green");
-        dot.set_valign(gtk::Align::Center);
-        let text = gtk::Label::new(Some("online"));
-        online_status.append(&dot);
-        online_status.append(&text);
-        rail_header.append(&rail_heading);
-        rail_header.append(&online_status);
-        rail.append(&rail_header);
+        rail_heading.set_margin_start(6);
+        rail_heading.set_margin_bottom(10);
+        rail_heading.add_css_class("modal-heading");
+        rail.append(&rail_heading);
 
         let rail_sep = gtk::Separator::new(gtk::Orientation::Horizontal);
         rail_sep.add_css_class("sidebar-nav-separator");
