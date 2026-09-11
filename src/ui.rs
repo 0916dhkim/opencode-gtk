@@ -1963,7 +1963,7 @@ fn wire_callbacks(controller: &Rc<RefCell<Controller>>) {
         .settings_button
         .connect_clicked(move |_| {
             if let Some(controller) = weak.upgrade() {
-                Controller::show_settings(&controller);
+                Controller::show_settings(&controller, None);
             }
         });
 
@@ -2438,7 +2438,7 @@ fn wire_callbacks(controller: &Rc<RefCell<Controller>>) {
                 controller.borrow().widgets.composer.grab_focus();
                 return glib::Propagation::Stop;
             }
-            gdk::Key::comma => Controller::show_settings(&controller),
+            gdk::Key::comma => Controller::show_settings(&controller, None),
             gdk::Key::p => Controller::show_session_picker(&controller),
             gdk::Key::t => Controller::show_new_session(&controller),
             gdk::Key::w => Controller::close_active(&controller),
@@ -5464,7 +5464,7 @@ impl Controller {
         search.grab_focus();
     }
 
-    fn show_settings(controller: &Rc<RefCell<Self>>) {
+    fn show_settings(controller: &Rc<RefCell<Self>>, initial_tab: Option<&str>) {
         {
             let this = controller.borrow();
             if this.app_modal == Some(AppModalKind::Settings) {
@@ -5476,13 +5476,62 @@ impl Controller {
             }
         }
         let config = controller.borrow().connection_config.clone();
-        let root = gtk::Box::new(gtk::Orientation::Vertical, 10);
-        root.set_margin_top(18);
-        root.set_margin_bottom(18);
-        root.set_margin_start(18);
-        root.set_margin_end(18);
 
-        let heading = gtk::Label::new(Some("Settings"));
+        let root = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        root.set_hexpand(true);
+        root.set_vexpand(true);
+
+        // Left rail
+        let rail = gtk::Box::new(gtk::Orientation::Vertical, 4);
+        rail.add_css_class("settings-rail");
+        rail.set_size_request(180, -1);
+        rail.set_vexpand(true);
+
+        let rail_heading = gtk::Label::new(Some("Settings"));
+        rail_heading.set_xalign(0.0);
+        rail_heading.set_margin_start(8);
+        rail_heading.set_margin_bottom(10);
+        rail_heading.add_css_class("modal-heading");
+        rail.append(&rail_heading);
+
+        let btn_connection = gtk::Button::with_label("📡  Connection");
+        btn_connection.add_css_class("settings-rail-item");
+
+        let session_count = controller.borrow().state.sessions.len();
+        let sessions_label = if session_count > 0 {
+            format!("💬  Sessions ({session_count})")
+        } else {
+            "💬  Sessions".to_owned()
+        };
+        let btn_sessions = gtk::Button::with_label(&sessions_label);
+        btn_sessions.add_css_class("settings-rail-item");
+
+        rail.append(&btn_connection);
+        rail.append(&btn_sessions);
+
+        // Stack for pages
+        let stack = gtk::Stack::new();
+        stack.set_hexpand(true);
+        stack.set_vexpand(true);
+        stack.set_transition_type(gtk::StackTransitionType::Crossfade);
+        stack.set_transition_duration(150);
+
+        // --- Page 1: Connection Form ---
+        let connection_scroll = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .vscrollbar_policy(gtk::PolicyType::Automatic)
+            .propagate_natural_height(true)
+            .vexpand(true)
+            .hexpand(true)
+            .build();
+        let connection_box = gtk::Box::new(gtk::Orientation::Vertical, 10);
+        connection_box.set_margin_top(18);
+        connection_box.set_margin_bottom(18);
+        connection_box.set_margin_start(22);
+        connection_box.set_margin_end(22);
+        connection_scroll.set_child(Some(&connection_box));
+
+        let heading = gtk::Label::new(Some("Connection"));
         heading.set_xalign(0.0);
         heading.add_css_class("modal-heading");
         let server_label = gtk::Label::new(Some("OpenCode server URL"));
@@ -5549,23 +5598,23 @@ impl Controller {
         actions.append(&cancel);
         actions.append(&apply);
 
-        root.append(&heading);
-        root.append(&server_label);
-        root.append(&server);
-        root.append(&username_label);
-        root.append(&username);
-        root.append(&password_label);
-        root.append(&password);
-        root.append(&connection_hint);
-        root.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
-        root.append(&cloudflare_label);
-        root.append(&cloudflare_client_id_label);
-        root.append(&cloudflare_client_id);
-        root.append(&cloudflare_client_secret_label);
-        root.append(&cloudflare_client_secret);
-        root.append(&cloudflare_hint);
-        root.append(&validation);
-        root.append(&actions);
+        connection_box.append(&heading);
+        connection_box.append(&server_label);
+        connection_box.append(&server);
+        connection_box.append(&username_label);
+        connection_box.append(&username);
+        connection_box.append(&password_label);
+        connection_box.append(&password);
+        connection_box.append(&connection_hint);
+        connection_box.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+        connection_box.append(&cloudflare_label);
+        connection_box.append(&cloudflare_client_id_label);
+        connection_box.append(&cloudflare_client_id);
+        connection_box.append(&cloudflare_client_secret_label);
+        connection_box.append(&cloudflare_client_secret);
+        connection_box.append(&cloudflare_hint);
+        connection_box.append(&validation);
+        connection_box.append(&actions);
         server.set_activates_default(true);
         username.set_activates_default(true);
         password.set_activates_default(true);
@@ -5681,15 +5730,204 @@ impl Controller {
                 glib::Propagation::Proceed
             }
         });
-        root.add_controller(settings_shortcuts);
+        connection_box.add_controller(settings_shortcuts);
+
+        // --- Page 2: Sessions Search ---
+        let sessions_box = gtk::Box::new(gtk::Orientation::Vertical, 10);
+        sessions_box.set_margin_top(18);
+        sessions_box.set_margin_bottom(18);
+        sessions_box.set_margin_start(22);
+        sessions_box.set_margin_end(22);
+        sessions_box.set_hexpand(true);
+        sessions_box.set_vexpand(true);
+
+        let sessions_heading = gtk::Label::new(Some("All Sessions"));
+        sessions_heading.set_xalign(0.0);
+        sessions_heading.add_css_class("modal-heading");
+        sessions_box.append(&sessions_heading);
+
+        let search = gtk::Entry::new();
+        search.set_placeholder_text(Some("Search sessions by title or path..."));
+        search.add_css_class("new-session-search");
+        sessions_box.append(&search);
+
+        let session_list = gtk::ListBox::new();
+        session_list.set_selection_mode(gtk::SelectionMode::None);
+        session_list.add_css_class("new-session-list");
+
+        let session_scroll = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .vscrollbar_policy(gtk::PolicyType::Automatic)
+            .vexpand(true)
+            .hexpand(true)
+            .child(&session_list)
+            .build();
+        sessions_box.append(&session_scroll);
+
+        // Wire search & list interactions
+        let session_list_ref = session_list.clone();
+        let weak_search = Rc::downgrade(controller);
+        search.connect_changed(move |search| {
+            if let Some(c) = weak_search.upgrade() {
+                let this = c.borrow();
+                populate_all_sessions_list(
+                    &session_list_ref,
+                    &this.state.sessions,
+                    &this.state.tabs,
+                    search.text().as_str(),
+                    Rc::downgrade(&c),
+                );
+            }
+        });
+
+        let session_list_activate = session_list.clone();
+        search.connect_activate(move |_| {
+            if let Some(first_child) = session_list_activate.first_child() {
+                if let Ok(button) = first_child.downcast::<gtk::Button>() {
+                    button.emit_clicked();
+                }
+            }
+        });
+
+        let search_keys = gtk::EventControllerKey::new();
+        search_keys.set_propagation_phase(gtk::PropagationPhase::Capture);
+        let list_down = session_list.clone();
+        search_keys.connect_key_pressed(move |_, key, _, _| match key {
+            gdk::Key::Down => {
+                if let Some(first_child) = list_down.first_child() {
+                    first_child.grab_focus();
+                    glib::Propagation::Stop
+                } else {
+                    glib::Propagation::Proceed
+                }
+            }
+            _ => glib::Propagation::Proceed,
+        });
+        search.add_controller(search_keys);
+
+        let list_keys = gtk::EventControllerKey::new();
+        list_keys.set_propagation_phase(gtk::PropagationPhase::Capture);
+        let list_up = session_list.clone();
+        let search_up = search.clone();
+        list_keys.connect_key_pressed(move |_, key, _, _| match key {
+            gdk::Key::Up => {
+                let mut prev: Option<gtk::Widget> = None;
+                let mut child = list_up.first_child();
+                let mut focused_is_first = false;
+                while let Some(c) = child {
+                    if c.has_focus() || c.is_focus() {
+                        if prev.is_none() {
+                            focused_is_first = true;
+                        }
+                        break;
+                    }
+                    prev = Some(c.clone());
+                    child = c.next_sibling();
+                }
+                if focused_is_first {
+                    search_up.grab_focus();
+                    glib::Propagation::Stop
+                } else if let Some(p) = prev {
+                    p.grab_focus();
+                    glib::Propagation::Stop
+                } else {
+                    glib::Propagation::Proceed
+                }
+            }
+            gdk::Key::Down => {
+                let mut child = list_up.first_child();
+                while let Some(c) = child {
+                    if c.has_focus() || c.is_focus() {
+                        if let Some(next) = c.next_sibling() {
+                            next.grab_focus();
+                            return glib::Propagation::Stop;
+                        }
+                        break;
+                    }
+                    child = c.next_sibling();
+                }
+                glib::Propagation::Proceed
+            }
+            _ => glib::Propagation::Proceed,
+        });
+        session_list.add_controller(list_keys);
+
+        stack.add_named(&connection_scroll, Some("connection"));
+        stack.add_named(&sessions_box, Some("sessions"));
+
+        root.append(&rail);
+        root.append(&stack);
+
+        // Rail button clicks
+        let btn_conn_clone = btn_connection.clone();
+        let btn_sess_clone = btn_sessions.clone();
+        let stack_conn = stack.clone();
+        let server_focus = server.clone();
+        let apply_clone = apply.clone();
+        let weak_conn = Rc::downgrade(controller);
+        btn_connection.connect_clicked(move |_| {
+            btn_conn_clone.add_css_class("active");
+            btn_sess_clone.remove_css_class("active");
+            stack_conn.set_visible_child_name("connection");
+            server_focus.grab_focus();
+            if let Some(c) = weak_conn.upgrade() {
+                c.borrow()
+                    .widgets
+                    .window
+                    .set_default_widget(Some(&apply_clone));
+            }
+        });
+
+        let btn_conn_clone2 = btn_connection.clone();
+        let btn_sess_clone2 = btn_sessions.clone();
+        let stack_sess = stack.clone();
+        let search_focus = search.clone();
+        let weak_sess = Rc::downgrade(controller);
+        btn_sessions.connect_clicked(move |_| {
+            btn_sess_clone2.add_css_class("active");
+            btn_conn_clone2.remove_css_class("active");
+            stack_sess.set_visible_child_name("sessions");
+            search_focus.grab_focus();
+            if let Some(c) = weak_sess.upgrade() {
+                c.borrow()
+                    .widgets
+                    .window
+                    .set_default_widget(None::<&gtk::Widget>);
+            }
+        });
+
+        let start_sessions = initial_tab == Some("sessions");
+        if start_sessions {
+            btn_sessions.add_css_class("active");
+            stack.set_visible_child_name("sessions");
+        } else {
+            btn_connection.add_css_class("active");
+            stack.set_visible_child_name("connection");
+        }
+
         {
             let mut this = controller.borrow_mut();
-            this.open_app_modal(AppModalKind::Settings, 520, -1);
-            this.widgets.window.set_default_widget(Some(&apply));
+            this.open_app_modal(AppModalKind::Settings, 760, 560);
+            populate_all_sessions_list(
+                &session_list,
+                &this.state.sessions,
+                &this.state.tabs,
+                "",
+                Rc::downgrade(controller),
+            );
+            if !start_sessions {
+                this.widgets.window.set_default_widget(Some(&apply));
+                this.app_modal_focus = Some(server.clone().upcast());
+            } else {
+                this.app_modal_focus = Some(search.clone().upcast());
+            }
             this.widgets.app_modal_card.append(&root);
-            this.app_modal_focus = Some(server.clone().upcast());
         }
-        server.grab_focus();
+        if start_sessions {
+            search.grab_focus();
+        } else {
+            server.grab_focus();
+        }
     }
 
     fn apply_preferences(&mut self, config: &ApiConfig) {
@@ -6827,6 +7065,110 @@ fn populate_session_list(
     }
     if shown == 0 {
         let empty = gtk::Label::new(Some("No matching tabs"));
+        empty.add_css_class("model-picker-empty");
+        empty.set_margin_top(16);
+        empty.set_margin_bottom(16);
+        list.append(&empty);
+    }
+}
+
+fn filter_all_sessions<'a>(sessions: &'a [Session], query: &str) -> Vec<&'a Session> {
+    let query = query.trim();
+    let mut scored: Vec<(i64, u64, &'a Session)> = sessions
+        .iter()
+        .filter_map(|session| {
+            if query.is_empty() {
+                Some((0, session.time.updated, session))
+            } else {
+                let title_score = fuzzy_score(query, &session.title);
+                let dir_score = fuzzy_score(query, &session.directory);
+                let score = match (title_score, dir_score) {
+                    (Some(s1), Some(s2)) => Some(s1.max(s2)),
+                    (s1, s2) => s1.or(s2),
+                };
+                score.map(|s| (s, session.time.updated, session))
+            }
+        })
+        .collect();
+
+    scored.sort_by(|a, b| {
+        if query.is_empty() {
+            b.1.cmp(&a.1)
+        } else {
+            b.0.cmp(&a.0).then_with(|| b.1.cmp(&a.1))
+        }
+    });
+
+    scored.into_iter().map(|(_, _, session)| session).collect()
+}
+
+fn populate_all_sessions_list(
+    list: &gtk::ListBox,
+    sessions: &[Session],
+    open_tabs: &[String],
+    query: &str,
+    controller: Weak<RefCell<Controller>>,
+) {
+    while let Some(child) = list.first_child() {
+        list.remove(&child);
+    }
+    let filtered = filter_all_sessions(sessions, query);
+    let mut shown = 0;
+    for session in filtered {
+        if shown == SESSION_PICKER_LIMIT {
+            break;
+        }
+        shown += 1;
+        let button = gtk::Button::new();
+        button.add_css_class("session-picker-row");
+        let is_open = open_tabs.iter().any(|id| id == &session.id);
+        if is_open {
+            button.add_css_class("active");
+        }
+        let labels = gtk::Box::new(gtk::Orientation::Vertical, 3);
+        let title_box = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        let title = gtk::Label::new(Some(&session.title));
+        title.set_xalign(0.0);
+        title.set_hexpand(true);
+        title.set_ellipsize(pango::EllipsizeMode::End);
+        title.add_css_class("session-picker-title");
+        title_box.append(&title);
+
+        let badge_text = if is_open { "OPEN TAB" } else { "SERVER" };
+        let badge = gtk::Label::new(Some(badge_text));
+        badge.add_css_class("session-picker-time");
+        if is_open {
+            badge.add_css_class("active");
+        }
+        title_box.append(&badge);
+
+        let path = gtk::Label::new(Some(&session.directory));
+        path.set_xalign(0.0);
+        path.set_hexpand(true);
+        path.set_ellipsize(pango::EllipsizeMode::Middle);
+        path.add_css_class("session-picker-path");
+
+        let time = gtk::Label::new(Some(&format_local_timestamp(session.time.updated)));
+        time.set_xalign(0.0);
+        time.add_css_class("session-picker-time");
+
+        labels.append(&title_box);
+        labels.append(&path);
+        labels.append(&time);
+        button.set_child(Some(&labels));
+
+        let id = session.id.clone();
+        let weak = controller.clone();
+        button.connect_clicked(move |_| {
+            if let Some(controller) = weak.upgrade() {
+                Controller::open_tab(&controller, &id);
+                controller.borrow_mut().close_app_modal();
+            }
+        });
+        list.append(&button);
+    }
+    if shown == 0 {
+        let empty = gtk::Label::new(Some("No matching sessions"));
         empty.add_css_class("model-picker-empty");
         empty.set_margin_top(16);
         empty.set_margin_bottom(16);
@@ -8382,5 +8724,74 @@ mod tests {
         let filtered = filter_tab_sessions(&sessions, "refactor");
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].id, "s2");
+    }
+
+    #[test]
+    fn filter_all_sessions_sorts_newest_first_when_query_empty() {
+        let s1 = Session {
+            id: "s1".into(),
+            directory: "/a".into(),
+            title: "First Tab".into(),
+            time: SessionTime {
+                created: 10,
+                updated: 10,
+                archived: None,
+            },
+            parent_id: None,
+            agent: None,
+            model: None,
+        };
+        let s2 = Session {
+            id: "s2".into(),
+            directory: "/b".into(),
+            title: "Second Tab".into(),
+            time: SessionTime {
+                created: 20,
+                updated: 20,
+                archived: None,
+            },
+            parent_id: None,
+            agent: None,
+            model: None,
+        };
+        let sessions = vec![s1, s2];
+        let filtered = filter_all_sessions(&sessions, "");
+        assert_eq!(filtered.len(), 2);
+        assert_eq!(filtered[0].id, "s2");
+        assert_eq!(filtered[1].id, "s1");
+    }
+
+    #[test]
+    fn filter_all_sessions_ranks_by_score_when_query_provided() {
+        let s1 = Session {
+            id: "s1".into(),
+            directory: "/work/docs".into(),
+            title: "Documentation review".into(),
+            time: SessionTime {
+                created: 10,
+                updated: 10,
+                archived: None,
+            },
+            parent_id: None,
+            agent: None,
+            model: None,
+        };
+        let s2 = Session {
+            id: "s2".into(),
+            directory: "/work/core".into(),
+            title: "Core engine refactor".into(),
+            time: SessionTime {
+                created: 20,
+                updated: 20,
+                archived: None,
+            },
+            parent_id: None,
+            agent: None,
+            model: None,
+        };
+        let sessions = vec![s1, s2];
+        let filtered = filter_all_sessions(&sessions, "doc");
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].id, "s1");
     }
 }

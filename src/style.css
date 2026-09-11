@@ -890,3 +890,29 @@ button.suggested-action {
   color: #17130e;
   font-weight: 700;
 }
+
+.settings-rail {
+  background: #111418;
+  border-right: 1px solid #232930;
+  padding: 16px 10px;
+}
+
+.settings-rail-item {
+  padding: 8px 12px;
+  border-radius: 6px;
+  background: transparent;
+  color: #9aa5b1;
+  font-weight: 500;
+  font-size: 0.9em;
+}
+
+.settings-rail-item:hover {
+  background: #1a1f26;
+  color: #edf1f5;
+}
+
+.settings-rail-item.active {
+  background: #222b37;
+  color: #edf1f5;
+  border: 1px solid #344153;
+}

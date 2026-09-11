@@ -613,3 +613,29 @@ popover.background.model-picker-popover > contents {
 .question-header {
   color: #8b5918;
 }
+
+.settings-rail {
+  background: #f0ede6;
+  border-right: 1px solid #ddd8cf;
+  padding: 16px 10px;
+}
+
+.settings-rail-item {
+  padding: 8px 12px;
+  border-radius: 6px;
+  background: transparent;
+  color: #636b74;
+  font-weight: 500;
+  font-size: 0.9em;
+}
+
+.settings-rail-item:hover {
+  background: #e4dfd5;
+  color: #1a1e23;
+}
+
+.settings-rail-item.active {
+  background: #ded7cb;
+  color: #1a1e23;
+  border: 1px solid #c8c0b2;
+}
