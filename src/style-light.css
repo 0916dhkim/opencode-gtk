@@ -727,6 +727,23 @@ button.session-picker-row.active {
   border: 1px solid #86efac;
 }
 
+.online-badge {
+  padding: 2px 7px;
+  border-radius: 4px;
+  color: #15803d;
+  background: #dcfce7;
+  border: 1px solid #86efac;
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.status-dot-green {
+  min-width: 6px;
+  min-height: 6px;
+  border-radius: 999px;
+  background: #16a34a;
+}
+
 .session-badge.server {
   color: #1d4ed8;
   background: #dbeafe;
