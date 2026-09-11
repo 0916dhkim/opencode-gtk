@@ -9,5 +9,7 @@
     <file alias="scalable/actions/opencode-add-symbolic.svg">add.svg</file>
     <file alias="scalable/actions/opencode-sessions-symbolic.svg">sessions.svg</file>
     <file alias="scalable/actions/opencode-settings-symbolic.svg">settings.svg</file>
+    <file alias="scalable/actions/opencode-connection-symbolic.svg">connection.svg</file>
+    <file alias="scalable/actions/opencode-search-symbolic.svg">search.svg</file>
   </gresource>
 </gresources>

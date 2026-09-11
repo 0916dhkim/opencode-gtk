@@ -36,6 +36,8 @@ const ICON_CLOSE: &str = "opencode-close-symbolic";
 const ICON_ADD: &str = "opencode-add-symbolic";
 const ICON_SESSIONS: &str = "opencode-sessions-symbolic";
 const ICON_SETTINGS: &str = "opencode-settings-symbolic";
+const ICON_CONNECTION: &str = "opencode-connection-symbolic";
+const ICON_SEARCH: &str = "opencode-search-symbolic";
 const COMPOSER_ICON_PX: i32 = 22;
 const TAB_ICON_PX: i32 = 16;
 const BOTTOM_EPSILON: f64 = 2.0;
@@ -5512,7 +5514,7 @@ impl Controller {
         btn_connection.add_css_class("flat");
         btn_connection.add_css_class("settings-rail-item");
         let conn_row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        let conn_icon = icon_image("network-wired-symbolic", 14);
+        let conn_icon = icon_image(ICON_CONNECTION, 14);
         let conn_text = gtk::Label::new(Some("Connection"));
         conn_text.set_hexpand(true);
         conn_text.set_xalign(0.0);
@@ -5838,10 +5840,7 @@ impl Controller {
         search_toolbar.set_margin_end(20);
 
         let search = gtk::Entry::new();
-        search.set_icon_from_icon_name(
-            gtk::EntryIconPosition::Primary,
-            Some("system-search-symbolic"),
-        );
+        search.set_icon_from_icon_name(gtk::EntryIconPosition::Primary, Some(ICON_SEARCH));
         search.set_placeholder_text(Some("Search sessions by title or path..."));
         search.add_css_class("settings-search");
         search_toolbar.append(&search);
@@ -8067,6 +8066,10 @@ fn install_css() {
         return;
     };
     settings.set_gtk_error_bell(false);
+    settings.set_gtk_xft_antialias(1);
+    settings.set_gtk_xft_hinting(1);
+    settings.set_gtk_xft_hintstyle(Some("hintslight"));
+    settings.set_gtk_xft_rgba(Some("rgb"));
     let mode = Rc::new(Cell::new(
         dark_light::detect().unwrap_or(dark_light::Mode::Unspecified),
     ));
