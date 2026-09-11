@@ -5491,15 +5491,11 @@ impl Controller {
 
         let rail_heading = gtk::Label::new(Some("Settings"));
         rail_heading.set_xalign(0.0);
-        rail_heading.set_margin_start(6);
-        rail_heading.set_margin_bottom(10);
+        rail_heading.set_margin_start(8);
+        rail_heading.set_margin_top(4);
+        rail_heading.set_margin_bottom(12);
         rail_heading.add_css_class("modal-heading");
         rail.append(&rail_heading);
-
-        let rail_sep = gtk::Separator::new(gtk::Orientation::Horizontal);
-        rail_sep.add_css_class("sidebar-nav-separator");
-        rail_sep.set_margin_bottom(6);
-        rail.append(&rail_sep);
 
         let btn_connection = gtk::Button::new();
         btn_connection.add_css_class("flat");

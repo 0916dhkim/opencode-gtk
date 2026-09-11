@@ -665,8 +665,7 @@ button.settings-rail-item.active .rail-badge {
 }
 
 .settings-rail-footer {
-  padding: 10px 6px 2px;
-  border-top: 1px solid #ded8cb;
+  padding: 8px 8px 4px;
   font-size: 10px;
   color: #8b929a;
 }
