@@ -719,7 +719,7 @@ pub fn launch(
     application.set_accels_for_action("app.quit", &["<Control>q"]);
 
     let activate_session =
-        gio::SimpleAction::new("activate-session", Some(&glib::VariantTy::STRING));
+        gio::SimpleAction::new("activate-session", Some(glib::VariantTy::STRING));
     let weak = Rc::downgrade(&controller);
     activate_session.connect_activate(move |_, target| {
         let Some(controller) = weak.upgrade() else {
@@ -1513,7 +1513,7 @@ fn bind_transcript_row(row: &gtk::Box, value: &str, index: u32) {
                 picture.set_can_shrink(true);
                 picture.set_halign(gtk::Align::Start);
                 picture.add_css_class("message-image");
-                let width = texture.width().max(1).min(640);
+                let width = texture.width().clamp(1, 640);
                 let height = (i64::from(texture.height().max(1)) * i64::from(width)
                     / i64::from(texture.width().max(1)))
                 .clamp(1, 720) as i32;
@@ -1576,7 +1576,21 @@ fn image_prefix(url: &str) -> String {
     url.chars().take(48).collect()
 }
 
+fn debug_logging_enabled() -> bool {
+    static ENABLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    static INIT: std::sync::Once = std::sync::Once::new();
+    INIT.call_once(|| {
+        if std::env::var_os("OPENCODE_GTK_DEBUG").is_some() {
+            ENABLED.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+    });
+    ENABLED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 fn debug_log(message: impl AsRef<str>) {
+    if !debug_logging_enabled() {
+        return;
+    }
     let line = format!("{} {}\n", unix_millis(), message.as_ref());
     eprint!("{line}");
     if let Ok(mut file) = fs::OpenOptions::new()
@@ -1671,7 +1685,7 @@ fn wire_callbacks(controller: &Rc<RefCell<Controller>>) {
         let scrolled_up = adjustment.value() + BOTTOM_EPSILON < previous;
         let jump = (adjustment.value() - previous).abs();
         controller.transcript_scroll_value = adjustment.value();
-        if jump > 24.0 {
+        if jump > 24.0 && debug_logging_enabled() {
             debug_log(format!(
                 "scroll jump={jump:.1} value={:.1} page={:.1} upper={:.1} pinned={} user={}",
                 adjustment.value(),
@@ -3517,7 +3531,7 @@ impl Controller {
             let dnd = self.widgets.tab_dnd.clone();
             let weak_begin = weak.clone();
             drag.connect_drag_begin(move |_, drag| {
-                let icon = gtk::DragIcon::for_drag(&drag);
+                let icon = gtk::DragIcon::for_drag(drag);
                 let preview = tab_drag_preview(&drag_title, drag_active);
                 preview.set_size_request(drag_tab.width().max(180), drag_tab.height().max(36));
                 icon.set_child(Some(&preview));
@@ -4452,20 +4466,13 @@ impl Controller {
         self.transcript_layout_width = width;
         let adjustment = self.widgets.transcript_scroll.vadjustment();
         let page = adjustment.page_size();
-        let (curr_start, curr_end) = visible_row_range(
+        let (start, end) = target_visible_range(
             &self.transcript_heights,
             adjustment.value(),
             page,
             ROW_OVERSCAN,
+            self.transcript_at_bottom,
         );
-        let (start, mut end) = if self.transcript_at_bottom {
-            let (end_start, end_end) =
-                visible_row_range_from_end(&self.transcript_heights, page, ROW_OVERSCAN);
-            (end_start.min(curr_start), end_end.max(curr_end))
-        } else {
-            (curr_start, curr_end)
-        };
-        end = end.max(min_visible_end(start, self.transcript_heights.len(), page));
         self.sync_visible_rows(start, end);
         if remesure || width_changed {
             self.refresh_visible_row_heights(width);
@@ -4481,7 +4488,8 @@ impl Controller {
         if tail_changed {
             self.widgets.transcript_tail.set_size_request(-1, bottom);
         }
-        if remesure || width_changed || spacer_changed || tail_changed {
+        if debug_logging_enabled() && (remesure || width_changed || spacer_changed || tail_changed)
+        {
             let adjustment = self.widgets.transcript_scroll.vadjustment();
             debug_log(format!(
                 "relayout remesure={remesure} width={width} page={:.1} value={:.1} upper={:.1} rows={start}..{end}/{} spacer={top} tail={bottom} total={total} pinned={}",
@@ -5083,9 +5091,7 @@ impl Controller {
             row.set_child(Some(&box_row));
             list.append(&row);
 
-            if is_selected {
-                row_to_select = Some(row.clone());
-            } else if rank == 0 && row_to_select.is_none() {
+            if is_selected || (rank == 0 && row_to_select.is_none()) {
                 row_to_select = Some(row.clone());
             }
         }
@@ -5262,9 +5268,7 @@ impl Controller {
             row.set_child(Some(&box_row));
             list.append(&row);
 
-            if is_selected {
-                row_to_select = Some(row.clone());
-            } else if rank == 0 && row_to_select.is_none() {
+            if is_selected || (rank == 0 && row_to_select.is_none()) {
                 row_to_select = Some(row.clone());
             }
         }
@@ -6753,6 +6757,22 @@ fn visible_row_range_from_end(heights: &[i32], page: f64, overscan: usize) -> (u
     (start.saturating_sub(overscan), end)
 }
 
+fn target_visible_range(
+    heights: &[i32],
+    scroll: f64,
+    page: f64,
+    overscan: usize,
+    at_bottom: bool,
+) -> (usize, usize) {
+    let (start, mut end) = if at_bottom {
+        visible_row_range_from_end(heights, page, overscan)
+    } else {
+        visible_row_range(heights, scroll, page, overscan)
+    };
+    end = end.max(min_visible_end(start, heights.len(), page));
+    (start, end)
+}
+
 fn distance_from_bottom(adjustment: &gtk::Adjustment) -> f64 {
     adjustment.upper() - (adjustment.value() + adjustment.page_size())
 }
@@ -7133,13 +7153,15 @@ fn scroll_adjustment_to_bottom(adjustment: &gtk::Adjustment) {
     let bottom = adjustment.upper() - adjustment.page_size();
     let target = clamp_adjustment(adjustment, bottom);
     if (adjustment.value() - target).abs() > BOTTOM_EPSILON {
-        debug_log(format!(
-            "pin-bottom from={:.1} to={:.1} page={:.1} upper={:.1}",
-            adjustment.value(),
-            target,
-            adjustment.page_size(),
-            adjustment.upper()
-        ));
+        if debug_logging_enabled() {
+            debug_log(format!(
+                "pin-bottom from={:.1} to={:.1} page={:.1} upper={:.1}",
+                adjustment.value(),
+                target,
+                adjustment.page_size(),
+                adjustment.upper()
+            ));
+        }
         adjustment.set_value(target);
     }
 }
@@ -7377,12 +7399,17 @@ fn move_tab(tabs: &mut Vec<String>, source_id: &str, target_id: &str, after: boo
 }
 
 fn play_session_ready_sound() {
-    let _ = std::process::Command::new("canberra-gtk-play")
-        .args(["-i", "message-new-instant", "-d", "Session ready"])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn();
+    std::thread::spawn(|| {
+        if let Ok(mut child) = std::process::Command::new("canberra-gtk-play")
+            .args(["-i", "message-new-instant", "-d", "Session ready"])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+        {
+            let _ = child.wait();
+        }
+    });
 }
 
 fn clear_box(container: &gtk::Box) {
@@ -7961,6 +7988,22 @@ mod tests {
         let heights = [80, 80, 80, 80, 80, 80];
         assert_eq!(visible_row_range_from_end(&heights, 100.0, 1), (3, 6));
         assert_eq!(visible_row_range_from_end(&[], 100.0, 1), (0, 0));
+    }
+
+    #[test]
+    fn target_visible_range_when_pinned_at_bottom_does_not_expand_to_top() {
+        let heights = vec![50; 1000];
+        let (start, end) = target_visible_range(&heights, 0.0, 500.0, 2, true);
+        assert_eq!(end, 1000);
+        assert!(start >= 980);
+    }
+
+    #[test]
+    fn target_visible_range_when_unpinned_uses_scroll_offset() {
+        let heights = vec![50; 1000];
+        let (start, end) = target_visible_range(&heights, 0.0, 500.0, 2, false);
+        assert_eq!(start, 0);
+        assert!(end <= 30);
     }
 
     #[test]
