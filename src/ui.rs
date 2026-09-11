@@ -886,7 +886,7 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
     sidebar_toggle.add_css_class("flat");
     sidebar_toggle.add_css_class("sidebar-toggle");
     header.pack_start(&sidebar_toggle);
-    let session_button = sidebar_nav_button(ICON_SESSIONS, "Sessions", "Open sessions (Ctrl+P)");
+    let session_button = sidebar_nav_button(ICON_SESSIONS, "Tabs", "Search tabs (Ctrl+P)");
     let new_button = gtk::Button::new();
     let new_row = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     let new_plus = icon_image(ICON_ADD, 12);
@@ -5333,9 +5333,12 @@ impl Controller {
             let this = controller.borrow();
             if this.app_modal == Some(AppModalKind::Sessions) {
                 if let Some((list, search)) = &this.session_picker {
+                    let sessions = this.tab_sessions();
+                    let active = this.state.active.clone();
                     populate_session_list(
                         list,
-                        &this.state.sessions,
+                        &sessions,
+                        active.as_deref(),
                         search.text().as_str(),
                         Rc::downgrade(controller),
                     );
@@ -5353,19 +5356,107 @@ impl Controller {
             move |search| {
                 if let Some(controller) = weak.upgrade() {
                     let this = controller.borrow();
+                    let sessions = this.tab_sessions();
+                    let active = this.state.active.clone();
                     populate_session_list(
                         &list,
-                        &this.state.sessions,
+                        &sessions,
+                        active.as_deref(),
                         search.text().as_str(),
                         Rc::downgrade(&controller),
                     );
                 }
             }
         });
+        search.connect_activate({
+            let list = list.clone();
+            move |_| {
+                if let Some(first_child) = list.first_child() {
+                    if let Ok(button) = first_child.downcast::<gtk::Button>() {
+                        button.emit_clicked();
+                    }
+                }
+            }
+        });
+        let search_keys = gtk::EventControllerKey::new();
+        search_keys.set_propagation_phase(gtk::PropagationPhase::Capture);
+        search_keys.connect_key_pressed({
+            let list = list.clone();
+            move |_, key, _, _| match key {
+                gdk::Key::Down => {
+                    if let Some(first_child) = list.first_child() {
+                        first_child.grab_focus();
+                        glib::Propagation::Stop
+                    } else {
+                        glib::Propagation::Proceed
+                    }
+                }
+                _ => glib::Propagation::Proceed,
+            }
+        });
+        search.add_controller(search_keys);
+
+        let list_keys = gtk::EventControllerKey::new();
+        list_keys.set_propagation_phase(gtk::PropagationPhase::Capture);
+        list_keys.connect_key_pressed({
+            let list = list.clone();
+            let search = search.clone();
+            move |_, key, _, _| match key {
+                gdk::Key::Up => {
+                    let mut prev: Option<gtk::Widget> = None;
+                    let mut child = list.first_child();
+                    let mut focused_is_first = false;
+                    while let Some(c) = child {
+                        if c.has_focus() || c.is_focus() {
+                            if prev.is_none() {
+                                focused_is_first = true;
+                            }
+                            break;
+                        }
+                        prev = Some(c.clone());
+                        child = c.next_sibling();
+                    }
+                    if focused_is_first {
+                        search.grab_focus();
+                        glib::Propagation::Stop
+                    } else if let Some(p) = prev {
+                        p.grab_focus();
+                        glib::Propagation::Stop
+                    } else {
+                        glib::Propagation::Proceed
+                    }
+                }
+                gdk::Key::Down => {
+                    let mut child = list.first_child();
+                    while let Some(c) = child {
+                        if c.has_focus() || c.is_focus() {
+                            if let Some(next) = c.next_sibling() {
+                                next.grab_focus();
+                                return glib::Propagation::Stop;
+                            }
+                            break;
+                        }
+                        child = c.next_sibling();
+                    }
+                    glib::Propagation::Proceed
+                }
+                _ => glib::Propagation::Proceed,
+            }
+        });
+        list.add_controller(list_keys);
+
         {
             let mut this = controller.borrow_mut();
             this.open_app_modal(AppModalKind::Sessions, 420, 310);
-            populate_session_list(&list, &this.state.sessions, "", Rc::downgrade(controller));
+            let sessions = this.tab_sessions();
+            let active = this.state.active.clone();
+            populate_session_list(
+                &list,
+                &sessions,
+                active.as_deref(),
+                "",
+                Rc::downgrade(controller),
+            );
             this.widgets.app_modal_card.append(&root);
             this.app_modal_focus = Some(search.clone().upcast());
             this.session_picker = Some((list.clone(), search.clone()));
@@ -6452,6 +6543,28 @@ impl Controller {
         self.state.sessions.iter().find(|session| session.id == id)
     }
 
+    fn tab_sessions(&self) -> Vec<Session> {
+        self.state
+            .tabs
+            .iter()
+            .map(|id| {
+                self.session(id).cloned().unwrap_or_else(|| Session {
+                    id: id.clone(),
+                    directory: String::new(),
+                    title: id.clone(),
+                    time: SessionTime {
+                        created: 0,
+                        updated: 0,
+                        archived: None,
+                    },
+                    parent_id: None,
+                    agent: None,
+                    model: None,
+                })
+            })
+            .collect()
+    }
+
     fn upsert_session(&mut self, session: Session) {
         if session.time.archived.is_some() {
             if self
@@ -6601,7 +6714,7 @@ fn submit_request(
 fn sessions_picker_body() -> (gtk::Box, gtk::ListBox, gtk::Entry) {
     let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
     let search = gtk::Entry::new();
-    search.set_placeholder_text(Some("Search sessions..."));
+    search.set_placeholder_text(Some("Search tabs..."));
     search.set_hexpand(true);
     search.add_css_class("new-session-search");
     let list = gtk::ListBox::new();
@@ -6627,36 +6740,69 @@ fn sessions_picker_body() -> (gtk::Box, gtk::ListBox, gtk::Entry) {
     (root, list, search)
 }
 
+fn filter_tab_sessions<'a>(sessions: &'a [Session], query: &str) -> Vec<&'a Session> {
+    let query = query.trim();
+    let mut scored: Vec<(i64, usize, &'a Session)> = sessions
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, session)| {
+            if query.is_empty() {
+                Some((0, idx, session))
+            } else {
+                let title_score = fuzzy_score(query, &session.title);
+                let dir_score = fuzzy_score(query, &session.directory);
+                let score = match (title_score, dir_score) {
+                    (Some(s1), Some(s2)) => Some(s1.max(s2)),
+                    (s1, s2) => s1.or(s2),
+                };
+                score.map(|s| (s, idx, session))
+            }
+        })
+        .collect();
+
+    if !query.is_empty() {
+        scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+    }
+
+    scored.into_iter().map(|(_, _, session)| session).collect()
+}
+
 fn populate_session_list(
     list: &gtk::ListBox,
     sessions: &[Session],
+    active_id: Option<&str>,
     query: &str,
     controller: Weak<RefCell<Controller>>,
 ) {
     while let Some(child) = list.first_child() {
         list.remove(&child);
     }
-    let query = query.to_lowercase();
+    let filtered = filter_tab_sessions(sessions, query);
     let mut shown = 0;
-    let mut truncated = false;
-    for session in sessions.iter().filter(|session| {
-        query.is_empty()
-            || session.title.to_lowercase().contains(&query)
-            || session.directory.to_lowercase().contains(&query)
-    }) {
+    for session in filtered {
         if shown == SESSION_PICKER_LIMIT {
-            truncated = true;
             break;
         }
         shown += 1;
         let button = gtk::Button::new();
         button.add_css_class("session-picker-row");
+        let is_active = active_id == Some(session.id.as_str());
+        if is_active {
+            button.add_css_class("active");
+        }
         let labels = gtk::Box::new(gtk::Orientation::Vertical, 3);
+        let title_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         let title = gtk::Label::new(Some(&session.title));
         title.set_xalign(0.0);
         title.set_hexpand(true);
         title.set_ellipsize(pango::EllipsizeMode::End);
         title.add_css_class("session-picker-title");
+        title_box.append(&title);
+        if is_active {
+            let current = gtk::Label::new(Some("current"));
+            current.add_css_class("session-picker-time");
+            title_box.append(&current);
+        }
         let path = gtk::Label::new(Some(&session.directory));
         path.set_xalign(0.0);
         path.set_hexpand(true);
@@ -6665,7 +6811,7 @@ fn populate_session_list(
         let time = gtk::Label::new(Some(&format_local_timestamp(session.time.updated)));
         time.set_xalign(0.0);
         time.add_css_class("session-picker-time");
-        labels.append(&title);
+        labels.append(&title_box);
         labels.append(&path);
         labels.append(&time);
         button.set_child(Some(&labels));
@@ -6680,15 +6826,11 @@ fn populate_session_list(
         list.append(&button);
     }
     if shown == 0 {
-        list.append(&gtk::Label::new(Some("No matching sessions")));
-    } else if truncated {
-        let hint = gtk::Label::new(Some(
-            "More sessions match. Refine the search to narrow the list.",
-        ));
-        hint.set_wrap(true);
-        hint.set_margin_top(12);
-        hint.set_margin_bottom(12);
-        list.append(&hint);
+        let empty = gtk::Label::new(Some("No matching tabs"));
+        empty.add_css_class("model-picker-empty");
+        empty.set_margin_top(16);
+        empty.set_margin_bottom(16);
+        list.append(&empty);
     }
 }
 
@@ -8171,5 +8313,74 @@ mod tests {
             fuzzy_score("claude", "Claude 3.7 Sonnet"),
             fuzzy_score("CLAUDE", "Claude 3.7 Sonnet")
         );
+    }
+
+    #[test]
+    fn filter_tab_sessions_preserves_tab_order_when_empty_query() {
+        let s1 = Session {
+            id: "s1".into(),
+            directory: "/a".into(),
+            title: "First Tab".into(),
+            time: SessionTime {
+                created: 1,
+                updated: 1,
+                archived: None,
+            },
+            parent_id: None,
+            agent: None,
+            model: None,
+        };
+        let s2 = Session {
+            id: "s2".into(),
+            directory: "/b".into(),
+            title: "Second Tab".into(),
+            time: SessionTime {
+                created: 2,
+                updated: 2,
+                archived: None,
+            },
+            parent_id: None,
+            agent: None,
+            model: None,
+        };
+        let sessions = vec![s1, s2];
+        let filtered = filter_tab_sessions(&sessions, "");
+        assert_eq!(filtered.len(), 2);
+        assert_eq!(filtered[0].id, "s1");
+        assert_eq!(filtered[1].id, "s2");
+    }
+
+    #[test]
+    fn filter_tab_sessions_filters_and_ranks_by_match() {
+        let s1 = Session {
+            id: "s1".into(),
+            directory: "/work/docs".into(),
+            title: "Documentation review".into(),
+            time: SessionTime {
+                created: 1,
+                updated: 1,
+                archived: None,
+            },
+            parent_id: None,
+            agent: None,
+            model: None,
+        };
+        let s2 = Session {
+            id: "s2".into(),
+            directory: "/work/core".into(),
+            title: "Core engine refactor".into(),
+            time: SessionTime {
+                created: 2,
+                updated: 2,
+                archived: None,
+            },
+            parent_id: None,
+            agent: None,
+            model: None,
+        };
+        let sessions = vec![s1, s2];
+        let filtered = filter_tab_sessions(&sessions, "refactor");
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].id, "s2");
     }
 }
