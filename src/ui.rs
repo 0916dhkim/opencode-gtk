@@ -5484,27 +5484,53 @@ impl Controller {
         // Left rail
         let rail = gtk::Box::new(gtk::Orientation::Vertical, 4);
         rail.add_css_class("settings-rail");
-        rail.set_size_request(180, -1);
+        rail.set_size_request(190, -1);
         rail.set_vexpand(true);
 
+        let rail_header = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        rail_header.set_margin_start(8);
+        rail_header.set_margin_bottom(12);
+        let gear = icon_image(ICON_SETTINGS, 16);
+        gear.add_css_class("sidebar-nav-icon");
         let rail_heading = gtk::Label::new(Some("Settings"));
-        rail_heading.set_xalign(0.0);
-        rail_heading.set_margin_start(8);
-        rail_heading.set_margin_bottom(10);
         rail_heading.add_css_class("modal-heading");
-        rail.append(&rail_heading);
+        rail_header.append(&gear);
+        rail_header.append(&rail_heading);
+        rail.append(&rail_header);
 
-        let btn_connection = gtk::Button::with_label("📡  Connection");
+        let rail_sep = gtk::Separator::new(gtk::Orientation::Horizontal);
+        rail_sep.add_css_class("sidebar-nav-separator");
+        rail.append(&rail_sep);
+
+        let btn_connection = gtk::Button::new();
+        btn_connection.add_css_class("flat");
         btn_connection.add_css_class("settings-rail-item");
+        let conn_row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        let conn_icon = gtk::Label::new(Some("📡"));
+        let conn_text = gtk::Label::new(Some("Connection"));
+        conn_text.set_hexpand(true);
+        conn_text.set_xalign(0.0);
+        conn_row.append(&conn_icon);
+        conn_row.append(&conn_text);
+        btn_connection.set_child(Some(&conn_row));
 
         let session_count = controller.borrow().state.sessions.len();
-        let sessions_label = if session_count > 0 {
-            format!("💬  Sessions ({session_count})")
-        } else {
-            "💬  Sessions".to_owned()
-        };
-        let btn_sessions = gtk::Button::with_label(&sessions_label);
+        let btn_sessions = gtk::Button::new();
+        btn_sessions.add_css_class("flat");
         btn_sessions.add_css_class("settings-rail-item");
+        let sess_row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        let sess_icon = gtk::Label::new(Some("💬"));
+        let sess_text = gtk::Label::new(Some("Sessions"));
+        sess_text.set_hexpand(true);
+        sess_text.set_xalign(0.0);
+        sess_row.append(&sess_icon);
+        sess_row.append(&sess_text);
+        if session_count > 0 {
+            let count_badge = gtk::Label::new(Some(&session_count.to_string()));
+            count_badge.add_css_class("rail-badge");
+            sess_row.append(&count_badge);
+        }
+        btn_sessions.set_child(Some(&sess_row));
 
         rail.append(&btn_connection);
         rail.append(&btn_sessions);
@@ -5516,7 +5542,29 @@ impl Controller {
         stack.set_transition_type(gtk::StackTransitionType::Crossfade);
         stack.set_transition_duration(150);
 
-        // --- Page 1: Connection Form ---
+        // --- Page 1: Connection ---
+        let connection_page = gtk::Box::new(gtk::Orientation::Vertical, 0);
+
+        let conn_topbar = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+        conn_topbar.add_css_class("settings-topbar");
+        let conn_titles = gtk::Box::new(gtk::Orientation::Vertical, 2);
+        let conn_title = gtk::Label::new(Some("Server Connection"));
+        conn_title.set_xalign(0.0);
+        conn_title.add_css_class("modal-heading");
+        let conn_sub = gtk::Label::new(Some(
+            "Configure server endpoint, credentials, and Cloudflare tokens",
+        ));
+        conn_sub.set_xalign(0.0);
+        conn_sub.add_css_class("session-picker-path");
+        conn_titles.append(&conn_title);
+        conn_titles.append(&conn_sub);
+        conn_titles.set_hexpand(true);
+        conn_topbar.append(&conn_titles);
+        let conn_esc = gtk::Label::new(Some("Esc to cancel"));
+        conn_esc.add_css_class("session-picker-time");
+        conn_topbar.append(&conn_esc);
+        connection_page.append(&conn_topbar);
+
         let connection_scroll = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
             .vscrollbar_policy(gtk::PolicyType::Automatic)
@@ -5525,15 +5573,12 @@ impl Controller {
             .hexpand(true)
             .build();
         let connection_box = gtk::Box::new(gtk::Orientation::Vertical, 10);
-        connection_box.set_margin_top(18);
-        connection_box.set_margin_bottom(18);
-        connection_box.set_margin_start(22);
-        connection_box.set_margin_end(22);
+        connection_box.set_margin_top(16);
+        connection_box.set_margin_bottom(16);
+        connection_box.set_margin_start(24);
+        connection_box.set_margin_end(24);
         connection_scroll.set_child(Some(&connection_box));
 
-        let heading = gtk::Label::new(Some("Connection"));
-        heading.set_xalign(0.0);
-        heading.add_css_class("modal-heading");
         let server_label = gtk::Label::new(Some("OpenCode server URL"));
         server_label.set_xalign(0.0);
         let server = gtk::Entry::new();
@@ -5590,15 +5635,10 @@ impl Controller {
         validation.set_xalign(0.0);
         validation.set_wrap(true);
         validation.add_css_class("error");
-        let actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        actions.set_halign(gtk::Align::End);
         let cancel = gtk::Button::with_mnemonic("_Cancel");
         let apply = gtk::Button::with_mnemonic("_Apply");
         apply.add_css_class("suggested-action");
-        actions.append(&cancel);
-        actions.append(&apply);
 
-        connection_box.append(&heading);
         connection_box.append(&server_label);
         connection_box.append(&server);
         connection_box.append(&username_label);
@@ -5614,7 +5654,6 @@ impl Controller {
         connection_box.append(&cloudflare_client_secret);
         connection_box.append(&cloudflare_hint);
         connection_box.append(&validation);
-        connection_box.append(&actions);
         server.set_activates_default(true);
         username.set_activates_default(true);
         password.set_activates_default(true);
@@ -5625,6 +5664,19 @@ impl Controller {
         password_label.set_mnemonic_widget(Some(&password));
         cloudflare_client_id_label.set_mnemonic_widget(Some(&cloudflare_client_id));
         cloudflare_client_secret_label.set_mnemonic_widget(Some(&cloudflare_client_secret));
+
+        connection_page.append(&connection_scroll);
+
+        let conn_bottombar = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+        conn_bottombar.add_css_class("settings-bottombar");
+        let mem_hint = gtk::Label::new(Some("Passwords stay in memory only"));
+        mem_hint.set_xalign(0.0);
+        mem_hint.add_css_class("session-picker-path");
+        mem_hint.set_hexpand(true);
+        conn_bottombar.append(&mem_hint);
+        conn_bottombar.append(&cancel);
+        conn_bottombar.append(&apply);
+        connection_page.append(&conn_bottombar);
 
         cancel.connect_clicked({
             let weak = Rc::downgrade(controller);
@@ -5733,27 +5785,45 @@ impl Controller {
         connection_box.add_controller(settings_shortcuts);
 
         // --- Page 2: Sessions Search ---
-        let sessions_box = gtk::Box::new(gtk::Orientation::Vertical, 10);
-        sessions_box.set_margin_top(18);
-        sessions_box.set_margin_bottom(18);
-        sessions_box.set_margin_start(22);
-        sessions_box.set_margin_end(22);
-        sessions_box.set_hexpand(true);
-        sessions_box.set_vexpand(true);
+        let sessions_page = gtk::Box::new(gtk::Orientation::Vertical, 0);
 
-        let sessions_heading = gtk::Label::new(Some("All Sessions"));
-        sessions_heading.set_xalign(0.0);
-        sessions_heading.add_css_class("modal-heading");
-        sessions_box.append(&sessions_heading);
+        let sess_topbar = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+        sess_topbar.add_css_class("settings-topbar");
+        let sess_titles = gtk::Box::new(gtk::Orientation::Vertical, 2);
+        let sess_title = gtk::Label::new(Some("All Sessions"));
+        sess_title.set_xalign(0.0);
+        sess_title.add_css_class("modal-heading");
+        let sess_sub = gtk::Label::new(Some(&format!(
+            "Search all {session_count} workspace sessions on this server"
+        )));
+        sess_sub.set_xalign(0.0);
+        sess_sub.add_css_class("session-picker-path");
+        sess_titles.append(&sess_title);
+        sess_titles.append(&sess_sub);
+        sess_titles.set_hexpand(true);
+        sess_topbar.append(&sess_titles);
+        let sess_esc = gtk::Label::new(Some("Esc to close"));
+        sess_esc.add_css_class("session-picker-time");
+        sess_topbar.append(&sess_esc);
+        sessions_page.append(&sess_topbar);
+
+        let search_toolbar = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        search_toolbar.set_margin_top(14);
+        search_toolbar.set_margin_bottom(8);
+        search_toolbar.set_margin_start(20);
+        search_toolbar.set_margin_end(20);
 
         let search = gtk::Entry::new();
-        search.set_placeholder_text(Some("Search sessions by title or path..."));
-        search.add_css_class("new-session-search");
-        sessions_box.append(&search);
+        search.set_placeholder_text(Some("🔍  Search sessions by title or path..."));
+        search.add_css_class("settings-search");
+        search_toolbar.append(&search);
+        sessions_page.append(&search_toolbar);
 
         let session_list = gtk::ListBox::new();
         session_list.set_selection_mode(gtk::SelectionMode::None);
         session_list.add_css_class("new-session-list");
+        session_list.set_margin_start(14);
+        session_list.set_margin_end(14);
 
         let session_scroll = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
@@ -5762,7 +5832,24 @@ impl Controller {
             .hexpand(true)
             .child(&session_list)
             .build();
-        sessions_box.append(&session_scroll);
+        sessions_page.append(&session_scroll);
+
+        let sess_bottombar = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+        sess_bottombar.add_css_class("settings-bottombar");
+        let nav_hint = gtk::Label::new(Some("↑ ↓ to navigate · Enter to open in tab"));
+        nav_hint.set_xalign(0.0);
+        nav_hint.add_css_class("session-picker-path");
+        nav_hint.set_hexpand(true);
+        let close_btn = gtk::Button::with_mnemonic("_Close");
+        let weak_close = Rc::downgrade(controller);
+        close_btn.connect_clicked(move |_| {
+            if let Some(c) = weak_close.upgrade() {
+                c.borrow_mut().close_app_modal();
+            }
+        });
+        sess_bottombar.append(&nav_hint);
+        sess_bottombar.append(&close_btn);
+        sessions_page.append(&sess_bottombar);
 
         // Wire search & list interactions
         let session_list_ref = session_list.clone();
@@ -5852,8 +5939,8 @@ impl Controller {
         });
         session_list.add_controller(list_keys);
 
-        stack.add_named(&connection_scroll, Some("connection"));
-        stack.add_named(&sessions_box, Some("sessions"));
+        stack.add_named(&connection_page, Some("connection"));
+        stack.add_named(&sessions_page, Some("sessions"));
 
         root.append(&rail);
         root.append(&stack);
@@ -5907,7 +5994,7 @@ impl Controller {
 
         {
             let mut this = controller.borrow_mut();
-            this.open_app_modal(AppModalKind::Settings, 760, 560);
+            this.open_app_modal(AppModalKind::Settings, 820, 640);
             populate_all_sessions_list(
                 &session_list,
                 &this.state.sessions,
@@ -7120,42 +7207,43 @@ fn populate_all_sessions_list(
         }
         shown += 1;
         let button = gtk::Button::new();
+        button.add_css_class("flat");
         button.add_css_class("session-picker-row");
         let is_open = open_tabs.iter().any(|id| id == &session.id);
         if is_open {
             button.add_css_class("active");
         }
-        let labels = gtk::Box::new(gtk::Orientation::Vertical, 3);
-        let title_box = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        let card = gtk::Box::new(gtk::Orientation::Vertical, 5);
+
+        let row_top = gtk::Box::new(gtk::Orientation::Horizontal, 12);
         let title = gtk::Label::new(Some(&session.title));
         title.set_xalign(0.0);
         title.set_hexpand(true);
         title.set_ellipsize(pango::EllipsizeMode::End);
         title.add_css_class("session-picker-title");
-        title_box.append(&title);
+        row_top.append(&title);
 
-        let badge_text = if is_open { "OPEN TAB" } else { "SERVER" };
-        let badge = gtk::Label::new(Some(badge_text));
-        badge.add_css_class("session-picker-time");
-        if is_open {
-            badge.add_css_class("active");
-        }
-        title_box.append(&badge);
+        let badge = gtk::Label::new(Some(if is_open { "OPEN TAB" } else { "SERVER" }));
+        badge.add_css_class("session-badge");
+        badge.add_css_class(if is_open { "open" } else { "server" });
+        row_top.append(&badge);
 
+        let row_bottom = gtk::Box::new(gtk::Orientation::Horizontal, 12);
         let path = gtk::Label::new(Some(&session.directory));
         path.set_xalign(0.0);
         path.set_hexpand(true);
         path.set_ellipsize(pango::EllipsizeMode::Middle);
         path.add_css_class("session-picker-path");
+        row_bottom.append(&path);
 
         let time = gtk::Label::new(Some(&format_local_timestamp(session.time.updated)));
-        time.set_xalign(0.0);
+        time.set_xalign(1.0);
         time.add_css_class("session-picker-time");
+        row_bottom.append(&time);
 
-        labels.append(&title_box);
-        labels.append(&path);
-        labels.append(&time);
-        button.set_child(Some(&labels));
+        card.append(&row_top);
+        card.append(&row_bottom);
+        button.set_child(Some(&card));
 
         let id = session.id.clone();
         let weak = controller.clone();
