@@ -5544,6 +5544,8 @@ impl Controller {
 
         let rail_footer = gtk::Box::new(gtk::Orientation::Vertical, 2);
         rail_footer.add_css_class("settings-rail-footer");
+        rail_footer.set_vexpand(true);
+        rail_footer.set_valign(gtk::Align::End);
         let host_name = url::Url::parse(&config.base_url)
             .ok()
             .and_then(|u| u.host_str().map(str::to_owned))

@@ -665,14 +665,10 @@ button.settings-rail-item.active .rail-badge {
 }
 
 .settings-rail-footer {
-  margin-top: auto;
   padding: 10px 6px 2px;
   border-top: 1px solid #ded8cb;
   font-size: 10px;
   color: #8b929a;
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
 }
 
 .settings-topbar {
