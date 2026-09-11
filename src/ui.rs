@@ -5511,8 +5511,8 @@ impl Controller {
         let btn_connection = gtk::Button::new();
         btn_connection.add_css_class("flat");
         btn_connection.add_css_class("settings-rail-item");
-        let conn_row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-        let conn_icon = gtk::Label::new(Some("📡"));
+        let conn_row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        let conn_icon = icon_image("network-wired-symbolic", 14);
         let conn_text = gtk::Label::new(Some("Connection"));
         conn_text.set_hexpand(true);
         conn_text.set_xalign(0.0);
@@ -5524,8 +5524,8 @@ impl Controller {
         let btn_sessions = gtk::Button::new();
         btn_sessions.add_css_class("flat");
         btn_sessions.add_css_class("settings-rail-item");
-        let sess_row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-        let sess_icon = gtk::Label::new(Some("💬"));
+        let sess_row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        let sess_icon = icon_image(ICON_SESSIONS, 14);
         let sess_text = gtk::Label::new(Some("Sessions"));
         sess_text.set_hexpand(true);
         sess_text.set_xalign(0.0);
@@ -5838,7 +5838,11 @@ impl Controller {
         search_toolbar.set_margin_end(20);
 
         let search = gtk::Entry::new();
-        search.set_placeholder_text(Some("🔍  Search sessions by title or path..."));
+        search.set_icon_from_icon_name(
+            gtk::EntryIconPosition::Primary,
+            Some("system-search-symbolic"),
+        );
+        search.set_placeholder_text(Some("Search sessions by title or path..."));
         search.add_css_class("settings-search");
         search_toolbar.append(&search);
         sessions_page.append(&search_toolbar);
