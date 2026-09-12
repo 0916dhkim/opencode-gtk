@@ -6240,7 +6240,7 @@ impl Controller {
             row.set_child(Some(&box_row));
             list.append(&row);
 
-            if !query.is_empty() && rank == 0 {
+            if rank == 0 {
                 row_to_select = Some(row.clone());
             }
         }
@@ -6255,11 +6255,12 @@ impl Controller {
     }
 
     fn activate_current_new_session_selection(controller: &Rc<RefCell<Self>>) {
-        let (list, filtered_paths) = {
+        let (list, filtered_paths, search_text) = {
             let this = controller.borrow();
             (
                 this.widgets.new_session_list.clone(),
                 this.widgets.new_session_filtered_paths.clone(),
+                this.widgets.new_session_search.text().trim().to_owned(),
             )
         };
         let row_idx = list
@@ -6272,9 +6273,11 @@ impl Controller {
                     None
                 }
             });
+        let custom = (!search_text.is_empty()).then_some(search_text);
         let path = row_idx
             .and_then(|idx| filtered_paths.borrow().get(idx).cloned())
-            .or_else(|| filtered_paths.borrow().first().cloned());
+            .or_else(|| filtered_paths.borrow().first().cloned())
+            .or(custom);
         if let Some(path) = path {
             Self::create_session_for_project(controller, &path);
         }
