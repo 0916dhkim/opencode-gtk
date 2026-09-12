@@ -5373,10 +5373,8 @@ impl Controller {
         search.connect_activate({
             let list = list.clone();
             move |_| {
-                if let Some(first_child) = list.first_child() {
-                    if let Ok(button) = first_child.downcast::<gtk::Button>() {
-                        button.emit_clicked();
-                    }
+                if let Some(button) = first_row_button(&list) {
+                    button.emit_clicked();
                 }
             }
         });
@@ -5385,9 +5383,17 @@ impl Controller {
         search_keys.connect_key_pressed({
             let list = list.clone();
             move |_, key, _, _| match key {
+                gdk::Key::Return | gdk::Key::KP_Enter => {
+                    if let Some(button) = first_row_button(&list) {
+                        button.emit_clicked();
+                        glib::Propagation::Stop
+                    } else {
+                        glib::Propagation::Proceed
+                    }
+                }
                 gdk::Key::Down => {
-                    if let Some(first_child) = list.first_child() {
-                        first_child.grab_focus();
+                    if let Some(button) = first_row_button(&list) {
+                        button.grab_focus();
                         glib::Propagation::Stop
                     } else {
                         glib::Propagation::Proceed
@@ -5877,10 +5883,8 @@ impl Controller {
 
         let session_list_activate = session_list.clone();
         search.connect_activate(move |_| {
-            if let Some(first_child) = session_list_activate.first_child() {
-                if let Ok(button) = first_child.downcast::<gtk::Button>() {
-                    button.emit_clicked();
-                }
+            if let Some(button) = first_row_button(&session_list_activate) {
+                button.emit_clicked();
             }
         });
 
@@ -5888,9 +5892,17 @@ impl Controller {
         search_keys.set_propagation_phase(gtk::PropagationPhase::Capture);
         let list_down = session_list.clone();
         search_keys.connect_key_pressed(move |_, key, _, _| match key {
+            gdk::Key::Return | gdk::Key::KP_Enter => {
+                if let Some(button) = first_row_button(&list_down) {
+                    button.emit_clicked();
+                    glib::Propagation::Stop
+                } else {
+                    glib::Propagation::Proceed
+                }
+            }
             gdk::Key::Down => {
-                if let Some(first_child) = list_down.first_child() {
-                    first_child.grab_focus();
+                if let Some(button) = first_row_button(&list_down) {
+                    button.grab_focus();
                     glib::Propagation::Stop
                 } else {
                     glib::Propagation::Proceed
@@ -7042,6 +7054,19 @@ fn submit_request(
     };
     api.send(command);
     true
+}
+
+fn first_row_button(list: &gtk::ListBox) -> Option<gtk::Button> {
+    let child = list.first_child()?;
+    if let Ok(btn) = child.clone().downcast::<gtk::Button>() {
+        return Some(btn);
+    }
+    if let Ok(row) = child.downcast::<gtk::ListBoxRow>() {
+        if let Some(btn) = row.child().and_then(|c| c.downcast::<gtk::Button>().ok()) {
+            return Some(btn);
+        }
+    }
+    None
 }
 
 fn sessions_picker_body() -> (gtk::Box, gtk::ListBox, gtk::Entry) {
