@@ -216,7 +216,6 @@ struct Controller {
     persisted: PersistedState,
     zoom_level: f64,
     base_dpi: i32,
-    zoom_provider: gtk::CssProvider,
     persistence_warning: Option<String>,
     persistence_error: Option<String>,
     credential_warning: Option<String>,
@@ -653,14 +652,6 @@ pub fn launch(
     let offline_busy = server_state.busy.clone();
     let state = restored_state(server_state);
 
-    let zoom_provider = gtk::CssProvider::new();
-    if let Some(display) = gdk::Display::default() {
-        gtk::style_context_add_provider_for_display(
-            &display,
-            &zoom_provider,
-            gtk::STYLE_PROVIDER_PRIORITY_APPLICATION + 20,
-        );
-    }
     let zoom_level = if persisted.zoom_level >= 0.5 && persisted.zoom_level <= 3.0 {
         persisted.zoom_level
     } else {
@@ -691,7 +682,6 @@ pub fn launch(
         persisted,
         zoom_level,
         base_dpi,
-        zoom_provider,
         persistence_warning,
         persistence_error,
         credential_warning,
@@ -4220,10 +4210,6 @@ impl Controller {
             let target_dpi = ((base as f64) * zoom).round() as i32;
             settings.set_gtk_xft_dpi(target_dpi);
         }
-
-        let font_pct = (zoom * 100.0).round() as i32;
-        self.zoom_provider
-            .load_from_data(&format!("window {{ font-size: {font_pct}%; }}"));
 
         let paned_pos = (270.0 * zoom).round() as i32;
         self.widgets.root_paned.set_position(paned_pos);
