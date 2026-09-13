@@ -39,7 +39,6 @@ const ICON_SETTINGS: &str = "opencode-settings-symbolic";
 const ICON_CONNECTION: &str = "opencode-connection-symbolic";
 const ICON_SEARCH: &str = "opencode-search-symbolic";
 const COMPOSER_ICON_PX: i32 = 22;
-const TAB_ICON_PX: i32 = 16;
 const BOTTOM_EPSILON: f64 = 2.0;
 const MAX_INLINE_IMAGE_BYTES: usize = 25 * 1024 * 1024;
 const ROW_ESTIMATE: i32 = 88;
@@ -146,6 +145,8 @@ struct State {
 #[derive(Clone)]
 struct Widgets {
     window: gtk::ApplicationWindow,
+    root_paned: gtk::Paned,
+    tab_scroll: gtk::ScrolledWindow,
     sidebar: gtk::Box,
     sidebar_toggle: gtk::Button,
     session_button: gtk::Button,
@@ -282,7 +283,11 @@ fn register_icons() {
 
 fn icon_image(name: &str, pixel_size: i32) -> gtk::Image {
     let image = gtk::Image::from_icon_name(name);
-    image.set_pixel_size(pixel_size);
+    if pixel_size > 0 {
+        image.set_pixel_size(pixel_size);
+    } else {
+        image.set_icon_size(gtk::IconSize::Inherit);
+    }
     image
 }
 
@@ -346,7 +351,7 @@ fn is_alt_key(key: gdk::Key) -> bool {
 fn sidebar_nav_button(icon: &str, label: &str, tooltip: &str) -> gtk::Button {
     let button = gtk::Button::new();
     let row = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-    let image = icon_image(icon, 16);
+    let image = icon_image(icon, -1);
     image.add_css_class("sidebar-nav-icon");
     image.set_halign(gtk::Align::Center);
     image.set_valign(gtk::Align::Center);
@@ -565,7 +570,11 @@ fn fuzzy_score(query: &str, target: &str) -> Option<i64> {
 fn set_button_icon(button: &gtk::Button, name: &str, pixel_size: i32) {
     if let Some(image) = button.child().and_downcast::<gtk::Image>() {
         image.set_icon_name(Some(name));
-        image.set_pixel_size(pixel_size);
+        if pixel_size > 0 {
+            image.set_pixel_size(pixel_size);
+        } else {
+            image.set_icon_size(gtk::IconSize::Inherit);
+        }
         return;
     }
     button.set_child(Some(&icon_image(name, pixel_size)));
@@ -928,7 +937,7 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
     let session_button = sidebar_nav_button(ICON_SESSIONS, "Tabs", "Search tabs (Ctrl+P)");
     let new_button = gtk::Button::new();
     let new_row = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-    let new_plus = icon_image(ICON_ADD, 12);
+    let new_plus = icon_image(ICON_ADD, -1);
     new_plus.add_css_class("session-tab-status");
     new_plus.set_halign(gtk::Align::Center);
     new_plus.set_valign(gtk::Align::Center);
@@ -1269,7 +1278,7 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
     context_usage.set_ellipsize(pango::EllipsizeMode::End);
     context_usage.set_valign(gtk::Align::Center);
     context_usage.set_visible(false);
-    let send_button = icon_button(ICON_SEND, COMPOSER_ICON_PX);
+    let send_button = icon_button(ICON_SEND, -1);
     send_button.add_css_class("suggested-action");
     send_button.add_css_class("composer-action");
     send_button.set_tooltip_text(Some("Send prompt"));
@@ -1403,6 +1412,8 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
 
     Widgets {
         window,
+        root_paned: root,
+        tab_scroll,
         sidebar,
         sidebar_toggle,
         session_button,
@@ -3490,12 +3501,12 @@ impl Controller {
             title_label.set_width_chars(8);
             title_label.set_max_width_chars(24);
             title_label.add_css_class("session-tab-title");
-            let rename = icon_button(ICON_EDIT, TAB_ICON_PX);
+            let rename = icon_button(ICON_EDIT, -1);
             rename.set_tooltip_text(Some("Rename session (F2)"));
             rename.set_valign(gtk::Align::Center);
             rename.add_css_class("flat");
             rename.add_css_class("session-tab-action");
-            let close = icon_button(ICON_CLOSE, TAB_ICON_PX);
+            let close = icon_button(ICON_CLOSE, -1);
             close.set_tooltip_text(Some("Close tab"));
             close.set_valign(gtk::Align::Center);
             close.add_css_class("flat");
@@ -4213,6 +4224,15 @@ impl Controller {
         let font_pct = (zoom * 100.0).round() as i32;
         self.zoom_provider
             .load_from_data(&format!("window {{ font-size: {font_pct}%; }}"));
+
+        let paned_pos = (270.0 * zoom).round() as i32;
+        self.widgets.root_paned.set_position(paned_pos);
+        self.widgets
+            .tab_scroll
+            .set_min_content_width((250.0 * zoom).round() as i32);
+        self.widgets
+            .tab_scroll
+            .set_max_content_width((320.0 * zoom).round() as i32);
 
         self.transcript_heights.clear();
         self.rendered_rows.clear();
@@ -5593,10 +5613,9 @@ impl Controller {
         root.set_hexpand(true);
         root.set_vexpand(true);
 
-        // Left rail (Variant 3: Minimalist Tabular Row, 170px width)
+        // Left rail (Variant 3: Minimalist Tabular Row, declarative em width)
         let rail = gtk::Box::new(gtk::Orientation::Vertical, 2);
         rail.add_css_class("settings-rail");
-        rail.set_size_request(170, -1);
         rail.set_vexpand(true);
 
         let rail_heading = gtk::Label::new(Some("Settings"));
@@ -5611,7 +5630,7 @@ impl Controller {
         btn_connection.add_css_class("flat");
         btn_connection.add_css_class("settings-rail-item");
         let conn_row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        let conn_icon = icon_image(ICON_CONNECTION, 14);
+        let conn_icon = icon_image(ICON_CONNECTION, -1);
         let conn_text = gtk::Label::new(Some("Connection"));
         conn_text.set_hexpand(true);
         conn_text.set_xalign(0.0);
@@ -5623,7 +5642,7 @@ impl Controller {
         btn_sessions.add_css_class("flat");
         btn_sessions.add_css_class("settings-rail-item");
         let sess_row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        let sess_icon = icon_image(ICON_SESSIONS, 14);
+        let sess_icon = icon_image(ICON_SESSIONS, -1);
         let sess_text = gtk::Label::new(Some("Sessions"));
         sess_text.set_hexpand(true);
         sess_text.set_xalign(0.0);
@@ -7184,7 +7203,7 @@ fn sessions_picker_body() -> (gtk::Box, gtk::ListBox, gtk::Entry) {
 
     let header = gtk::Box::new(gtk::Orientation::Horizontal, 10);
     header.add_css_class("tab-picker-header");
-    let search_icon = icon_image(ICON_SEARCH, 15);
+    let search_icon = icon_image(ICON_SEARCH, -1);
     search_icon.add_css_class("tab-picker-search-icon");
     let search = gtk::Entry::new();
     search.set_placeholder_text(Some("Search tabs..."));

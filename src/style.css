@@ -36,9 +36,17 @@ headerbar button.sidebar-toggle:hover {
   font-size: 0.82em;
 }
 
+image {
+  -gtk-icon-size: 1.15em;
+}
+
+.composer-action image {
+  -gtk-icon-size: 1.45em;
+}
+
 .session-header-bar {
-  padding: 5px 28px;
-  min-height: 34px;
+  padding: 0.35em 2em;
+  min-height: 2.6em;
   background: #131619;
   border-bottom: 1px solid #23272c;
 }
@@ -235,8 +243,8 @@ button.session-id-copy.copied {
 
 .session-tab {
   background: transparent;
-  border-radius: 7px;
-  min-height: 36px;
+  border-radius: 0.5em;
+  min-height: 2.6em;
 }
 
 .session-tab.inactive.divided {
@@ -257,8 +265,8 @@ button.session-id-copy.copied {
 }
 
 .session-tab button {
-  min-height: 28px;
-  padding: 3px 5px;
+  min-height: 2em;
+  padding: 0.2em 0.4em;
   color: #92999f;
 }
 
@@ -896,15 +904,16 @@ button.suggested-action {
 .settings-rail {
   background: #111418;
   border-right: 1px solid #232930;
-  padding: 14px 8px;
+  min-width: 12.5em;
+  padding: 1em 0.6em;
   border-top-left-radius: 11px;
   border-bottom-left-radius: 11px;
 }
 
 button.settings-rail-item {
-  min-height: 24px;
-  padding: 3px 8px;
-  border-radius: 4px;
+  min-height: 2em;
+  padding: 0.25em 0.6em;
+  border-radius: 0.35em;
   background: transparent;
   background-image: none;
   border: none;
@@ -912,7 +921,7 @@ button.settings-rail-item {
   color: #8b949e;
   font-weight: 500;
   font-size: 0.9em;
-  margin-bottom: 2px;
+  margin-bottom: 0.15em;
 }
 
 button.settings-rail-item:hover {
