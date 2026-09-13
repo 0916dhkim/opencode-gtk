@@ -551,11 +551,12 @@ popover.background.model-picker-popover > contents {
 }
 
 .model-picker-row:hover,
-.model-picker-row:selected {
+.model-picker-row.active {
   background: #eae6de;
+  background-image: none;
 }
 
-.model-picker-row.selected .model-picker-item-title {
+.model-picker-row.active .model-picker-item-title {
   color: #2563eb;
 }
 

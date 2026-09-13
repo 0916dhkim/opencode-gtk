@@ -179,7 +179,6 @@ struct Widgets {
     model_popover: gtk::Popover,
     model_search: gtk::SearchEntry,
     model_list: gtk::ListBox,
-    model_filtered_indices: Rc<RefCell<Vec<usize>>>,
     variant_button: gtk::Button,
     variant_button_label: gtk::Label,
     variant_popover: gtk::Popover,
@@ -1191,7 +1190,7 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
     popover_box.append(&model_search);
 
     let model_list = gtk::ListBox::new();
-    model_list.set_selection_mode(gtk::SelectionMode::Single);
+    model_list.set_selection_mode(gtk::SelectionMode::None);
     model_list.add_css_class("model-picker-list");
 
     let model_scroll = gtk::ScrolledWindow::builder()
@@ -1205,7 +1204,6 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
     popover_box.append(&model_scroll);
 
     model_popover.set_child(Some(&popover_box));
-    let model_filtered_indices = Rc::new(RefCell::new(Vec::new()));
 
     let variant_button = gtk::Button::new();
     let variant_row = gtk::Box::new(gtk::Orientation::Horizontal, 4);
@@ -1438,7 +1436,6 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
         model_popover,
         model_search,
         model_list,
-        model_filtered_indices,
         variant_button,
         variant_button_label,
         variant_popover,
@@ -2126,7 +2123,10 @@ fn wire_callbacks(controller: &Rc<RefCell<Controller>>) {
         .model_search
         .connect_activate(move |_| {
             if let Some(controller) = weak.upgrade() {
-                Controller::activate_current_model_selection(&controller);
+                let list = controller.borrow().widgets.model_list.clone();
+                if let Some(button) = first_row_button(&list) {
+                    button.emit_clicked();
+                }
             }
         });
 
@@ -2137,50 +2137,30 @@ fn wire_callbacks(controller: &Rc<RefCell<Controller>>) {
         let Some(controller) = weak.upgrade() else {
             return glib::Propagation::Proceed;
         };
-        let (list, popover, composer, search) = {
+        let (list, popover, composer) = {
             let this = controller.borrow();
             (
                 this.widgets.model_list.clone(),
                 this.widgets.model_popover.clone(),
                 this.widgets.composer.clone(),
-                this.widgets.model_search.clone(),
             )
         };
         match key {
-            gdk::Key::Down => {
-                if let Some(selected) = list.selected_row() {
-                    let next_idx = selected.index() + 1;
-                    if let Some(next_row) = list.row_at_index(next_idx) {
-                        list.select_row(Some(&next_row));
-                        next_row.grab_focus();
-                    } else {
-                        selected.grab_focus();
-                    }
-                } else if let Some(first_row) = list.row_at_index(0) {
-                    list.select_row(Some(&first_row));
-                    first_row.grab_focus();
-                }
-                glib::Propagation::Stop
-            }
-            gdk::Key::Up => {
-                if let Some(selected) = list.selected_row() {
-                    let prev_idx = selected.index() - 1;
-                    if prev_idx >= 0 {
-                        if let Some(prev_row) = list.row_at_index(prev_idx) {
-                            list.select_row(Some(&prev_row));
-                            prev_row.grab_focus();
-                        }
-                    } else {
-                        search.grab_focus();
-                    }
-                } else {
-                    search.grab_focus();
-                }
-                glib::Propagation::Stop
-            }
             gdk::Key::Return | gdk::Key::KP_Enter => {
-                Controller::activate_current_model_selection(&controller);
-                glib::Propagation::Stop
+                if let Some(button) = first_row_button(&list) {
+                    button.emit_clicked();
+                    glib::Propagation::Stop
+                } else {
+                    glib::Propagation::Proceed
+                }
+            }
+            gdk::Key::Down => {
+                if let Some(button) = first_row_button(&list) {
+                    button.grab_focus();
+                    glib::Propagation::Stop
+                } else {
+                    glib::Propagation::Proceed
+                }
             }
             gdk::Key::Escape => {
                 popover.popdown();
@@ -2213,21 +2193,46 @@ fn wire_callbacks(controller: &Rc<RefCell<Controller>>) {
             )
         };
         match key {
-            gdk::Key::Return | gdk::Key::KP_Enter => {
-                Controller::activate_current_model_selection(&controller);
-                glib::Propagation::Stop
-            }
             gdk::Key::Escape => {
                 popover.popdown();
                 composer.grab_focus();
                 glib::Propagation::Stop
             }
             gdk::Key::Up => {
-                if let Some(selected) = list.selected_row() {
-                    if selected.index() <= 0 {
-                        search.grab_focus();
-                        return glib::Propagation::Stop;
+                let mut prev: Option<gtk::Widget> = None;
+                let mut child = list.first_child();
+                let mut focused_is_first = false;
+                while let Some(c) = child {
+                    if c.has_focus() || c.is_focus() {
+                        if prev.is_none() {
+                            focused_is_first = true;
+                        }
+                        break;
                     }
+                    prev = Some(c.clone());
+                    child = c.next_sibling();
+                }
+                if focused_is_first {
+                    search.grab_focus();
+                    glib::Propagation::Stop
+                } else if let Some(p) = prev {
+                    p.grab_focus();
+                    glib::Propagation::Stop
+                } else {
+                    glib::Propagation::Proceed
+                }
+            }
+            gdk::Key::Down => {
+                let mut child = list.first_child();
+                while let Some(c) = child {
+                    if c.has_focus() || c.is_focus() {
+                        if let Some(next) = c.next_sibling() {
+                            next.grab_focus();
+                            return glib::Propagation::Stop;
+                        }
+                        break;
+                    }
+                    child = c.next_sibling();
                 }
                 glib::Propagation::Proceed
             }
@@ -2239,27 +2244,6 @@ fn wire_callbacks(controller: &Rc<RefCell<Controller>>) {
         .widgets
         .model_list
         .add_controller(list_keys);
-
-    let weak = Rc::downgrade(controller);
-    controller
-        .borrow()
-        .widgets
-        .model_list
-        .connect_row_activated(move |_, row| {
-            if let Some(controller) = weak.upgrade() {
-                let row_idx = row.index() as usize;
-                let model_idx = controller
-                    .borrow()
-                    .widgets
-                    .model_filtered_indices
-                    .borrow()
-                    .get(row_idx)
-                    .copied();
-                if let Some(model_idx) = model_idx {
-                    Controller::select_model(&controller, model_idx);
-                }
-            }
-        });
 
     let weak = Rc::downgrade(controller);
     controller
@@ -5103,14 +5087,13 @@ impl Controller {
     }
 
     fn filter_model_list(controller: &Rc<RefCell<Self>>, query: &str) {
-        let (current_models, active_selection, list, filtered_indices) = {
+        let (current_models, active_selection, list) = {
             let this = controller.borrow();
             let selection = this.current_model_selection_for_active();
             (
                 this.current_models.clone(),
                 selection,
                 this.widgets.model_list.clone(),
-                this.widgets.model_filtered_indices.clone(),
             )
         };
 
@@ -5142,10 +5125,7 @@ impl Controller {
             scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.2.label.cmp(&b.2.label)));
         }
 
-        let mut indices = Vec::with_capacity(scored.len());
-
         if scored.is_empty() {
-            *filtered_indices.borrow_mut() = Vec::new();
             let empty = gtk::Label::new(Some("No matching models"));
             empty.add_css_class("model-picker-empty");
             empty.set_margin_top(16);
@@ -5154,19 +5134,18 @@ impl Controller {
             return;
         }
 
-        let mut row_to_select = None;
+        let weak = Rc::downgrade(controller);
 
-        for (rank, (_, idx, model)) in scored.iter().enumerate() {
-            indices.push(*idx);
-
+        for (_, idx, model) in scored {
             let is_selected = active_selection.as_ref().is_some_and(|sel| {
                 sel.provider_id == model.provider_id && sel.model_id == model.model_id
             });
 
-            let row = gtk::ListBoxRow::new();
-            row.add_css_class("model-picker-row");
+            let button = gtk::Button::new();
+            button.add_css_class("flat");
+            button.add_css_class("model-picker-row");
             if is_selected {
-                row.add_css_class("selected");
+                button.add_css_class("active");
             }
 
             let box_row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
@@ -5197,44 +5176,16 @@ impl Controller {
                 box_row.append(&check);
             }
 
-            row.set_child(Some(&box_row));
-            list.append(&row);
+            button.set_child(Some(&box_row));
 
-            if is_selected || (rank == 0 && row_to_select.is_none()) {
-                row_to_select = Some(row.clone());
-            }
-        }
-
-        if let Some(row) = row_to_select {
-            list.select_row(Some(&row));
-        }
-
-        *filtered_indices.borrow_mut() = indices;
-    }
-
-    fn activate_current_model_selection(controller: &Rc<RefCell<Self>>) {
-        let (list, filtered_indices) = {
-            let this = controller.borrow();
-            (
-                this.widgets.model_list.clone(),
-                this.widgets.model_filtered_indices.clone(),
-            )
-        };
-        let row_idx = list
-            .selected_row()
-            .map(|row| row.index() as usize)
-            .or_else(|| {
-                if list.row_at_index(0).is_some() {
-                    Some(0)
-                } else {
-                    None
+            let weak = weak.clone();
+            button.connect_clicked(move |_| {
+                if let Some(controller) = weak.upgrade() {
+                    Controller::select_model(&controller, idx);
                 }
             });
-        let model_idx = row_idx
-            .and_then(|idx| filtered_indices.borrow().get(idx).copied())
-            .or_else(|| filtered_indices.borrow().first().copied());
-        if let Some(model_idx) = model_idx {
-            Self::select_model(controller, model_idx);
+
+            list.append(&button);
         }
     }
 

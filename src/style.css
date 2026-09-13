@@ -787,19 +787,23 @@ popover.background.model-picker-popover > contents {
   background: transparent;
 }
 
-.model-picker-row {
+button.model-picker-row {
   border-radius: 0.44em;
   padding: 0.15em 0.3em;
   color: #e1ddd5;
   background: transparent;
+  background-image: none;
+  box-shadow: none;
+  border: none;
 }
 
 .model-picker-row:hover,
-.model-picker-row:selected {
+.model-picker-row.active {
   background: #22262b;
+  background-image: none;
 }
 
-.model-picker-row.selected .model-picker-item-title {
+.model-picker-row.active .model-picker-item-title {
   color: #62bceb;
 }
 
