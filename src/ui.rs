@@ -215,7 +215,8 @@ struct Controller {
     state_path: PathBuf,
     persisted: PersistedState,
     zoom_level: f64,
-    base_dpi: i32,
+    base_font_family: String,
+    base_font_size: f64,
     persistence_warning: Option<String>,
     persistence_error: Option<String>,
     credential_warning: Option<String>,
@@ -657,19 +658,19 @@ pub fn launch(
     } else {
         1.0
     };
-    let base_dpi = if let Some(settings) = gtk::Settings::default() {
-        let dpi = settings.gtk_xft_dpi();
-        if dpi > 0 {
-            if (zoom_level - 1.0).abs() > 0.001 {
-                ((dpi as f64) / zoom_level).round() as i32
-            } else {
-                dpi
-            }
+    let (base_font_family, base_font_size) = if let Some(settings) = gtk::Settings::default() {
+        let name = settings
+            .gtk_font_name()
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "Noto Sans, 10".into());
+        let (family, size) = parse_font_name(&name);
+        if (zoom_level - 1.0).abs() > 0.001 {
+            (family, (size / zoom_level).round())
         } else {
-            96 * 1024
+            (family, size)
         }
     } else {
-        96 * 1024
+        ("Noto Sans".into(), 10.0)
     };
 
     let controller = Rc::new(RefCell::new(Controller {
@@ -681,7 +682,8 @@ pub fn launch(
         state_path,
         persisted,
         zoom_level,
-        base_dpi,
+        base_font_family,
+        base_font_size,
         persistence_warning,
         persistence_error,
         credential_warning,
@@ -4202,13 +4204,9 @@ impl Controller {
         self.persisted.zoom_level = zoom;
 
         if let Some(settings) = gtk::Settings::default() {
-            let base = if self.base_dpi > 0 {
-                self.base_dpi
-            } else {
-                96 * 1024
-            };
-            let target_dpi = ((base as f64) * zoom).round() as i32;
-            settings.set_gtk_xft_dpi(target_dpi);
+            let target_pt = (self.base_font_size * zoom).round() as i32;
+            let target_font = format!("{}, {}", self.base_font_family, target_pt);
+            settings.set_gtk_font_name(Some(&target_font));
         }
 
         let paned_pos = (270.0 * zoom).round() as i32;
@@ -7636,6 +7634,21 @@ fn attachment_data_url(path: &PathBuf, mime: &str) -> Option<String> {
         .then(|| format!("data:{mime};base64,{}", BASE64.encode(bytes)))
 }
 
+fn parse_font_name(font_name: &str) -> (String, f64) {
+    let trimmed = font_name.trim();
+    if let Some((family, size_str)) = trimmed.rsplit_once(',') {
+        if let Ok(size) = size_str.trim().parse::<f64>() {
+            return (family.trim().to_owned(), size);
+        }
+    }
+    if let Some((family, size_str)) = trimmed.rsplit_once(' ') {
+        if let Ok(size) = size_str.trim().parse::<f64>() {
+            return (family.trim().to_owned(), size);
+        }
+    }
+    ("Noto Sans".into(), 10.0)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct RealizedRowBounds {
     index: usize,
@@ -8884,6 +8897,18 @@ mod tests {
         assert_eq!(tabs, ["c", "b", "a"]);
         assert!(!move_tab(&mut tabs, "c", "c", true));
         assert!(!move_tab(&mut tabs, "missing", "a", false));
+    }
+
+    #[test]
+    fn parse_font_name_handles_various_formats() {
+        assert_eq!(
+            parse_font_name("Noto Sans,  10"),
+            ("Noto Sans".into(), 10.0)
+        );
+        assert_eq!(parse_font_name("Noto Sans 10"), ("Noto Sans".into(), 10.0));
+        assert_eq!(parse_font_name("Cantarell, 11"), ("Cantarell".into(), 11.0));
+        assert_eq!(parse_font_name("Cantarell 12"), ("Cantarell".into(), 12.0));
+        assert_eq!(parse_font_name("Sans"), ("Noto Sans".into(), 10.0));
     }
 
     #[test]
