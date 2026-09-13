@@ -15,15 +15,15 @@ headerbar {
 }
 
 headerbar button.sidebar-toggle {
-  min-width: 28px;
-  min-height: 28px;
+  min-width: 2.07em;
+  min-height: 2.07em;
   padding: 0;
-  margin-left: 4px;
+  margin-left: 0.3em;
   background: transparent;
   background-image: none;
   box-shadow: none;
   border: none;
-  border-radius: 6px;
+  border-radius: 0.44em;
 }
 
 headerbar button.sidebar-toggle:hover {
@@ -65,7 +65,7 @@ image {
 .session-header-hint {
   font-size: 0.8em;
   color: #6a7279;
-  margin-right: 4px;
+  margin-right: 0.3em;
 }
 
 .modal-backdrop {
@@ -75,29 +75,29 @@ image {
 .new-session-palette {
   background: #15181c;
   border: 1px solid #2a3038;
-  border-radius: 12px;
+  border-radius: 0.89em;
   box-shadow: 0 20px 48px rgba(0, 0, 0, 0.65);
-  min-height: 310px;
+  min-height: 23em;
 }
 
 .app-modal-palette {
   background: #15181c;
   border: 1px solid #2a3038;
-  border-radius: 12px;
+  border-radius: 0.89em;
   box-shadow: 0 20px 48px rgba(0, 0, 0, 0.65);
 }
 
 .app-modal-palette.sessions {
   background: #18181b;
   border: 1px solid #27272a;
-  min-width: 520px;
+  min-width: 39em;
   min-height: 0;
 }
 
 .session-id-field {
-  min-height: 32px;
-  padding: 2px 4px 2px 10px;
-  border-radius: 6px;
+  min-height: 2.37em;
+  padding: 0.15em 0.3em 0.15em 0.74em;
+  border-radius: 0.44em;
   background: #101214;
   border: 1px solid #282c32;
 }
@@ -109,15 +109,15 @@ image {
 }
 
 button.session-id-copy {
-  min-width: 26px;
-  min-height: 26px;
+  min-width: 1.93em;
+  min-height: 1.93em;
   padding: 0;
   margin: 0;
   border: none;
   background: transparent;
   background-image: none;
   box-shadow: none;
-  border-radius: 5px;
+  border-radius: 0.37em;
   color: #8b949e;
 }
 
@@ -133,18 +133,18 @@ button.session-id-copy.copied {
 }
 
 .new-session-search {
-  padding: 12px 14px;
+  padding: 0.89em 1.04em;
   background: #181c21;
   border-bottom: 1px solid #242930;
   border-top: none;
   border-left: none;
   border-right: none;
-  border-top-left-radius: 11px;
-  border-top-right-radius: 11px;
+  border-top-left-radius: 0.81em;
+  border-top-right-radius: 0.81em;
   border-bottom-left-radius: 0;
   border-bottom-right-radius: 0;
   box-shadow: none;
-  font-size: 13px;
+  font-size: 0.96em;
   font-weight: 500;
   color: #f0ede7;
 }
@@ -157,13 +157,13 @@ button.session-id-copy.copied {
 
 .new-session-list {
   background: transparent;
-  padding: 4px 6px 6px;
+  padding: 0.3em 0.44em 0.44em;
 }
 
 .new-session-row {
-  padding: 7px 10px;
-  border-radius: 6px;
-  margin: 1px 0;
+  padding: 0.52em 0.74em;
+  border-radius: 0.44em;
+  margin: 0.07em 0;
 }
 
 .new-session-row:hover,
@@ -173,13 +173,13 @@ button.session-id-copy.copied {
 }
 
 .new-session-name {
-  font-size: 12.5px;
+  font-size: 0.93em;
   font-weight: 600;
   color: #f0ede7;
 }
 
 .new-session-path {
-  font-size: 11px;
+  font-size: 0.81em;
   color: #7d8590;
 }
 
@@ -205,14 +205,14 @@ button.session-id-copy.copied {
 
 .sidebar-new-session,
 .sidebar-nav {
-  min-height: 36px;
+  min-height: 2.67em;
   padding: 0;
   color: #92999f;
   background: transparent;
   background-image: none;
   box-shadow: none;
   border: none;
-  border-radius: 7px;
+  border-radius: 0.52em;
 }
 
 .sidebar-new-session:hover,
@@ -222,18 +222,18 @@ button.session-id-copy.copied {
 }
 
 .sidebar-nav-footer {
-  margin: 0 8px 8px;
+  margin: 0 0.59em 0.59em;
 }
 
 .sidebar-nav-separator {
-  margin: 4px 4px 6px;
+  margin: 0.3em 0.3em 0.44em;
   background: #2b3034;
-  min-height: 1px;
+  min-height: 0.07em;
 }
 
 .sidebar-nav-icon {
-  margin-left: 8px;
-  margin-right: 6px;
+  margin-left: 0.59em;
+  margin-right: 0.44em;
 }
 
 .modal-heading {
@@ -271,8 +271,8 @@ button.session-id-copy.copied {
 }
 
 .session-tab-title {
-  padding-left: 3px;
-  padding-right: 6px;
+  padding-left: 0.22em;
+  padding-right: 0.44em;
   color: #92999f;
 }
 
@@ -305,11 +305,11 @@ button.session-id-copy.copied {
 }
 
 .session-tab button.session-tab-action {
-  min-width: 22px;
-  min-height: 22px;
-  margin: 2px 1px;
+  min-width: 1.63em;
+  min-height: 1.63em;
+  margin: 0.15em 0.07em;
   padding: 0;
-  border-radius: 11px;
+  border-radius: 0.81em;
   opacity: 0.45;
 }
 
@@ -359,8 +359,8 @@ button.session-id-copy.copied {
 }
 
 .session-tab.drag-preview {
-  min-width: 220px;
-  padding-right: 10px;
+  min-width: 16em;
+  padding-right: 0.74em;
   background: #191d20;
   box-shadow: 0 10px 28px rgba(0, 0, 0, 0.48);
 }
@@ -370,17 +370,17 @@ button.session-id-copy.copied {
 }
 
 .session-tab-status {
-  margin-left: 8px;
-  margin-right: 3px;
-  min-width: 9px;
-  min-height: 9px;
+  margin-left: 0.59em;
+  margin-right: 0.22em;
+  min-width: 0.67em;
+  min-height: 0.67em;
 }
 
 .session-tab-hint {
-  margin-left: 8px;
-  margin-right: 3px;
-  min-width: 14px;
-  min-height: 14px;
+  margin-left: 0.59em;
+  margin-right: 0.22em;
+  min-width: 1.04em;
+  min-height: 1.04em;
 }
 
 .session-tab-hint .session-tab-status {
@@ -389,26 +389,26 @@ button.session-id-copy.copied {
 }
 
 .session-tab-index {
-  min-width: 14px;
-  min-height: 14px;
+  min-width: 1.04em;
+  min-height: 1.04em;
   font-size: 0.78em;
   font-weight: 700;
   color: #92999f;
 }
 
 .session-tab-status.idle {
-  border-radius: 999px;
+  border-radius: 999em;
   background: #68736f;
 }
 
 .session-tab-status.busy {
   color: #e5b567;
-  min-width: 14px;
-  min-height: 14px;
+  min-width: 1.04em;
+  min-height: 1.04em;
 }
 
 .session-tab-status.unread {
-  border-radius: 999px;
+  border-radius: 999em;
   background: #62bceb;
 }
 
@@ -429,7 +429,7 @@ listview.transcript > row:focus {
 }
 
 .message-row {
-  padding: 18px 28px 20px 28px;
+  padding: 1.33em 2.07em 1.48em 2.07em;
   border-bottom: 1px solid alpha(#ffffff, 0.055);
 }
 
@@ -456,16 +456,16 @@ listview.transcript > row:focus {
 }
 
 .message-image {
-  border-radius: 8px;
+  border-radius: 0.59em;
 }
 
 .message-error-card {
-  padding: 12px 14px;
+  padding: 0.89em 1.04em;
   background: alpha(#f85149, 0.08);
   border: 1px solid alpha(#f85149, 0.32);
   border-left: 4px solid #f85149;
-  border-radius: 6px;
-  margin-top: 4px;
+  border-radius: 0.44em;
+  margin-top: 0.3em;
 }
 
 .message-error-header {
@@ -513,25 +513,25 @@ listview.transcript > row:focus {
 }
 
 .markdown-list-marker {
-  min-width: 18px;
+  min-width: 1.33em;
   color: #aeb4b9;
   font-weight: 600;
 }
 
 .markdown-blockquote {
-  padding: 7px 12px;
+  padding: 0.52em 0.89em;
   border-left: 3px solid #6f7780;
   color: #bcc1c4;
 }
 
 .markdown-code-block {
   border: 1px solid #30353a;
-  border-radius: 8px;
+  border-radius: 0.59em;
   background: #171a1d;
 }
 
 .markdown-code-header {
-  padding: 4px 8px 4px 12px;
+  padding: 0.3em 0.59em 0.3em 0.89em;
   background: #14171a;
   border-bottom: 1px solid #282c30;
 }
@@ -544,15 +544,15 @@ listview.transcript > row:focus {
 }
 
 button.markdown-code-copy {
-  min-width: 26px;
-  min-height: 26px;
+  min-width: 1.93em;
+  min-height: 1.93em;
   padding: 0;
   margin: 0;
   border: none;
   background: transparent;
   background-image: none;
   box-shadow: none;
-  border-radius: 5px;
+  border-radius: 0.37em;
   color: #8b949e;
 }
 
@@ -575,12 +575,12 @@ button.markdown-code-copy.copied {
 
 .markdown-table-scroll {
   border: 1px solid #30353a;
-  border-radius: 8px;
+  border-radius: 0.59em;
 }
 
 .markdown-table-header,
 .markdown-table-cell {
-  padding: 7px 10px;
+  padding: 0.52em 0.74em;
   border-right: 1px solid #30353a;
   border-bottom: 1px solid #30353a;
 }
@@ -643,10 +643,10 @@ button.markdown-code-copy.copied {
 }
 
 .transcript-status-compact {
-  margin: 8px 0 10px;
-  padding: 7px 12px;
+  margin: 0.59em 0 0.74em;
+  padding: 0.52em 0.89em;
   border: 1px solid #34393e;
-  border-radius: 999px;
+  border-radius: 999em;
   background: alpha(#171a1d, 0.94);
   color: #c4c8ca;
   font-size: 0.88em;
@@ -661,26 +661,26 @@ button.markdown-code-copy.copied {
 .composer-frame {
   background: #191c1f;
   border: 1px solid #30353a;
-  border-radius: 12px;
+  border-radius: 0.89em;
   min-width: 0;
 }
 
 .composer-prompt {
   background: #15181c;
   border: 1px solid #2a3038;
-  border-radius: 12px;
-  padding: 14px;
+  border-radius: 0.89em;
+  padding: 1.04em;
 }
 
 .composer-action {
-  min-width: 34px;
-  min-height: 34px;
+  min-width: 2.52em;
+  min-height: 2.52em;
   padding: 0;
   background: transparent;
   background-image: none;
   box-shadow: none;
   border: none;
-  border-radius: 8px;
+  border-radius: 0.59em;
 }
 
 .composer-action:hover {
@@ -689,15 +689,15 @@ button.markdown-code-copy.copied {
 }
 
 .composer-frame button.composer-action {
-  min-width: 34px;
-  min-height: 34px;
+  min-width: 2.52em;
+  min-height: 2.52em;
 }
 
 .composer-frame button.composer-action.suggested-action {
   background: #d29b52;
   background-image: none;
   color: #17130e;
-  border-radius: 999px;
+  border-radius: 999em;
 }
 
 .composer-frame button.composer-action.suggested-action:hover {
@@ -713,7 +713,7 @@ button.markdown-code-copy.copied {
 
 .composer-frame dropdown,
 .composer-frame button {
-  min-height: 32px;
+  min-height: 2.37em;
 }
 
 .composer-frame dropdown.composer-menu,
@@ -722,20 +722,20 @@ button.markdown-code-copy.copied {
   background-image: none;
   box-shadow: none;
   border: none;
-  border-radius: 8px;
+  border-radius: 0.59em;
   min-width: 0;
-  padding: 0 8px;
+  padding: 0 0.59em;
   color: #e8e5df;
 }
 
 .composer-frame dropdown.composer-menu > button {
-  min-height: 32px;
-  padding: 0 8px;
+  min-height: 2.37em;
+  padding: 0 0.59em;
   background: transparent;
   background-image: none;
   box-shadow: none;
   border: none;
-  border-radius: 8px;
+  border-radius: 0.59em;
 }
 
 .composer-frame dropdown.composer-menu > button:hover,
@@ -750,7 +750,7 @@ button.markdown-code-copy.copied {
 }
 
 .composer-menu-arrow {
-  margin-left: 2px;
+  margin-left: 0.15em;
 }
 
 popover.model-picker-popover {
@@ -765,15 +765,15 @@ popover.background.model-picker-popover > contents {
 }
 
 popover.background.model-picker-popover > contents {
-  border-radius: 10px;
+  border-radius: 0.74em;
   border-top: 2px solid transparent;
   border-bottom: 2px solid transparent;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
-  padding: 6px;
+  padding: 0.44em;
 }
 
 .model-picker-search {
-  border-radius: 6px;
+  border-radius: 0.44em;
   background: #101214;
   border: 1px solid #282c32;
   color: #f0ede7;
@@ -788,8 +788,8 @@ popover.background.model-picker-popover > contents {
 }
 
 .model-picker-row {
-  border-radius: 6px;
-  padding: 2px 4px;
+  border-radius: 0.44em;
+  padding: 0.15em 0.3em;
   color: #e1ddd5;
   background: transparent;
 }
@@ -828,19 +828,19 @@ popover.background.model-picker-popover > contents {
 .composer-usage {
   color: #899097;
   font-size: 0.82em;
-  padding: 0 4px;
+  padding: 0 0.3em;
 }
 
 .attachment-chip {
-  border-radius: 999px;
-  padding: 2px 9px;
+  border-radius: 999em;
+  padding: 0.15em 0.67em;
   background: #262b30;
   color: #c8c4bd;
 }
 
 .session-picker-row {
-  padding: 10px 12px;
-  border-radius: 8px;
+  padding: 0.74em 0.89em;
+  border-radius: 0.59em;
   background: transparent;
 }
 
@@ -870,8 +870,8 @@ popover.background.model-picker-popover > contents {
 
 .prompt-detail,
 .prompt-metadata {
-  padding: 10px 12px;
-  border-radius: 7px;
+  padding: 0.74em 0.89em;
+  border-radius: 0.52em;
   background: #15191c;
   color: #d2cec7;
   font-family: monospace;
@@ -883,9 +883,9 @@ popover.background.model-picker-popover > contents {
 }
 
 .question-section {
-  padding: 14px;
+  padding: 1.04em;
   border: 1px solid #2d3236;
-  border-radius: 9px;
+  border-radius: 0.67em;
   background: #15181b;
 }
 
@@ -906,8 +906,8 @@ button.suggested-action {
   border-right: 1px solid #232930;
   min-width: 12.5em;
   padding: 1em 0.6em;
-  border-top-left-radius: 11px;
-  border-bottom-left-radius: 11px;
+  border-top-left-radius: 0.81em;
+  border-bottom-left-radius: 0.81em;
 }
 
 button.settings-rail-item {
@@ -939,9 +939,9 @@ button.settings-rail-item.active {
 }
 
 .rail-badge {
-  font-size: 10px;
+  font-size: 0.74em;
   font-family: monospace;
-  padding: 0 2px;
+  padding: 0 0.15em;
   background: transparent;
   color: #6a7482;
 }
@@ -953,22 +953,22 @@ button.settings-rail-item.active .rail-badge {
 }
 
 .settings-rail-footer {
-  padding: 8px 8px 4px;
-  font-size: 10px;
+  padding: 0.59em 0.59em 0.3em;
+  font-size: 0.74em;
   color: #6a7482;
 }
 
 .settings-topbar {
-  padding: 18px 24px 14px;
+  padding: 1.33em 1.78em 1.04em;
   border-bottom: 1px solid #232932;
 }
 
 .settings-search {
   background: #111418;
   border: 1px solid #262c36;
-  border-radius: 7px;
-  padding: 8px 12px;
-  font-size: 13px;
+  border-radius: 0.52em;
+  padding: 0.59em 0.89em;
+  font-size: 0.96em;
   box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.3);
   color: #edf1f5;
 }
@@ -979,13 +979,13 @@ button.settings-rail-item.active .rail-badge {
 }
 
 button.session-picker-row {
-  padding: 10px 14px;
-  border-radius: 8px;
+  padding: 0.74em 1.04em;
+  border-radius: 0.59em;
   background: #1a1f26;
   background-image: none;
   border: 1px solid #242a34;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
-  margin-bottom: 6px;
+  margin-bottom: 0.44em;
 }
 
 button.session-picker-row:hover {
@@ -1001,11 +1001,11 @@ button.session-picker-row.active {
 }
 
 .session-badge {
-  font-size: 10px;
+  font-size: 0.74em;
   font-weight: 700;
   letter-spacing: 0.04em;
-  padding: 2px 7px;
-  border-radius: 4px;
+  padding: 0.15em 0.52em;
+  border-radius: 0.3em;
 }
 
 .session-badge.open {
@@ -1015,19 +1015,19 @@ button.session-picker-row.active {
 }
 
 .online-badge {
-  padding: 2px 7px;
-  border-radius: 4px;
+  padding: 0.15em 0.52em;
+  border-radius: 0.3em;
   color: #34d399;
   background: rgba(52, 211, 153, 0.12);
   border: 1px solid rgba(52, 211, 153, 0.4);
-  font-size: 10px;
+  font-size: 0.74em;
   font-weight: 600;
 }
 
 .status-dot-green {
-  min-width: 6px;
-  min-height: 6px;
-  border-radius: 999px;
+  min-width: 0.44em;
+  min-height: 0.44em;
+  border-radius: 999em;
   background: #34d399;
 }
 
@@ -1038,20 +1038,20 @@ button.session-picker-row.active {
 }
 
 .settings-bottombar {
-  padding: 12px 24px;
+  padding: 0.89em 1.78em;
   border-top: 1px solid #232932;
   background: #14171d;
-  border-bottom-right-radius: 11px;
+  border-bottom-right-radius: 0.81em;
 }
 
 /* Tab Picker (Ctrl+P) - Dark Theme */
 .tab-picker-modal {
   background: #18181b;
-  border-radius: 12px;
+  border-radius: 0.89em;
 }
 
 .tab-picker-header {
-  padding: 12px 16px;
+  padding: 0.89em 1.19em;
   background: #141416;
   border-bottom: 1px solid #27272a;
 }
@@ -1072,7 +1072,7 @@ entry.tab-picker-search-entry:focus,
   outline: none;
   background: transparent;
   background-image: none;
-  font-size: 13.5px;
+  font-size: 1em;
   font-weight: 500;
   color: #f4f4f5;
   padding: 0;
@@ -1081,17 +1081,17 @@ entry.tab-picker-search-entry:focus,
 
 .tab-picker-list {
   background: transparent;
-  padding: 8px 10px;
+  padding: 0.59em 0.74em;
 }
 
 button.tab-picker-row {
-  padding: 8px 12px;
-  border-radius: 6px;
+  padding: 0.59em 0.89em;
+  border-radius: 0.44em;
   border: none;
   background: transparent;
   background-image: none;
   box-shadow: none;
-  margin-bottom: 2px;
+  margin-bottom: 0.15em;
 }
 
 button.tab-picker-row:hover {
@@ -1105,32 +1105,32 @@ button.tab-picker-row.active {
 }
 
 .tab-picker-title {
-  font-size: 13px;
+  font-size: 0.96em;
   font-weight: 600;
   color: #f4f4f5;
 }
 
 .tab-picker-path {
-  font-size: 11px;
+  font-size: 0.81em;
   color: #a1a1aa;
 }
 
 .tab-picker-footer {
-  padding: 8px 16px;
+  padding: 0.59em 1.19em;
   background: #141416;
   border-top: 1px solid #27272a;
-  font-size: 11px;
+  font-size: 0.81em;
   color: #71717a;
-  border-bottom-left-radius: 12px;
-  border-bottom-right-radius: 12px;
+  border-bottom-left-radius: 0.89em;
+  border-bottom-right-radius: 0.89em;
 }
 
 .key-chip {
   background: #27272a;
   border: 1px solid #3f3f46;
-  border-radius: 3px;
-  padding: 1px 4px;
+  border-radius: 0.22em;
+  padding: 0.07em 0.3em;
   font-family: monospace;
-  font-size: 10px;
+  font-size: 0.74em;
   color: #d4d4d8;
 }

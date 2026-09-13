@@ -46,7 +46,7 @@ image {
 .session-header-hint {
   font-size: 0.8em;
   color: #8b918e;
-  margin-right: 4px;
+  margin-right: 0.3em;
 }
 
 .modal-backdrop {
@@ -56,29 +56,29 @@ image {
 .new-session-palette {
   background: #fbf9f4;
   border: 1px solid #d0ccc4;
-  border-radius: 12px;
+  border-radius: 0.89em;
   box-shadow: 0 20px 48px rgba(0, 0, 0, 0.2);
-  min-height: 310px;
+  min-height: 23em;
 }
 
 .app-modal-palette {
   background: #fbf9f4;
   border: 1px solid #d0ccc4;
-  border-radius: 12px;
+  border-radius: 0.89em;
   box-shadow: 0 20px 48px rgba(0, 0, 0, 0.2);
 }
 
 .app-modal-palette.sessions {
   background: #ffffff;
   border: 1px solid #d5d0c7;
-  min-width: 520px;
+  min-width: 39em;
   min-height: 0;
 }
 
 .session-id-field {
-  min-height: 32px;
-  padding: 2px 4px 2px 10px;
-  border-radius: 6px;
+  min-height: 2.37em;
+  padding: 0.15em 0.3em 0.15em 0.74em;
+  border-radius: 0.44em;
   background: #ffffff;
   border: 1px solid #d3cfc7;
 }
@@ -90,15 +90,15 @@ image {
 }
 
 button.session-id-copy {
-  min-width: 26px;
-  min-height: 26px;
+  min-width: 1.93em;
+  min-height: 1.93em;
   padding: 0;
   margin: 0;
   border: none;
   background: transparent;
   background-image: none;
   box-shadow: none;
-  border-radius: 5px;
+  border-radius: 0.37em;
   color: #6f7471;
 }
 
@@ -114,18 +114,18 @@ button.session-id-copy.copied {
 }
 
 .new-session-search {
-  padding: 12px 14px;
+  padding: 0.89em 1.04em;
   background: #f4f0e6;
   border-bottom: 1px solid #dedad0;
   border-top: none;
   border-left: none;
   border-right: none;
-  border-top-left-radius: 11px;
-  border-top-right-radius: 11px;
+  border-top-left-radius: 0.81em;
+  border-top-right-radius: 0.81em;
   border-bottom-left-radius: 0;
   border-bottom-right-radius: 0;
   box-shadow: none;
-  font-size: 13px;
+  font-size: 0.96em;
   font-weight: 500;
   color: #1f1e1c;
 }
@@ -138,13 +138,13 @@ button.session-id-copy.copied {
 
 .new-session-list {
   background: transparent;
-  padding: 4px 6px 6px;
+  padding: 0.3em 0.44em 0.44em;
 }
 
 .new-session-row {
-  padding: 7px 10px;
-  border-radius: 6px;
-  margin: 1px 0;
+  padding: 0.52em 0.74em;
+  border-radius: 0.44em;
+  margin: 0.07em 0;
 }
 
 .new-session-row:hover,
@@ -154,13 +154,13 @@ button.session-id-copy.copied {
 }
 
 .new-session-name {
-  font-size: 12.5px;
+  font-size: 0.93em;
   font-weight: 600;
   color: #1f1e1c;
 }
 
 .new-session-path {
-  font-size: 11px;
+  font-size: 0.81em;
   color: #8b918e;
 }
 
@@ -338,12 +338,12 @@ listview.transcript > row:focus {
 }
 
 .message-error-card {
-  padding: 12px 14px;
+  padding: 0.89em 1.04em;
   background: alpha(#cf222e, 0.06);
   border: 1px solid alpha(#cf222e, 0.28);
   border-left: 4px solid #cf222e;
-  border-radius: 6px;
-  margin-top: 4px;
+  border-radius: 0.44em;
+  margin-top: 0.3em;
 }
 
 .message-error-header {
@@ -491,8 +491,8 @@ button.markdown-code-copy.copied {
 .composer-prompt {
   background: #fbf9f4;
   border: 1px solid #d0ccc4;
-  border-radius: 12px;
-  padding: 14px;
+  border-radius: 0.89em;
+  padding: 1.04em;
 }
 
 .composer-action:hover {
@@ -529,11 +529,11 @@ popover.background.model-picker-popover > contents {
 }
 
 popover.background.model-picker-popover > contents {
-  border-radius: 10px;
+  border-radius: 0.74em;
   border-top: 2px solid transparent;
   border-bottom: 2px solid transparent;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15);
-  padding: 6px;
+  padding: 0.44em;
 }
 
 .model-picker-search {
@@ -629,8 +629,8 @@ popover.background.model-picker-popover > contents {
   border-right: 1px solid #ded8cb;
   min-width: 12.5em;
   padding: 1em 0.6em;
-  border-top-left-radius: 11px;
-  border-bottom-left-radius: 11px;
+  border-top-left-radius: 0.81em;
+  border-bottom-left-radius: 0.81em;
 }
 
 button.settings-rail-item {
@@ -662,9 +662,9 @@ button.settings-rail-item.active {
 }
 
 .rail-badge {
-  font-size: 10px;
+  font-size: 0.74em;
   font-family: monospace;
-  padding: 0 2px;
+  padding: 0 0.15em;
   background: transparent;
   color: #8b929a;
 }
@@ -676,22 +676,22 @@ button.settings-rail-item.active .rail-badge {
 }
 
 .settings-rail-footer {
-  padding: 8px 8px 4px;
-  font-size: 10px;
+  padding: 0.59em 0.59em 0.3em;
+  font-size: 0.74em;
   color: #8b929a;
 }
 
 .settings-topbar {
-  padding: 18px 24px 14px;
+  padding: 1.33em 1.78em 1.04em;
   border-bottom: 1px solid #ded8cb;
 }
 
 .settings-search {
   background: #ffffff;
   border: 1px solid #d4cfc6;
-  border-radius: 7px;
-  padding: 8px 12px;
-  font-size: 13px;
+  border-radius: 0.52em;
+  padding: 0.59em 0.89em;
+  font-size: 0.96em;
   box-shadow: none;
   color: #1a1e23;
 }
@@ -702,13 +702,13 @@ button.settings-rail-item.active .rail-badge {
 }
 
 button.session-picker-row {
-  padding: 10px 14px;
-  border-radius: 8px;
+  padding: 0.74em 1.04em;
+  border-radius: 0.59em;
   background: #ffffff;
   background-image: none;
   border: 1px solid #ded8cc;
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
-  margin-bottom: 6px;
+  margin-bottom: 0.44em;
 }
 
 button.session-picker-row:hover {
@@ -724,11 +724,11 @@ button.session-picker-row.active {
 }
 
 .session-badge {
-  font-size: 10px;
+  font-size: 0.74em;
   font-weight: 700;
   letter-spacing: 0.04em;
-  padding: 2px 7px;
-  border-radius: 4px;
+  padding: 0.15em 0.52em;
+  border-radius: 0.3em;
 }
 
 .session-badge.open {
@@ -738,19 +738,19 @@ button.session-picker-row.active {
 }
 
 .online-badge {
-  padding: 2px 7px;
-  border-radius: 4px;
+  padding: 0.15em 0.52em;
+  border-radius: 0.3em;
   color: #15803d;
   background: #dcfce7;
   border: 1px solid #86efac;
-  font-size: 10px;
+  font-size: 0.74em;
   font-weight: 600;
 }
 
 .status-dot-green {
-  min-width: 6px;
-  min-height: 6px;
-  border-radius: 999px;
+  min-width: 0.44em;
+  min-height: 0.44em;
+  border-radius: 999em;
   background: #16a34a;
 }
 
@@ -761,20 +761,20 @@ button.session-picker-row.active {
 }
 
 .settings-bottombar {
-  padding: 12px 24px;
+  padding: 0.89em 1.78em;
   border-top: 1px solid #ded8cb;
   background: #f8f6f0;
-  border-bottom-right-radius: 11px;
+  border-bottom-right-radius: 0.81em;
 }
 
 /* Tab Picker (Ctrl+P) - Exact Theme Match */
 .tab-picker-modal {
   background: #ffffff;
-  border-radius: 12px;
+  border-radius: 0.89em;
 }
 
 .tab-picker-header {
-  padding: 12px 16px;
+  padding: 0.89em 1.19em;
   background: #ffffff;
   border-bottom: 1px solid #eeece7;
 }
@@ -795,7 +795,7 @@ entry.tab-picker-search-entry:focus,
   outline: none;
   background: transparent;
   background-image: none;
-  font-size: 13.5px;
+  font-size: 1em;
   font-weight: 500;
   color: #1f1e1c;
   padding: 0;
@@ -804,17 +804,17 @@ entry.tab-picker-search-entry:focus,
 
 .tab-picker-list {
   background: transparent;
-  padding: 8px 10px;
+  padding: 0.59em 0.74em;
 }
 
 button.tab-picker-row {
-  padding: 8px 12px;
-  border-radius: 6px;
+  padding: 0.59em 0.89em;
+  border-radius: 0.44em;
   border: none;
   background: transparent;
   background-image: none;
   box-shadow: none;
-  margin-bottom: 2px;
+  margin-bottom: 0.15em;
 }
 
 button.tab-picker-row:hover {
@@ -828,32 +828,32 @@ button.tab-picker-row.active {
 }
 
 .tab-picker-title {
-  font-size: 13px;
+  font-size: 0.96em;
   font-weight: 600;
   color: #1f1e1c;
 }
 
 .tab-picker-path {
-  font-size: 11px;
+  font-size: 0.81em;
   color: #7c838e;
 }
 
 .tab-picker-footer {
-  padding: 8px 16px;
+  padding: 0.59em 1.19em;
   background: #f7f5f1;
   border-top: 1px solid #eeece7;
-  font-size: 11px;
+  font-size: 0.81em;
   color: #8b918e;
-  border-bottom-left-radius: 12px;
-  border-bottom-right-radius: 12px;
+  border-bottom-left-radius: 0.89em;
+  border-bottom-right-radius: 0.89em;
 }
 
 .key-chip {
   background: #eeece7;
   border: 1px solid #d5d0c7;
-  border-radius: 3px;
-  padding: 1px 4px;
+  border-radius: 0.22em;
+  padding: 0.07em 0.3em;
   font-family: monospace;
-  font-size: 10px;
+  font-size: 0.74em;
   color: #44413d;
 }
