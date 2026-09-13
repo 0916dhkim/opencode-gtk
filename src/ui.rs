@@ -8183,7 +8183,7 @@ fn install_css() {
         );
     }
     let Some(settings) = gtk::Settings::default() else {
-        provider.load_from_data(include_str!("style.css"));
+        provider.load_from_data(token_stylesheet(dark_light::Mode::Dark));
         return;
     };
     settings.set_gtk_error_bell(false);
@@ -8229,15 +8229,30 @@ fn apply_system_theme(
 ) {
     let theme_name = settings.property::<String>("gtk-theme-name");
     let prefer_dark = settings.property::<bool>("gtk-application-prefer-dark-theme");
-    provider.load_from_data(if system_theme_is_dark(mode, &theme_name, prefer_dark) {
-        include_str!("style.css")
+    let mode = if system_theme_is_dark(mode, &theme_name, prefer_dark) {
+        dark_light::Mode::Dark
     } else {
-        concat!(
-            include_str!("style.css"),
+        dark_light::Mode::Light
+    };
+    provider.load_from_data(token_stylesheet(mode));
+}
+
+/// A theme is selected by prepending a token block (`@define-color` names) to the
+/// single rule stylesheet. The rules reference tokens only, so a missing theme value
+/// cannot leak from the other theme.
+fn token_stylesheet(mode: dark_light::Mode) -> &'static str {
+    match mode {
+        dark_light::Mode::Light => concat!(
+            include_str!("tokens-light.css"),
             "\n",
-            include_str!("style-light.css")
-        )
-    });
+            include_str!("style.css")
+        ),
+        _ => concat!(
+            include_str!("tokens-dark.css"),
+            "\n",
+            include_str!("style.css")
+        ),
+    }
 }
 
 fn system_theme_is_dark(mode: dark_light::Mode, theme_name: &str, prefer_dark: bool) -> bool {
@@ -8262,7 +8277,7 @@ mod tests {
             "gtk::init failed; run with DISPLAY (Xvfb :99) and cargo test -- --ignored"
         );
         let provider = gtk::CssProvider::new();
-        provider.load_from_data(include_str!("style.css"));
+        provider.load_from_data(token_stylesheet(dark_light::Mode::Dark));
         let display = gdk::Display::default().expect("gdk display");
         gtk::style_context_add_provider_for_display(
             &display,

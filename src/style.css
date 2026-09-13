@@ -1,11 +1,11 @@
 window {
-  background: #101214;
-  color: #e8e5df;
+  background: @oc_bg_window;
+  color: @oc_fg_window;
 }
 
 headerbar {
-  background: #14171a;
-  border-bottom: 1px solid #2a2e32;
+  background: @oc_bg_headerbar;
+  border-bottom: 1px solid @oc_border_headerbar;
   box-shadow: none;
 }
 
@@ -27,12 +27,12 @@ headerbar button.sidebar-toggle {
 }
 
 headerbar button.sidebar-toggle:hover {
-  background: #22262a;
+  background: @oc_bg_headerbar_button_sidebar_toggle_hover;
   background-image: none;
 }
 
 .connection-status {
-  color: #899097;
+  color: @oc_fg_connection_status;
   font-size: 0.82em;
 }
 
@@ -47,8 +47,8 @@ image {
 .session-header-bar {
   padding: 0.35em 2em;
   min-height: 2.6em;
-  background: #131619;
-  border-bottom: 1px solid #23272c;
+  background: @oc_bg_session_header_bar;
+  border-bottom: 1px solid @oc_border_session_header_bar;
 }
 
 .session-header-bar .session-tab-status {
@@ -59,37 +59,37 @@ image {
 .session-header-title {
   font-size: 0.9em;
   font-weight: 600;
-  color: #f0ede7;
+  color: @oc_fg_session_header_title;
 }
 
 .session-header-hint {
   font-size: 0.8em;
-  color: #6a7279;
+  color: @oc_fg_session_header_hint;
   margin-right: 0.3em;
 }
 
 .modal-backdrop {
-  background-color: rgba(0, 0, 0, 0.65);
+  background-color: @oc_bg_modal_backdrop;
 }
 
 .new-session-palette {
-  background: #15181c;
-  border: 1px solid #2a3038;
+  background: @oc_bg_new_session_palette;
+  border: 1px solid @oc_border_new_session_palette;
   border-radius: 0.89em;
-  box-shadow: 0 20px 48px rgba(0, 0, 0, 0.65);
+  box-shadow: 0 20px 48px @oc_shadow_new_session_palette;
   min-height: 23em;
 }
 
 .app-modal-palette {
-  background: #15181c;
-  border: 1px solid #2a3038;
+  background: @oc_bg_new_session_palette;
+  border: 1px solid @oc_border_new_session_palette;
   border-radius: 0.89em;
-  box-shadow: 0 20px 48px rgba(0, 0, 0, 0.65);
+  box-shadow: 0 20px 48px @oc_shadow_new_session_palette;
 }
 
 .app-modal-palette.sessions {
-  background: #18181b;
-  border: 1px solid #27272a;
+  background: @oc_bg_app_modal_palette_sessions;
+  border: 1px solid @oc_border_app_modal_palette_sessions;
   min-width: 39em;
   min-height: 0;
 }
@@ -98,14 +98,14 @@ image {
   min-height: 2.37em;
   padding: 0.15em 0.3em 0.15em 0.74em;
   border-radius: 0.44em;
-  background: #101214;
-  border: 1px solid #282c32;
+  background: @oc_bg_session_id_field;
+  border: 1px solid @oc_border_session_id_field;
 }
 
 .session-id-value {
   font-family: monospace;
   font-size: 0.85em;
-  color: #c8c4bc;
+  color: @oc_fg_session_id_value;
 }
 
 button.session-id-copy {
@@ -118,24 +118,24 @@ button.session-id-copy {
   background-image: none;
   box-shadow: none;
   border-radius: 0.37em;
-  color: #8b949e;
+  color: @oc_fg_button_session_id_copy;
 }
 
 button.session-id-copy:hover {
-  background: rgba(255, 255, 255, 0.08);
+  background: @oc_bg_button_session_id_copy_hover;
   background-image: none;
-  color: #f0ede7;
+  color: @oc_fg_button_session_id_copy_hover;
 }
 
 button.session-id-copy.copied {
-  color: #56d364;
-  background: rgba(86, 211, 100, 0.12);
+  color: @oc_fg_button_session_id_copy_copied;
+  background: @oc_bg_button_session_id_copy_copied;
 }
 
 .new-session-search {
   padding: 0.89em 1.04em;
-  background: #181c21;
-  border-bottom: 1px solid #242930;
+  background: @oc_bg_new_session_search;
+  border-bottom: 1px solid @oc_border_new_session_search;
   border-top: none;
   border-left: none;
   border-right: none;
@@ -146,13 +146,13 @@ button.session-id-copy.copied {
   box-shadow: none;
   font-size: 0.96em;
   font-weight: 500;
-  color: #f0ede7;
+  color: @oc_fg_session_header_title;
 }
 
 .new-session-search:focus {
   box-shadow: none;
   outline: none;
-  border-color: #242930;
+  border-color: @oc_border_new_session_search;
 }
 
 .new-session-list {
@@ -169,45 +169,45 @@ button.session-id-copy.copied {
 .new-session-row:hover,
 .new-session-row:selected,
 .new-session-row.selected {
-  background: #252d37;
+  background: @oc_bg_new_session_row_hover;
 }
 
 .new-session-name {
   font-size: 0.93em;
   font-weight: 600;
-  color: #f0ede7;
+  color: @oc_fg_session_header_title;
 }
 
 .new-session-path {
   font-size: 0.81em;
-  color: #7d8590;
+  color: @oc_fg_new_session_path;
 }
 
 .new-session-row:selected .new-session-name,
 .new-session-row.selected .new-session-name {
-  color: #ffffff;
+  color: @oc_fg_new_session_row_selected_new_session_name;
 }
 
 .new-session-row:selected .new-session-path,
 .new-session-row.selected .new-session-path {
-  color: #9ba5b2;
+  color: @oc_fg_new_session_row_selected_new_session_path;
 }
 
 .connection-status.error,
 .error {
-  color: #e68178;
+  color: @oc_fg_connection_status_error;
 }
 
 .tab-strip {
-  background: #0d0f11;
-  border-right: 1px solid #24282c;
+  background: @oc_bg_tab_strip;
+  border-right: 1px solid @oc_border_tab_strip;
 }
 
 .sidebar-new-session,
 .sidebar-nav {
   min-height: 2.67em;
   padding: 0;
-  color: #92999f;
+  color: @oc_fg_sidebar_new_session;
   background: transparent;
   background-image: none;
   box-shadow: none;
@@ -217,7 +217,7 @@ button.session-id-copy.copied {
 
 .sidebar-new-session:hover,
 .sidebar-nav:hover {
-  background: #191d20;
+  background: @oc_bg_sidebar_new_session_hover;
   background-image: none;
 }
 
@@ -227,7 +227,7 @@ button.session-id-copy.copied {
 
 .sidebar-nav-separator {
   margin: 0.3em 0.3em 0.44em;
-  background: #2b3034;
+  background: @oc_bg_sidebar_nav_separator;
   min-height: 0.07em;
 }
 
@@ -248,13 +248,13 @@ button.session-id-copy.copied {
 }
 
 .session-tab.inactive.divided {
-  border-top: 1px solid #2b3034;
+  border-top: 1px solid @oc_border_session_tab_inactive_divided;
   border-top-left-radius: 0;
   border-top-right-radius: 0;
 }
 
 .session-tab:hover {
-  background: #191d20;
+  background: @oc_bg_sidebar_new_session_hover;
 }
 
 .session-tab button,
@@ -267,40 +267,40 @@ button.session-id-copy.copied {
 .session-tab button {
   min-height: 2em;
   padding: 0.2em 0.4em;
-  color: #92999f;
+  color: @oc_fg_sidebar_new_session;
 }
 
 .session-tab-title {
   padding-left: 0.22em;
   padding-right: 0.44em;
-  color: #92999f;
+  color: @oc_fg_sidebar_new_session;
 }
 
 .session-tab.active {
-  background: #22262a;
+  background: @oc_bg_session_tab_active;
 }
 
 .session-tab.active:hover {
-  background: #292e32;
+  background: @oc_bg_session_tab_active_hover;
 }
 
 .session-tab.active .session-tab-title,
 .session-tab.active .session-tab-index,
 .session-tab.active button {
-  color: #f2efe9;
+  color: @oc_fg_session_tab_active_session_tab_title;
 }
 
 .session-tab.unread .session-tab-title,
 .session-tab.unread .session-tab-index,
 .session-tab.active.unread .session-tab-title,
 .session-tab.active.unread .session-tab-index {
-  color: #d9efff;
+  color: @oc_fg_session_tab_unread_session_tab_title;
   font-weight: 700;
 }
 
 .session-tab.busy .session-tab-title,
 .session-tab.busy .session-tab-index {
-  color: #e5b567;
+  color: @oc_fg_session_tab_busy_session_tab_title;
   font-weight: 700;
 }
 
@@ -319,8 +319,8 @@ button.session-id-copy.copied {
 }
 
 .session-tab button.session-tab-close:hover {
-  background: #8e3737;
-  color: #ffffff;
+  background: @oc_bg_session_tab_button_session_tab_close_hover;
+  color: @oc_fg_session_tab_button_session_tab_close_hover;
 }
 
 .session-tab.dragging {
@@ -342,12 +342,12 @@ button.session-id-copy.copied {
 
 .session-tabs.reordering .session-tab.active,
 .session-tabs.reordering .session-tab.active:hover {
-  background: #22262a;
+  background: @oc_bg_session_tab_active;
 }
 
 .session-tabs.reordering .session-tab button.session-tab-close:hover {
   background: transparent;
-  color: #92999f;
+  color: @oc_fg_sidebar_new_session;
 }
 
 .tab-drop-slot,
@@ -361,12 +361,12 @@ button.session-id-copy.copied {
 .session-tab.drag-preview {
   min-width: 16em;
   padding-right: 0.74em;
-  background: #191d20;
-  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.48);
+  background: @oc_bg_sidebar_new_session_hover;
+  box-shadow: 0 10px 28px @oc_shadow_session_tab_drag_preview;
 }
 
 .session-tab.drag-preview.active {
-  background: #22262a;
+  background: @oc_bg_session_tab_active;
 }
 
 .session-tab-status {
@@ -393,27 +393,27 @@ button.session-id-copy.copied {
   min-height: 1.04em;
   font-size: 0.78em;
   font-weight: 700;
-  color: #92999f;
+  color: @oc_fg_session_tab_index;
 }
 
 .session-tab-status.idle {
   border-radius: 999em;
-  background: #68736f;
+  background: @oc_bg_session_tab_status_idle;
 }
 
 .session-tab-status.busy {
-  color: #e5b567;
+  color: @oc_fg_session_tab_busy_session_tab_title;
   min-width: 1.04em;
   min-height: 1.04em;
 }
 
 .session-tab-status.unread {
   border-radius: 999em;
-  background: #62bceb;
+  background: @oc_bg_session_tab_status_unread;
 }
 
 .transcript {
-  background: #101214;
+  background: @oc_bg_window;
   min-width: 0;
 }
 
@@ -430,7 +430,7 @@ listview.transcript > row:focus {
 
 .message-row {
   padding: 1.33em 2.07em 1.48em 2.07em;
-  border-bottom: 1px solid alpha(#ffffff, 0.055);
+  border-bottom: 1px solid @oc_border_message_row;
 }
 
 .assistant-message {
@@ -438,53 +438,54 @@ listview.transcript > row:focus {
 }
 
 .message-role {
-  color: #8d959d;
+  color: @oc_fg_message_role;
   font-size: 0.76em;
   font-weight: 700;
   letter-spacing: 0.08em;
 }
 
 .message-time {
-  color: #6a7279;
+  color: @oc_fg_session_header_hint;
   font-size: 0.76em;
 }
 
 .message-content {
-  color: #e7e3dc;
+  color: @oc_fg_message_content;
   font-size: 0.96em;
   line-height: 1.35;
 }
 
 .message-image {
   border-radius: 0.59em;
+  border: 1px solid @oc_border_message_image;
 }
 
 .message-error-card {
   padding: 0.89em 1.04em;
-  background: alpha(#f85149, 0.08);
-  border: 1px solid alpha(#f85149, 0.32);
-  border-left: 4px solid #f85149;
+  background: @oc_bg_message_error_card;
+  border: 1px solid @oc_border_message_error_card;
+  border-left: 4px solid @oc_border_message_error_card_2;
   border-radius: 0.44em;
   margin-top: 0.3em;
 }
 
 .message-error-header {
-  color: #f85149;
+  color: @oc_fg_message_error_header;
   font-size: 0.88em;
   font-weight: 700;
 }
 
 .message-error-icon {
-  color: #f85149;
+  color: @oc_fg_message_error_header;
 }
 
 .message-error-title {
-  color: #f85149;
+  color: @oc_fg_message_error_header;
   font-weight: 700;
 }
 
 .message-error-body {
-  color: #e8e5df;
+  color: @oc_fg_window;
   font-size: 0.92em;
   line-height: 1.4;
 }
@@ -495,7 +496,7 @@ listview.transcript > row:focus {
 }
 
 .markdown-heading {
-  color: #f4f0e9;
+  color: @oc_fg_markdown_heading;
   font-weight: 700;
   line-height: 1.2;
 }
@@ -514,30 +515,30 @@ listview.transcript > row:focus {
 
 .markdown-list-marker {
   min-width: 1.33em;
-  color: #aeb4b9;
+  color: @oc_fg_markdown_list_marker;
   font-weight: 600;
 }
 
 .markdown-blockquote {
   padding: 0.52em 0.89em;
-  border-left: 3px solid #6f7780;
-  color: #bcc1c4;
+  border-left: 3px solid @oc_border_markdown_blockquote;
+  color: @oc_fg_markdown_blockquote;
 }
 
 .markdown-code-block {
-  border: 1px solid #30353a;
+  border: 1px solid @oc_border_markdown_code_block;
   border-radius: 0.59em;
-  background: #171a1d;
+  background: @oc_bg_markdown_code_block;
 }
 
 .markdown-code-header {
   padding: 0.3em 0.59em 0.3em 0.89em;
-  background: #14171a;
-  border-bottom: 1px solid #282c30;
+  background: @oc_bg_markdown_code_header;
+  border-bottom: 1px solid @oc_border_markdown_code_header;
 }
 
 .markdown-code-language {
-  color: #899198;
+  color: @oc_fg_markdown_code_language;
   font-size: 0.76em;
   font-weight: 700;
   letter-spacing: 0.06em;
@@ -553,42 +554,42 @@ button.markdown-code-copy {
   background-image: none;
   box-shadow: none;
   border-radius: 0.37em;
-  color: #8b949e;
+  color: @oc_fg_button_session_id_copy;
 }
 
 button.markdown-code-copy:hover {
-  background: rgba(255, 255, 255, 0.08);
+  background: @oc_bg_button_session_id_copy_hover;
   background-image: none;
-  color: #f0ede7;
+  color: @oc_fg_button_session_id_copy_hover;
 }
 
 button.markdown-code-copy.copied {
-  color: #56d364;
-  background: rgba(86, 211, 100, 0.12);
+  color: @oc_fg_button_session_id_copy_copied;
+  background: @oc_bg_button_session_id_copy_copied;
 }
 
 .markdown-code-content {
-  color: #e1ddd5;
+  color: @oc_fg_markdown_code_content;
   font-family: monospace;
   font-size: 0.92em;
 }
 
 .markdown-table-scroll {
-  border: 1px solid #30353a;
+  border: 1px solid @oc_border_markdown_code_block;
   border-radius: 0.59em;
 }
 
 .markdown-table-header,
 .markdown-table-cell {
   padding: 0.52em 0.74em;
-  border-right: 1px solid #30353a;
-  border-bottom: 1px solid #30353a;
+  border-right: 1px solid @oc_border_markdown_code_block;
+  border-bottom: 1px solid @oc_border_markdown_code_block;
 }
 
 .markdown-table-header {
   font-weight: 700;
-  color: #f4f0e9;
-  background: #171a1d;
+  color: @oc_fg_markdown_heading;
+  background: @oc_bg_markdown_table_header;
 }
 
 .markdown-table-last {
@@ -600,27 +601,27 @@ button.markdown-code-copy.copied {
 }
 
 .message-content link {
-  color: #e0a75e;
+  color: @oc_fg_message_content_link;
 }
 
 .user-message {
-  background: #1c242b;
-  border-top: 1px solid #313a41;
-  border-bottom-color: #313a41;
+  background: @oc_bg_user_message;
+  border-top: 1px solid @oc_border_user_message;
+  border-bottom-color: @oc_border_user_message;
 }
 
 .user-message .message-role {
-  color: #d7c4a3;
+  color: @oc_fg_user_message_message_role;
 }
 
 .sticky-message {
-  background: #101214;
-  border-bottom: 1px solid #343a3f;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
+  background: @oc_bg_window;
+  border-bottom: 1px solid @oc_border_sticky_message;
+  box-shadow: 0 4px 12px @oc_shadow_sticky_message;
 }
 
 .assistant-message {
-  background: #101214;
+  background: @oc_bg_window;
 }
 
 .message-reasoning {
@@ -634,40 +635,40 @@ button.markdown-code-copy.copied {
 .message-reasoning .markdown-heading,
 .message-reasoning .markdown-table-header,
 .message-reasoning .markdown-table-cell {
-  color: #6a7279;
+  color: @oc_fg_message_reasoning_message_role;
 }
 
 .transcript-status {
-  color: #70777d;
+  color: @oc_fg_transcript_status;
   font-size: 1.05em;
 }
 
 .transcript-status-compact {
   margin: 0.59em 0 0.74em;
   padding: 0.52em 0.89em;
-  border: 1px solid #34393e;
+  border: 1px solid @oc_border_transcript_status_compact;
   border-radius: 999em;
-  background: alpha(#171a1d, 0.94);
-  color: #c4c8ca;
+  background: @oc_bg_transcript_status_compact;
+  color: @oc_fg_transcript_status_compact;
   font-size: 0.88em;
 }
 
 .transcript-status.transcript-status-retry {
-  border-color: rgba(229, 181, 103, 0.45);
-  background: rgba(229, 181, 103, 0.1);
-  color: #e5b567;
+  border-color: @oc_border_transcript_status_transcript_status_retry;
+  background: @oc_bg_transcript_status_transcript_status_retry;
+  color: @oc_fg_session_tab_busy_session_tab_title;
 }
 
 .composer-frame {
-  background: #191c1f;
-  border: 1px solid #30353a;
+  background: @oc_bg_composer_frame;
+  border: 1px solid @oc_border_composer_frame;
   border-radius: 0.89em;
   min-width: 0;
 }
 
 .composer-prompt {
-  background: #15181c;
-  border: 1px solid #2a3038;
+  background: @oc_bg_new_session_palette;
+  border: 1px solid @oc_border_new_session_palette;
   border-radius: 0.89em;
   padding: 1.04em;
 }
@@ -684,7 +685,7 @@ button.markdown-code-copy.copied {
 }
 
 .composer-action:hover {
-  background: #22262a;
+  background: @oc_bg_composer_action_hover;
   background-image: none;
 }
 
@@ -694,21 +695,21 @@ button.markdown-code-copy.copied {
 }
 
 .composer-frame button.composer-action.suggested-action {
-  background: #d29b52;
+  background: @oc_bg_composer_frame_button_composer_action_suggested_action;
   background-image: none;
-  color: #17130e;
+  color: @oc_fg_composer_frame_button_composer_action_suggested_action;
   border-radius: 999em;
 }
 
 .composer-frame button.composer-action.suggested-action:hover {
-  background: #c4923a;
+  background: @oc_bg_composer_frame_button_composer_action_suggested_action_hov;
   background-image: none;
 }
 
 .composer-input {
   background: transparent;
-  color: #f0ede7;
-  caret-color: #e5b567;
+  color: @oc_fg_composer_input;
+  caret-color: @oc_fg_session_tab_busy_session_tab_title;
 }
 
 .composer-frame dropdown,
@@ -725,7 +726,7 @@ button.markdown-code-copy.copied {
   border-radius: 0.59em;
   min-width: 0;
   padding: 0 0.59em;
-  color: #e8e5df;
+  color: @oc_fg_window;
 }
 
 .composer-frame dropdown.composer-menu > button {
@@ -740,7 +741,7 @@ button.markdown-code-copy.copied {
 
 .composer-frame dropdown.composer-menu > button:hover,
 .composer-frame button.composer-menu:hover {
-  background: #22262a;
+  background: @oc_bg_composer_action_hover;
   background-image: none;
 }
 
@@ -759,7 +760,7 @@ popover.model-picker-popover {
 
 popover.background.model-picker-popover > arrow,
 popover.background.model-picker-popover > contents {
-  background-color: #171a1d;
+  background-color: @oc_bg_markdown_code_block;
   background-clip: border-box;
   border: none;
 }
@@ -768,19 +769,19 @@ popover.background.model-picker-popover > contents {
   border-radius: 0.74em;
   border-top: 2px solid transparent;
   border-bottom: 2px solid transparent;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  box-shadow: 0 8px 24px @oc_shadow_popover_background_model_picker_popover_contents;
   padding: 0.44em;
 }
 
 .model-picker-search {
   border-radius: 0.44em;
-  background: #101214;
-  border: 1px solid #282c32;
-  color: #f0ede7;
+  background: @oc_bg_session_id_field;
+  border: 1px solid @oc_border_session_id_field;
+  color: @oc_fg_button_session_id_copy_hover;
 }
 
 .model-picker-search:focus-within {
-  border-color: #62bceb;
+  border-color: @oc_border_model_picker_search_focus_within;
 }
 
 .model-picker-list {
@@ -790,7 +791,7 @@ popover.background.model-picker-popover > contents {
 button.model-picker-row {
   border-radius: 0.44em;
   padding: 0.15em 0.3em;
-  color: #e1ddd5;
+  color: @oc_fg_button_model_picker_row;
   background: transparent;
   background-image: none;
   box-shadow: none;
@@ -799,38 +800,38 @@ button.model-picker-row {
 
 .model-picker-row:hover,
 .model-picker-row.active {
-  background: #22262b;
+  background: @oc_bg_model_picker_row_hover;
   background-image: none;
 }
 
 .model-picker-row.active .model-picker-item-title {
-  color: #62bceb;
+  color: @oc_fg_model_picker_row_active_model_picker_item_title;
 }
 
 .model-picker-item-title {
   font-size: 0.92em;
   font-weight: 500;
-  color: #e8e5df;
+  color: @oc_fg_window;
 }
 
 .model-picker-item-subtext {
   font-size: 0.76em;
-  color: #899097;
+  color: @oc_fg_model_picker_item_subtext;
 }
 
 .model-picker-check {
-  color: #62bceb;
+  color: @oc_fg_model_picker_row_active_model_picker_item_title;
   font-weight: 700;
   font-size: 0.9em;
 }
 
 .model-picker-empty {
-  color: #899097;
+  color: @oc_fg_model_picker_item_subtext;
   font-size: 0.88em;
 }
 
 .composer-usage {
-  color: #899097;
+  color: @oc_fg_model_picker_item_subtext;
   font-size: 0.82em;
   padding: 0 0.3em;
 }
@@ -838,8 +839,8 @@ button.model-picker-row {
 .attachment-chip {
   border-radius: 999em;
   padding: 0.15em 0.67em;
-  background: #262b30;
-  color: #c8c4bd;
+  background: @oc_bg_attachment_chip;
+  color: @oc_fg_attachment_chip;
 }
 
 .session-picker-row {
@@ -849,21 +850,21 @@ button.model-picker-row {
 }
 
 .session-picker-row:hover {
-  background: #202428;
+  background: @oc_bg_session_picker_row_hover;
 }
 
 .session-picker-title {
-  color: #eeebe5;
+  color: @oc_fg_session_picker_title;
   font-weight: 600;
 }
 
 .session-picker-path {
-  color: #7f878e;
+  color: @oc_fg_session_picker_path;
   font-size: 0.84em;
 }
 
 .session-picker-time {
-  color: #6a7279;
+  color: @oc_fg_session_picker_time;
   font-size: 0.78em;
 }
 
@@ -876,38 +877,38 @@ button.model-picker-row {
 .prompt-metadata {
   padding: 0.74em 0.89em;
   border-radius: 0.52em;
-  background: #15191c;
-  color: #d2cec7;
+  background: @oc_bg_prompt_detail;
+  color: @oc_fg_prompt_detail;
   font-family: monospace;
 }
 
 .prompt-metadata {
-  color: #9da4aa;
+  color: @oc_fg_prompt_metadata;
   font-size: 0.9em;
 }
 
 .question-section {
   padding: 1.04em;
-  border: 1px solid #2d3236;
+  border: 1px solid @oc_border_question_section;
   border-radius: 0.67em;
-  background: #15181b;
+  background: @oc_bg_question_section;
 }
 
 .question-header {
-  color: #d8a55f;
+  color: @oc_fg_question_header;
   font-weight: 700;
   letter-spacing: 0.04em;
 }
 
 button.suggested-action {
-  background: #d29b52;
-  color: #17130e;
+  background: @oc_bg_button_suggested_action;
+  color: @oc_fg_button_suggested_action;
   font-weight: 700;
 }
 
 .settings-rail {
-  background: #111418;
-  border-right: 1px solid #232930;
+  background: @oc_bg_settings_rail;
+  border-right: 1px solid @oc_border_settings_rail;
   min-width: 12.5em;
   padding: 1em 0.6em;
   border-top-left-radius: 0.81em;
@@ -922,23 +923,23 @@ button.settings-rail-item {
   background-image: none;
   border: none;
   box-shadow: none;
-  color: #8b949e;
+  color: @oc_fg_button_settings_rail_item;
   font-weight: 500;
   font-size: 0.9em;
   margin-bottom: 0.15em;
 }
 
 button.settings-rail-item:hover {
-  background: rgba(255, 255, 255, 0.04);
+  background: @oc_bg_button_settings_rail_item_hover;
   background-image: none;
-  color: #edf1f5;
+  color: @oc_fg_button_settings_rail_item_hover;
 }
 
 button.settings-rail-item.active {
-  background: rgba(255, 255, 255, 0.08);
+  background: @oc_bg_button_settings_rail_item_active;
   background-image: none;
   border: none;
-  color: #edf1f5;
+  color: @oc_fg_button_settings_rail_item_active;
   font-weight: 600;
 }
 
@@ -947,61 +948,61 @@ button.settings-rail-item.active {
   font-family: monospace;
   padding: 0 0.15em;
   background: transparent;
-  color: #6a7482;
+  color: @oc_fg_rail_badge;
 }
 
 button.settings-rail-item.active .rail-badge {
   background: transparent;
-  color: #edf1f5;
+  color: @oc_fg_button_settings_rail_item_active;
   font-weight: 600;
 }
 
 .settings-rail-footer {
   padding: 0.59em 0.59em 0.3em;
   font-size: 0.74em;
-  color: #6a7482;
+  color: @oc_fg_rail_badge;
 }
 
 .settings-topbar {
   padding: 1.33em 1.78em 1.04em;
-  border-bottom: 1px solid #232932;
+  border-bottom: 1px solid @oc_border_settings_topbar;
 }
 
 .settings-search {
-  background: #111418;
-  border: 1px solid #262c36;
+  background: @oc_bg_settings_search;
+  border: 1px solid @oc_border_settings_search;
   border-radius: 0.52em;
   padding: 0.59em 0.89em;
   font-size: 0.96em;
-  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.3);
-  color: #edf1f5;
+  box-shadow: inset 0 1px 2px @oc_shadow_settings_search;
+  color: @oc_fg_button_settings_rail_item_hover;
 }
 
 .settings-search:focus {
-  border-color: #3b82f6;
-  box-shadow: 0 0 0 1px #3b82f6;
+  border-color: @oc_border_settings_search_focus;
+  box-shadow: 0 0 0 1px @oc_shadow_settings_search_focus;
 }
 
 button.session-picker-row {
   padding: 0.74em 1.04em;
   border-radius: 0.59em;
-  background: #1a1f26;
+  background: @oc_bg_button_session_picker_row;
   background-image: none;
-  border: 1px solid #242a34;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+  border: 1px solid @oc_border_button_session_picker_row;
+  box-shadow: 0 1px 3px @oc_shadow_button_session_picker_row;
   margin-bottom: 0.44em;
 }
 
 button.session-picker-row:hover {
-  background: #202630;
+  background: @oc_bg_button_session_picker_row_hover;
   background-image: none;
-  border-color: #313a48;
+  border-color: @oc_border_button_session_picker_row_hover;
 }
 
 button.session-picker-row.active {
-  background: #222b38;
+  background: @oc_bg_button_session_picker_row_active;
   background-image: none;
-  border-color: #3c4a5f;
+  border-color: @oc_border_button_session_picker_row_active;
 }
 
 .session-badge {
@@ -1013,17 +1014,17 @@ button.session-picker-row.active {
 }
 
 .session-badge.open {
-  color: #34d399;
-  background: rgba(52, 211, 153, 0.12);
-  border: 1px solid rgba(52, 211, 153, 0.4);
+  color: @oc_fg_session_badge_open;
+  background: @oc_bg_session_badge_open;
+  border: 1px solid @oc_border_session_badge_open;
 }
 
 .online-badge {
   padding: 0.15em 0.52em;
   border-radius: 0.3em;
-  color: #34d399;
-  background: rgba(52, 211, 153, 0.12);
-  border: 1px solid rgba(52, 211, 153, 0.4);
+  color: @oc_fg_session_badge_open;
+  background: @oc_bg_session_badge_open;
+  border: 1px solid @oc_border_session_badge_open;
   font-size: 0.74em;
   font-weight: 600;
 }
@@ -1032,36 +1033,36 @@ button.session-picker-row.active {
   min-width: 0.44em;
   min-height: 0.44em;
   border-radius: 999em;
-  background: #34d399;
+  background: @oc_bg_status_dot_green;
 }
 
 .session-badge.server {
-  color: #60a5fa;
-  background: rgba(59, 130, 246, 0.12);
-  border: 1px solid rgba(96, 165, 250, 0.4);
+  color: @oc_fg_session_badge_server;
+  background: @oc_bg_session_badge_server;
+  border: 1px solid @oc_border_session_badge_server;
 }
 
 .settings-bottombar {
   padding: 0.89em 1.78em;
-  border-top: 1px solid #232932;
-  background: #14171d;
+  border-top: 1px solid @oc_border_settings_topbar;
+  background: @oc_bg_settings_bottombar;
   border-bottom-right-radius: 0.81em;
 }
 
 /* Tab Picker (Ctrl+P) - Dark Theme */
 .tab-picker-modal {
-  background: #18181b;
+  background: @oc_bg_app_modal_palette_sessions;
   border-radius: 0.89em;
 }
 
 .tab-picker-header {
   padding: 0.89em 1.19em;
-  background: #141416;
-  border-bottom: 1px solid #27272a;
+  background: @oc_bg_tab_picker_header;
+  border-bottom: 1px solid @oc_border_tab_picker_header;
 }
 
 .tab-picker-search-icon {
-  color: #71717a;
+  color: @oc_fg_tab_picker_search_icon;
 }
 
 entry.tab-picker-search-entry,
@@ -1078,7 +1079,7 @@ entry.tab-picker-search-entry:focus,
   background-image: none;
   font-size: 1em;
   font-weight: 500;
-  color: #f4f4f5;
+  color: @oc_fg_entry_tab_picker_search_entry;
   padding: 0;
   min-height: 0;
 }
@@ -1099,42 +1100,42 @@ button.tab-picker-row {
 }
 
 button.tab-picker-row:hover {
-  background: rgba(255, 255, 255, 0.04);
+  background: @oc_bg_button_settings_rail_item_hover;
   background-image: none;
 }
 
 button.tab-picker-row.active {
-  background: #27272a;
+  background: @oc_bg_button_tab_picker_row_active;
   background-image: none;
 }
 
 .tab-picker-title {
   font-size: 0.96em;
   font-weight: 600;
-  color: #f4f4f5;
+  color: @oc_fg_entry_tab_picker_search_entry;
 }
 
 .tab-picker-path {
   font-size: 0.81em;
-  color: #a1a1aa;
+  color: @oc_fg_tab_picker_path;
 }
 
 .tab-picker-footer {
   padding: 0.59em 1.19em;
-  background: #141416;
-  border-top: 1px solid #27272a;
+  background: @oc_bg_tab_picker_footer;
+  border-top: 1px solid @oc_border_tab_picker_header;
   font-size: 0.81em;
-  color: #71717a;
+  color: @oc_fg_tab_picker_search_icon;
   border-bottom-left-radius: 0.89em;
   border-bottom-right-radius: 0.89em;
 }
 
 .key-chip {
-  background: #27272a;
-  border: 1px solid #3f3f46;
+  background: @oc_bg_key_chip;
+  border: 1px solid @oc_border_key_chip;
   border-radius: 0.22em;
   padding: 0.07em 0.3em;
   font-family: monospace;
   font-size: 0.74em;
-  color: #d4d4d8;
+  color: @oc_fg_key_chip;
 }
