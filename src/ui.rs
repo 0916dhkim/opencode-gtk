@@ -213,6 +213,9 @@ struct Controller {
     server_key: String,
     state_path: PathBuf,
     persisted: PersistedState,
+    zoom_level: f64,
+    base_dpi: i32,
+    zoom_provider: gtk::CssProvider,
     persistence_warning: Option<String>,
     persistence_error: Option<String>,
     credential_warning: Option<String>,
@@ -641,6 +644,34 @@ pub fn launch(
     let offline_busy = server_state.busy.clone();
     let state = restored_state(server_state);
 
+    let zoom_provider = gtk::CssProvider::new();
+    if let Some(display) = gdk::Display::default() {
+        gtk::style_context_add_provider_for_display(
+            &display,
+            &zoom_provider,
+            gtk::STYLE_PROVIDER_PRIORITY_APPLICATION + 20,
+        );
+    }
+    let zoom_level = if persisted.zoom_level >= 0.5 && persisted.zoom_level <= 3.0 {
+        persisted.zoom_level
+    } else {
+        1.0
+    };
+    let base_dpi = if let Some(settings) = gtk::Settings::default() {
+        let dpi = settings.gtk_xft_dpi();
+        if dpi > 0 {
+            if (zoom_level - 1.0).abs() > 0.001 {
+                ((dpi as f64) / zoom_level).round() as i32
+            } else {
+                dpi
+            }
+        } else {
+            96 * 1024
+        }
+    } else {
+        96 * 1024
+    };
+
     let controller = Rc::new(RefCell::new(Controller {
         api,
         events: events.clone(),
@@ -649,6 +680,9 @@ pub fn launch(
         server_key,
         state_path,
         persisted,
+        zoom_level,
+        base_dpi,
+        zoom_provider,
         persistence_warning,
         persistence_error,
         credential_warning,
@@ -706,6 +740,9 @@ pub fn launch(
         tab_shortcut_hint: false,
     }));
     controller.borrow_mut().self_weak = Rc::downgrade(&controller);
+    if (zoom_level - 1.0).abs() > 0.001 {
+        controller.borrow_mut().apply_zoom(zoom_level);
+    }
     {
         let this = controller.borrow();
         this.widgets.status.set_tooltip_text(Some(&this.server_key));
@@ -2445,6 +2482,15 @@ fn wire_callbacks(controller: &Rc<RefCell<Controller>>) {
             gdk::Key::t => Controller::show_new_session(&controller),
             gdk::Key::w => Controller::close_active(&controller),
             gdk::Key::u => Controller::pick_attachments(&controller),
+            gdk::Key::equal | gdk::Key::plus | gdk::Key::KP_Add => {
+                Controller::zoom_in(&controller);
+            }
+            gdk::Key::minus | gdk::Key::KP_Subtract => {
+                Controller::zoom_out(&controller);
+            }
+            gdk::Key::_0 | gdk::Key::KP_0 => {
+                Controller::zoom_reset(&controller);
+            }
             gdk::Key::Tab => Controller::cycle_tab(
                 &controller,
                 if modifiers.contains(gdk::ModifierType::SHIFT_MASK) {
@@ -4149,6 +4195,63 @@ impl Controller {
         self.refresh_session_header();
     }
 
+    fn apply_zoom(&mut self, zoom: f64) {
+        let zoom = zoom.clamp(0.7, 2.0);
+        self.zoom_level = zoom;
+        self.persisted.zoom_level = zoom;
+
+        if let Some(settings) = gtk::Settings::default() {
+            let base = if self.base_dpi > 0 {
+                self.base_dpi
+            } else {
+                96 * 1024
+            };
+            let target_dpi = ((base as f64) * zoom).round() as i32;
+            settings.set_gtk_xft_dpi(target_dpi);
+        }
+
+        let font_pct = (zoom * 100.0).round() as i32;
+        self.zoom_provider
+            .load_from_data(&format!("window {{ font-size: {font_pct}%; }}"));
+
+        self.transcript_heights.clear();
+        self.rendered_rows.clear();
+        self.recycle_visible_rows();
+        self.refresh_transcript(TranscriptUpdate::Content);
+        self.relayout_transcript(true);
+        self.refresh_load_earlier_visibility();
+        self.refresh_sticky_message();
+
+        self.persist_state();
+    }
+
+    fn zoom_in(controller: &Rc<RefCell<Self>>) {
+        let current = controller.borrow().zoom_level;
+        const ZOOM_STEPS: [f64; 9] = [0.7, 0.8, 0.9, 1.0, 1.1, 1.2, 1.3, 1.5, 1.75];
+        let next = ZOOM_STEPS
+            .iter()
+            .copied()
+            .find(|&step| step > current + 0.04)
+            .unwrap_or(*ZOOM_STEPS.last().unwrap());
+        controller.borrow_mut().apply_zoom(next);
+    }
+
+    fn zoom_out(controller: &Rc<RefCell<Self>>) {
+        let current = controller.borrow().zoom_level;
+        const ZOOM_STEPS: [f64; 9] = [0.7, 0.8, 0.9, 1.0, 1.1, 1.2, 1.3, 1.5, 1.75];
+        let prev = ZOOM_STEPS
+            .iter()
+            .rev()
+            .copied()
+            .find(|&step| step < current - 0.04)
+            .unwrap_or(*ZOOM_STEPS.first().unwrap());
+        controller.borrow_mut().apply_zoom(prev);
+    }
+
+    fn zoom_reset(controller: &Rc<RefCell<Self>>) {
+        controller.borrow_mut().apply_zoom(1.0);
+    }
+
     fn refresh_session_header(&self) {
         let visible = !self.widgets.sidebar.is_visible();
         self.widgets.session_header_bar.set_visible(visible);
@@ -5455,7 +5558,8 @@ impl Controller {
 
         {
             let mut this = controller.borrow_mut();
-            this.open_app_modal(AppModalKind::Sessions, 520, -1);
+            let modal_w = (520.0 * this.zoom_level).round() as i32;
+            this.open_app_modal(AppModalKind::Sessions, modal_w, -1);
             let sessions = this.tab_sessions();
             let active = this.state.active.clone();
             populate_session_list(
@@ -6014,7 +6118,9 @@ impl Controller {
 
         {
             let mut this = controller.borrow_mut();
-            this.open_app_modal(AppModalKind::Settings, 820, 640);
+            let modal_w = (820.0 * this.zoom_level).round() as i32;
+            let modal_h = (640.0 * this.zoom_level).round() as i32;
+            this.open_app_modal(AppModalKind::Settings, modal_w, modal_h);
             populate_all_sessions_list(
                 &session_list,
                 &this.state.sessions,

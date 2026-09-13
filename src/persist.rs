@@ -11,12 +11,28 @@ use serde::{Deserialize, Serialize};
 
 use crate::model::ModelSelection;
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct PersistedState {
     #[serde(default)]
     pub connection: ConnectionSettings,
     #[serde(default)]
     pub servers: HashMap<String, ServerState>,
+    #[serde(default = "default_zoom_level")]
+    pub zoom_level: f64,
+}
+
+fn default_zoom_level() -> f64 {
+    1.0
+}
+
+impl Default for PersistedState {
+    fn default() -> Self {
+        Self {
+            connection: ConnectionSettings::default(),
+            servers: HashMap::default(),
+            zoom_level: default_zoom_level(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
@@ -178,6 +194,7 @@ mod tests {
             .busy
             .contains("ses_1"));
         assert_eq!(loaded.connection, state.connection);
+        assert_eq!(loaded.zoom_level, 1.0);
         let contents = fs::read_to_string(path).unwrap();
         assert!(!contents.contains("password"));
         assert!(!contents.contains("client.access"));
@@ -194,6 +211,7 @@ mod tests {
 
         assert!(warning.is_none());
         assert_eq!(loaded.connection, ConnectionSettings::default());
+        assert_eq!(loaded.zoom_level, 1.0);
     }
 
     #[test]
