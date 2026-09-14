@@ -7150,15 +7150,18 @@ fn sessions_picker_body() -> (gtk::Box, gtk::ListBox, gtk::Entry) {
     let list = gtk::ListBox::new();
     list.set_selection_mode(gtk::SelectionMode::None);
     list.add_css_class("tab-picker-list");
+    // Keep the picker frame a constant height while filtering, matching the
+    // new-session modal (d213d95): a fixed viewport height that scrolls
+    // internally instead of resizing with the match count.
     let scroll = gtk::ScrolledWindow::builder()
         .hscrollbar_policy(gtk::PolicyType::Never)
         .vscrollbar_policy(gtk::PolicyType::Automatic)
-        .propagate_natural_height(true)
+        .propagate_natural_height(false)
         .propagate_natural_width(false)
         .min_content_width(520)
         .max_content_width(520)
-        .max_content_height(340)
-        .vexpand(false)
+        .min_content_height(340)
+        .vexpand(true)
         .hexpand(true)
         .child(&list)
         .build();
@@ -8381,6 +8384,36 @@ mod tests {
             wide.1 >= 310,
             "allocated height {} is shorter than 310",
             wide.1
+        );
+    }
+
+    #[test]
+    #[ignore]
+    fn tab_picker_keeps_constant_height_while_filtering() {
+        gtk_debug_init();
+        let (window, card, list) = sessions_overlay_card();
+        let many: Vec<&str> = (0..15).map(|_| "opencode-gtk session").collect();
+        fill_session_rows(&list, &many);
+        window.present();
+        pump_until_allocated(&card);
+        let full = card.height();
+        fill_session_rows(&list, &["a"]);
+        card.queue_resize();
+        pump_until_allocated(&card);
+        let single = card.height();
+        fill_session_rows(&list, &[]);
+        card.queue_resize();
+        pump_until_allocated(&card);
+        let empty = card.height();
+        window.close();
+        eprintln!("tab picker heights: full={full} single={single} empty={empty}");
+        assert_eq!(
+            full, single,
+            "picker resized for a single match: {full} vs {single}"
+        );
+        assert_eq!(
+            full, empty,
+            "picker resized for no matches: {full} vs {empty}"
         );
     }
 
