@@ -80,6 +80,8 @@ enum TranscriptIndicator {
 struct TranscriptVisible {
     index: usize,
     bound: String,
+    measured_width: i32,
+    dirty: bool,
     row: gtk::Box,
 }
 
@@ -4597,7 +4599,14 @@ impl Controller {
 
     fn refresh_visible_row_heights(&mut self, width: i32) -> bool {
         let mut changed = false;
-        for slot in &self.transcript_visible {
+        let heights = &mut self.transcript_heights;
+        for slot in &mut self.transcript_visible {
+            // Re-measuring re-shapes the row's text through Pango. Only do it when the
+            // row's content actually changed or the available width changed; otherwise
+            // skip it so streaming updates do not churn every visible row.
+            if !slot.dirty && slot.measured_width == width {
+                continue;
+            }
             if slot.row.width_request() != -1 {
                 slot.row.set_size_request(-1, -1);
             }
@@ -4607,7 +4616,9 @@ impl Controller {
             };
             let (_, natural, _, _) = slot.row.measure(gtk::Orientation::Vertical, measure_width);
             let height = natural.max(1);
-            if let Some(stored) = self.transcript_heights.get_mut(slot.index) {
+            slot.measured_width = width;
+            slot.dirty = false;
+            if let Some(stored) = heights.get_mut(slot.index) {
                 if (*stored - height).abs() >= 2 {
                     *stored = height;
                     changed = true;
@@ -4660,6 +4671,8 @@ impl Controller {
                 .unwrap_or_else(new_transcript_slot);
             slot.index = index;
             slot.bound.clear();
+            slot.measured_width = -1;
+            slot.dirty = true;
             slot.row.set_halign(gtk::Align::Fill);
             slot.row.set_hexpand(true);
             slot.row.set_valign(gtk::Align::Start);
@@ -4681,6 +4694,7 @@ impl Controller {
             if slot.bound != *value {
                 bind_transcript_row(&slot.row, value, slot.index as u32);
                 slot.bound = value.clone();
+                slot.dirty = true;
             }
         }
         self.transcript_visible = keep;
@@ -7409,6 +7423,8 @@ fn new_transcript_slot() -> TranscriptVisible {
     TranscriptVisible {
         index: usize::MAX,
         bound: String::new(),
+        measured_width: -1,
+        dirty: true,
         row,
     }
 }
