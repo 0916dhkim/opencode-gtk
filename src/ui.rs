@@ -830,7 +830,6 @@ fn initial_cloudflare_credentials(
 
 fn configured_cloudflare_credentials(
     current: &ApiConfig,
-    server: &str,
     client_id: &str,
     client_secret: &str,
 ) -> anyhow::Result<Option<CloudflareAccessCredentials>> {
@@ -840,14 +839,16 @@ fn configured_cloudflare_credentials(
         return Ok(None);
     }
     if client_secret.is_empty() {
-        if same_server(&current.base_url, server) {
-            if let Some(credentials) = current
-                .cloudflare_access
-                .as_ref()
-                .filter(|credentials| credentials.client_id == client_id)
-            {
-                return Ok(Some(credentials.clone()));
-            }
+        // Reuse the credentials already loaded for this app when the client ID is
+        // unchanged, even if the server host changed: the client secret lives in the
+        // keyring and cannot be retyped. The client ID uniquely identifies the token,
+        // so a match means the user is keeping the same Cloudflare Access service token.
+        if let Some(credentials) = current
+            .cloudflare_access
+            .as_ref()
+            .filter(|credentials| credentials.client_id == client_id)
+        {
+            return Ok(Some(credentials.clone()));
         }
         anyhow::bail!("Cloudflare Access client secret is required");
     }
@@ -5794,7 +5795,6 @@ impl Controller {
                 let entered_password = password.text().to_string();
                 let cloudflare_access = match configured_cloudflare_credentials(
                     &current,
-                    &base_url,
                     cloudflare_client_id.text().as_str(),
                     cloudflare_client_secret.text().as_str(),
                 ) {
@@ -8930,28 +8930,25 @@ mod tests {
     fn settings_preserve_or_clear_the_existing_cloudflare_secret() {
         let config = config_with_cloudflare();
 
+        // An empty secret reuses the stored token when the client ID is unchanged.
         assert_eq!(
-            configured_cloudflare_credentials(
-                &config,
-                "https://opencode.example.com/",
-                "client.access",
-                "",
-            )
-            .unwrap(),
+            configured_cloudflare_credentials(&config, "client.access", "").unwrap(),
             config.cloudflare_access.clone()
         );
+        // Clearing the client ID removes Cloudflare Access.
         assert_eq!(
-            configured_cloudflare_credentials(&config, "https://opencode.example.com", "", "",)
-                .unwrap(),
+            configured_cloudflare_credentials(&config, "", "").unwrap(),
             None
         );
-        assert!(configured_cloudflare_credentials(
-            &config,
-            "https://other.example.com",
-            "client.access",
-            "",
-        )
-        .is_err());
+        // A different client ID with no secret cannot be completed.
+        assert!(configured_cloudflare_credentials(&config, "other.access", "").is_err());
+        // A provided secret builds new credentials.
+        assert_eq!(
+            configured_cloudflare_credentials(&config, "client.access", "secret").unwrap(),
+            Some(
+                CloudflareAccessCredentials::new("client.access".into(), "secret".into()).unwrap()
+            )
+        );
     }
 
     #[test]
