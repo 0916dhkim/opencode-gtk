@@ -24,7 +24,7 @@ use serde_json::{json, Value};
 
 use crate::{
     credentials::CloudflareAccessCredentials,
-    model::{ModelCatalog, ModelSelection, Project, RunStatus, Session},
+    model::{ModelCatalog, Project, RunStatus, Session},
     protocol,
 };
 
@@ -66,13 +66,20 @@ pub enum Command {
         directory: String,
         title: String,
     },
+    /// Saves an explicit model pick on the session. Never sent for a
+    /// displayed default.
+    SelectModel {
+        request_id: u64,
+        session_id: String,
+        model: protocol::ModelRef,
+    },
+    /// Carries no model or agent: the session's saved model and the server's
+    /// default agent apply.
     SendPrompt {
         request_id: u64,
         session_id: String,
         directory: String,
         text: String,
-        selection: Option<ModelSelection>,
-        agent: Option<String>,
         attachments: Vec<PathBuf>,
     },
     Abort {
@@ -179,6 +186,12 @@ pub enum UiEvent {
         session_id: String,
         result: Result<Session, String>,
     },
+    ModelSelected {
+        request_id: u64,
+        session_id: String,
+        model: protocol::ModelRef,
+        result: Result<(), String>,
+    },
     PromptAccepted {
         request_id: u64,
         session_id: String,
@@ -284,8 +297,10 @@ impl ApiHandle {
             Command::Bootstrap | Command::LoadMessages { .. } | Command::LoadModels { .. } => {
                 &self.refresh_commands
             }
+            // One worker, so a model switch lands before a prompt sent after it.
             Command::CreateSession { .. }
             | Command::RenameSession { .. }
+            | Command::SelectModel { .. }
             | Command::SendPrompt { .. } => &self.interaction_commands,
             Command::Abort { .. } => &self.abort_commands,
             Command::ReplyPermission { .. }
@@ -449,16 +464,6 @@ impl Api {
             .send()
             .context("request failed")?;
         expect_success(response).map(|_| ())
-    }
-
-    fn json(&self, method: Method, url: Url, body: Option<&Value>) -> Result<Value> {
-        let request = self.request(method, url);
-        let response = match body {
-            Some(body) => request.json(body).send(),
-            None => request.send(),
-        }
-        .context("request failed")?;
-        parse_json(response)
     }
 
     fn empty(&self, method: Method, url: Url, body: Option<&Value>) -> Result<()> {
@@ -639,24 +644,31 @@ impl Api {
         })
     }
 
+    /// Both routes are location-scoped, so they take `location[directory]`;
+    /// a plain `directory` would be ignored.
     fn load_models(&self, directory: &str) -> Result<ModelCatalog> {
         let location = [protocol::location_query(directory)];
-        let providers = self.json(
-            Method::GET,
-            self.url(
-                &format!("{}/config/providers", protocol::API_PREFIX),
-                &location,
-            )?,
-            None,
-        )?;
-        let config = self
-            .json(
-                Method::GET,
-                self.url(&format!("{}/config", protocol::API_PREFIX), &location)?,
-                None,
-            )
-            .unwrap_or(Value::Null);
-        Ok(ModelCatalog::from_values(&providers, &config))
+        let models: protocol::ModelListResponse = self
+            .get(&protocol::models_path(), &location)
+            .context("failed to load models")?;
+        let default: protocol::ModelDefaultResponse = self
+            .get(&protocol::model_default_path(), &location)
+            .context("failed to load the default model")?;
+        Ok(ModelCatalog::from_models(
+            &models.data,
+            default.data.as_ref(),
+        ))
+    }
+
+    fn select_model(&self, session_id: &str, model: &protocol::ModelRef) -> Result<()> {
+        let body = protocol::SwitchModelBody {
+            model: model.clone(),
+        };
+        self.send_empty(
+            Method::POST,
+            &protocol::session_model_path(session_id),
+            &body,
+        )
     }
 
     fn create_session(&self, directory: &str, title: Option<&str>) -> Result<Session> {
@@ -683,27 +695,13 @@ impl Api {
         session_id: &str,
         _directory: &str,
         text: &str,
-        selection: Option<&ModelSelection>,
-        agent: Option<&str>,
         attachments: &[PathBuf],
     ) -> Result<()> {
         let mut parts = vec![json!({ "type": "text", "text": text })];
         parts.extend(encode_attachments(attachments)?);
-        let mut body = json!({
+        let body = json!({
             "parts": parts
         });
-        if let Some(selection) = selection {
-            body["model"] = json!({
-                "providerID": selection.provider_id,
-                "modelID": selection.model_id
-            });
-            if let Some(variant) = &selection.variant {
-                body["variant"] = Value::String(variant.clone());
-            }
-        }
-        if let Some(agent) = agent {
-            body["agent"] = Value::String(agent.to_owned());
-        }
         // v1 body on a route 2.0.8 does not serve; replaced in CP-008.
         self.empty(
             Method::POST,
@@ -821,24 +819,25 @@ fn spawn_command_worker(api: Api, commands: Receiver<Command>, ui: Sender<UiEven
                         .map_err(format_error),
                     session_id,
                 },
+                Command::SelectModel {
+                    request_id,
+                    session_id,
+                    model,
+                } => UiEvent::ModelSelected {
+                    request_id,
+                    result: api.select_model(&session_id, &model).map_err(format_error),
+                    session_id,
+                    model,
+                },
                 Command::SendPrompt {
                     request_id,
                     session_id,
                     directory,
                     text,
-                    selection,
-                    agent,
                     attachments,
                 } => {
                     let result = api
-                        .send_prompt(
-                            &session_id,
-                            &directory,
-                            &text,
-                            selection.as_ref(),
-                            agent.as_deref(),
-                            &attachments,
-                        )
+                        .send_prompt(&session_id, &directory, &text, &attachments)
                         .map_err(format_error);
                     UiEvent::PromptAccepted {
                         request_id,
@@ -1113,12 +1112,6 @@ fn decode_json<T: DeserializeOwned>(response: Response) -> Result<T> {
         .bytes()
         .context("failed to read the server response")?;
     protocol::decode(&body).context("server returned an unexpected response")
-}
-
-fn parse_json(response: Response) -> Result<Value> {
-    expect_success(response)?
-        .json()
-        .context("server returned invalid JSON")
 }
 
 /// Includes the cause chain, e.g. "request failed: <transport error>".
@@ -1659,6 +1652,145 @@ mod tests {
         assert_eq!(
             requests[0].json(),
             json!({ "location": { "directory": "/a" }, "title": "Scratch" })
+        );
+    }
+
+    #[test]
+    fn model_routes_send_the_location_query() {
+        let list = fixture("model.list");
+        let default = fixture("model.default");
+        let (base, requests, server) = serve(2, move |request| match request.path() {
+            "/api/model" => ok(list.clone()),
+            "/api/model/default" => ok(default.clone()),
+            _ => panic!("unexpected request: {}", request.line),
+        });
+        let api = Api::new(config(base, None)).unwrap();
+        let catalog = api.load_models("/Users/me/my repo").unwrap();
+        server.join().unwrap();
+
+        assert_eq!(catalog.models.len(), 2);
+        assert_eq!(
+            catalog
+                .preferred
+                .as_ref()
+                .map(|model| model.model_id.as_str()),
+            Some("mock-model")
+        );
+        let requests = requests.lock().unwrap();
+        assert_eq!(requests.len(), 2);
+        for request in requests.iter() {
+            assert!(request.line.starts_with("GET "), "{}", request.line);
+            let query = request.query();
+            assert_eq!(
+                query.get("location[directory]").map(String::as_str),
+                Some("/Users/me/my repo")
+            );
+            assert!(!query.contains_key("directory"), "{}", request.line);
+            assert_eq!(query.len(), 1, "{}", request.line);
+        }
+    }
+
+    #[test]
+    fn missing_default_model_falls_back_to_the_first_model() {
+        let (base, _, server) = serve(2, |request| match request.path() {
+            "/api/model" => ok(fixture("model.list")),
+            "/api/model/default" => ok(json!({ "location": { "directory": "/repo" } })),
+            _ => panic!("unexpected request: {}", request.line),
+        });
+        let api = Api::new(config(base, None)).unwrap();
+        let catalog = api.load_models("/repo").unwrap();
+        server.join().unwrap();
+        assert_eq!(
+            catalog.preferred.map(|model| model.model_id),
+            Some("mock-model".to_owned())
+        );
+    }
+
+    #[test]
+    fn select_model_posts_the_switch_body() {
+        let captured = serde_json::from_str::<Value>(
+            &fs::read_to_string(format!(
+                "{}/tests/fixtures/v2-2.0.8/session.model.switch.json",
+                env!("CARGO_MANIFEST_DIR")
+            ))
+            .unwrap(),
+        )
+        .unwrap();
+        let (base, requests, server) = serve(2, |request| match request.path() {
+            "/api/session/ses_a/model" => (204, String::new()),
+            _ => (
+                400,
+                json!({ "_tag": "BadRequest", "message": "Unknown model" }).to_string(),
+            ),
+        });
+        let api = Api::new(config(base, None)).unwrap();
+        let model = protocol::ModelRef {
+            id: "mock-model-alt".into(),
+            provider_id: "mock".into(),
+            variant: Some("high".into()),
+        };
+        api.select_model("ses_a", &model).unwrap();
+        let error = api
+            .select_model(
+                "ses_b",
+                &protocol::ModelRef {
+                    variant: None,
+                    ..model.clone()
+                },
+            )
+            .unwrap_err();
+        server.join().unwrap();
+
+        assert_eq!(format_error(error), "Unknown model");
+        let requests = requests.lock().unwrap();
+        assert_eq!(requests[0].line, "POST /api/session/ses_a/model HTTP/1.1");
+        assert_eq!(
+            requests[0].json(),
+            json!({ "model": { "id": "mock-model-alt", "providerID": "mock", "variant": "high" } })
+        );
+        assert_eq!(requests[0].json(), captured["request"]["body"]);
+        assert_eq!(
+            requests[1].json(),
+            json!({ "model": { "id": "mock-model-alt", "providerID": "mock" } }),
+            "no variant means the model's default variant"
+        );
+    }
+
+    #[test]
+    fn preview_saves_a_model_pick() {
+        let mut state = crate::preview::State::new();
+        let model = protocol::ModelRef {
+            id: "claude-sonnet-4.6".into(),
+            provider_id: "anthropic".into(),
+            variant: None,
+        };
+        let UiEvent::ModelSelected {
+            request_id: 7,
+            result: Ok(()),
+            model: echoed,
+            ..
+        } = state.handle(Command::SelectModel {
+            request_id: 7,
+            session_id: "ses_preview".into(),
+            model: model.clone(),
+        })
+        else {
+            panic!("preview model switch failed");
+        };
+        assert_eq!(echoed, model);
+        let UiEvent::Bootstrap(Ok(bootstrap)) = state.handle(Command::Bootstrap) else {
+            panic!("preview bootstrap failed");
+        };
+        let session = bootstrap
+            .sessions
+            .iter()
+            .find(|session| session.id == "ses_preview")
+            .unwrap();
+        assert_eq!(
+            session
+                .model_selection()
+                .map(|selection| selection.to_ref()),
+            Some(model)
         );
     }
 

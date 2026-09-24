@@ -4,7 +4,7 @@ use serde_json::{json, Value};
 
 use crate::{
     api::{Bootstrap, Command, MessagePage, UiEvent},
-    model::{ModelCatalog, ModelOption, ModelSelection, Project, RunStatus, Session},
+    model::{ModelCatalog, Project, RunStatus, Session, SessionModel},
     persist::{PersistedTab, ServerState},
     protocol,
 };
@@ -92,6 +92,19 @@ impl State {
                     result,
                 }
             }
+            Command::SelectModel {
+                request_id,
+                session_id,
+                model,
+            } => {
+                let result = self.select_model(&session_id, &model);
+                UiEvent::ModelSelected {
+                    request_id,
+                    session_id,
+                    model,
+                    result,
+                }
+            }
             Command::SendPrompt {
                 request_id,
                 session_id,
@@ -163,7 +176,9 @@ impl State {
         let id = format!("ses_new_{}", self.next_id);
         self.next_id += 1;
         let created = CREATED + self.next_id * 1_000;
-        let session = session_info(&id, &directory, title.as_deref(), created, created);
+        let mut session = session_info(&id, &directory, title.as_deref(), created, created);
+        // New sessions follow the server default until a model is picked.
+        session.model = None;
         self.messages.insert(id, Vec::new());
         self.sessions.insert(0, session.clone());
         session
@@ -184,6 +199,25 @@ impl State {
         Ok(session.clone())
     }
 
+    fn select_model(&mut self, session_id: &str, model: &protocol::ModelRef) -> Result<(), String> {
+        if !catalog()
+            .models
+            .iter()
+            .any(|option| option.provider_id == model.provider_id && option.model_id == model.id)
+        {
+            return Err(format!("Unknown model {}/{}", model.provider_id, model.id));
+        }
+        let session = self
+            .sessions
+            .iter_mut()
+            .find(|session| session.id == session_id)
+            .ok_or_else(|| format!("unknown session {session_id}"))?;
+        session.model = Some(SessionModel::from_selection(
+            &crate::model::ModelSelection::from_ref(model),
+        ));
+        Ok(())
+    }
+
     fn append_user_message(&mut self, session_id: &str, text: String) {
         let id = format!("msg_user_{}", self.next_id);
         self.next_id += 1;
@@ -200,32 +234,35 @@ impl State {
     }
 }
 
+/// Canned `GET /api/model` and `/api/model/default`, built through the same
+/// path as the real client.
 fn catalog() -> ModelCatalog {
-    ModelCatalog {
-        models: vec![
-            ModelOption {
-                provider_id: "openai".into(),
-                model_id: "gpt-5.6".into(),
-                label: "OpenAI / GPT-5.6".into(),
-                variants: vec!["low".into(), "medium".into(), "high".into()],
-                supports_attachments: true,
-                context_limit: Some(200_000),
-            },
-            ModelOption {
-                provider_id: "anthropic".into(),
-                model_id: "claude-sonnet-4.6".into(),
-                label: "Anthropic / Claude Sonnet 4.6".into(),
-                variants: vec!["medium".into(), "high".into()],
-                supports_attachments: true,
-                context_limit: Some(200_000),
-            },
-        ],
-        preferred: Some(ModelSelection {
-            provider_id: "openai".into(),
-            model_id: "gpt-5.6".into(),
-            variant: Some("medium".into()),
-        }),
-    }
+    let model = |id: &str, provider: &str, name: &str, variants: &[&str]| {
+        json!({
+            "id": id,
+            "modelID": id,
+            "providerID": provider,
+            "name": name,
+            "capabilities": { "tools": true, "input": ["text", "image", "pdf"], "output": ["text"] },
+            "variants": variants.iter().map(|id| json!({ "id": id })).collect::<Vec<_>>(),
+            "status": "active",
+            "enabled": true,
+            "limit": { "context": 200000, "output": 32000 }
+        })
+    };
+    let gpt = model("gpt-5.6", "openai", "GPT-5.6", &["high", "low", "medium"]);
+    let list: protocol::ModelListResponse = decode(json!({
+        "location": { "directory": DIRECTORY },
+        "data": [
+            gpt,
+            model("claude-sonnet-4.6", "anthropic", "Claude Sonnet 4.6", &["medium", "high"])
+        ]
+    }));
+    let default: protocol::ModelDefaultResponse = decode(json!({
+        "location": { "directory": DIRECTORY },
+        "data": gpt
+    }));
+    ModelCatalog::from_models(&list.data, default.data.as_ref())
 }
 
 fn decode<T: serde::de::DeserializeOwned>(value: Value) -> T {
@@ -382,7 +419,16 @@ mod tests {
         assert_eq!(bootstrap.version, "preview");
         assert_eq!(bootstrap.sessions[0].id, ACTIVE_ID);
         assert!(bootstrap.sessions_complete);
-        assert!(catalog().models[0].supports_attachments);
+        let catalog = catalog();
+        assert!(catalog
+            .models
+            .iter()
+            .all(|model| model.supports_attachments));
+        assert_eq!(
+            catalog.preferred.map(|model| model.model_id),
+            Some("gpt-5.6".to_owned())
+        );
+        assert_eq!(catalog.models[1].variants, ["low", "medium", "high"]);
     }
 
     fn render(messages: &[protocol::SessionMessage]) -> Vec<Value> {

@@ -13,8 +13,8 @@ pub struct Session {
     pub time: SessionTime,
     #[serde(default, rename = "parentID")]
     pub parent_id: Option<String>,
-    #[serde(default)]
-    pub agent: Option<String>,
+    /// The model saved on the session by the server; `None` follows the
+    /// server's default model.
     #[serde(default)]
     pub model: Option<SessionModel>,
 }
@@ -53,16 +53,39 @@ pub struct Project {
     pub name: Option<String>,
 }
 
+/// A model plus optional variant. `model_id` is the catalog ID
+/// (`ModelInfo.id`). The field names are persisted in `state.json`, so keep
+/// them stable.
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
 pub struct ModelSelection {
     pub provider_id: String,
     pub model_id: String,
+    #[serde(default)]
     pub variant: Option<String>,
+}
+
+impl ModelSelection {
+    pub fn from_ref(model: &protocol::ModelRef) -> Self {
+        Self {
+            provider_id: model.provider_id.clone(),
+            model_id: model.id.clone(),
+            variant: model.variant.clone(),
+        }
+    }
+
+    pub fn to_ref(&self) -> protocol::ModelRef {
+        protocol::ModelRef {
+            id: self.model_id.clone(),
+            provider_id: self.provider_id.clone(),
+            variant: self.variant.clone(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ModelOption {
     pub provider_id: String,
+    /// Catalog ID (`ModelInfo.id`), which is what `ModelRef.id` takes.
     pub model_id: String,
     pub label: String,
     pub variants: Vec<String>,
@@ -70,125 +93,77 @@ pub struct ModelOption {
     pub context_limit: Option<u64>,
 }
 
+/// One location's model catalog. Only display data is kept: provider
+/// `settings`, `headers` and `body` (which carry API keys) never reach it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ModelCatalog {
     pub models: Vec<ModelOption>,
+    /// The server's default model (`GET /api/model/default`), else the first
+    /// model. Display only: it is never sent to the server.
     pub preferred: Option<ModelSelection>,
 }
 
+/// Input modalities that the composer can attach.
+const ATTACHMENT_INPUTS: [&str; 4] = ["image", "pdf", "audio", "video"];
+
 impl ModelCatalog {
-    pub fn from_values(providers: &Value, config: &Value) -> Self {
-        let configured_variant = config
-            .get("agent")
-            .and_then(|a| a.get("build"))
-            .and_then(|b| b.get("variant"))
-            .and_then(Value::as_str)
-            .map(str::to_owned);
-        let configured = config
-            .get("model")
-            .and_then(Value::as_str)
-            .or_else(|| {
-                config
-                    .get("agent")
-                    .and_then(|a| a.get("build"))
-                    .and_then(|b| b.get("model"))
-                    .and_then(Value::as_str)
+    /// Builds the catalog from `GET /api/model` and `GET /api/model/default`.
+    /// Disabled and deprecated models are left out. The provider ID labels
+    /// the provider: display names need `GET /api/provider`, whose entries
+    /// also carry provider settings.
+    pub fn from_models(
+        models: &[protocol::ModelInfo],
+        default: Option<&protocol::ModelInfo>,
+    ) -> Self {
+        let mut options: Vec<ModelOption> = models
+            .iter()
+            .filter(|model| {
+                model.enabled && model.status != Some(protocol::ModelStatus::Deprecated)
             })
-            .and_then(split_model_id)
-            .map(|mut selection| {
-                if selection.variant.is_none() {
-                    selection.variant = configured_variant.clone();
-                }
-                selection
-            });
-        let defaults = providers.get("default").and_then(Value::as_object);
-        let mut models = Vec::new();
-
-        for provider in providers
-            .get("providers")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-        {
-            let Some(provider_id) = provider.get("id").and_then(Value::as_str) else {
-                continue;
-            };
-            let provider_name = provider
-                .get("name")
-                .and_then(Value::as_str)
-                .unwrap_or(provider_id);
-            let Some(provider_models) = provider.get("models").and_then(Value::as_object) else {
-                continue;
-            };
-
-            for (map_id, model) in provider_models {
-                if model.get("status").and_then(Value::as_str) == Some("deprecated") {
-                    continue;
-                }
-                let model_id = model
-                    .get("id")
-                    .and_then(Value::as_str)
-                    .unwrap_or(map_id)
-                    .to_owned();
-                let model_name = model
-                    .get("name")
-                    .and_then(Value::as_str)
-                    .unwrap_or(&model_id)
-                    .to_owned();
-                let mut variants = variants(model);
+            .map(|model| {
+                let name = if model.name.trim().is_empty() {
+                    model.id.as_str()
+                } else {
+                    model.name.as_str()
+                };
+                let mut variants: Vec<String> = model
+                    .variants
+                    .iter()
+                    .map(|variant| variant.id.clone())
+                    .collect();
                 variants.sort_by_key(|variant| variant_rank(variant));
-                let supports_attachments = model
-                    .pointer("/capabilities/attachment")
-                    .and_then(Value::as_bool)
-                    .unwrap_or_else(|| {
-                        ["audio", "image", "video", "pdf"].iter().any(|kind| {
-                            model
-                                .pointer(&format!("/capabilities/input/{kind}"))
-                                .and_then(Value::as_bool)
-                                .unwrap_or(false)
-                        })
-                    });
-
-                models.push(ModelOption {
-                    provider_id: provider_id.to_owned(),
-                    model_id,
-                    label: format!("{provider_name} / {model_name}"),
+                variants.dedup();
+                ModelOption {
+                    provider_id: model.provider_id.clone(),
+                    model_id: model.id.clone(),
+                    label: format!("{} / {name}", model.provider_id),
                     variants,
-                    supports_attachments,
-                    context_limit: model_context_limit(model),
-                });
-            }
-        }
-
-        models.sort_by(|left, right| left.label.to_lowercase().cmp(&right.label.to_lowercase()));
-        let preferred = configured
-            .filter(|selection| contains_model(&models, selection))
-            .or_else(|| {
-                providers
-                    .get("providers")
-                    .and_then(Value::as_array)
-                    .into_iter()
-                    .flatten()
-                    .find_map(|provider| {
-                        let provider_id = provider.get("id")?.as_str()?;
-                        let model_id = defaults?.get(provider_id)?.as_str()?;
-                        let selection = ModelSelection {
-                            provider_id: provider_id.to_owned(),
-                            model_id: model_id.to_owned(),
-                            variant: configured_variant.clone(),
-                        };
-                        contains_model(&models, &selection).then_some(selection)
-                    })
+                    supports_attachments: ATTACHMENT_INPUTS
+                        .iter()
+                        .any(|input| model.accepts_input(input)),
+                    context_limit: Some(model.limit.context).filter(|limit| *limit > 0),
+                }
             })
+            .collect();
+        options.sort_by(|left, right| left.label.to_lowercase().cmp(&right.label.to_lowercase()));
+        let preferred = default
+            .map(|model| ModelSelection {
+                provider_id: model.provider_id.clone(),
+                model_id: model.id.clone(),
+                variant: None,
+            })
+            .filter(|selection| contains_model(&options, selection))
             .or_else(|| {
-                models.first().map(|model| ModelSelection {
+                options.first().map(|model| ModelSelection {
                     provider_id: model.provider_id.clone(),
                     model_id: model.model_id.clone(),
-                    variant: configured_variant.clone(),
+                    variant: None,
                 })
             });
-
-        Self { models, preferred }
+        Self {
+            models: options,
+            preferred,
+        }
     }
 
     pub fn find(&self, selection: &ModelSelection) -> Option<&ModelOption> {
@@ -204,29 +179,29 @@ fn contains_model(models: &[ModelOption], selection: &ModelSelection) -> bool {
     })
 }
 
-fn split_model_id(value: &str) -> Option<ModelSelection> {
-    let (provider_id, model_id) = value.split_once('/')?;
-    Some(ModelSelection {
-        provider_id: provider_id.to_owned(),
-        model_id: model_id.to_owned(),
-        variant: None,
-    })
+/// The model the composer shows for a session: an explicit pick still in
+/// flight, then the model saved on the session, then the catalog's default
+/// (the server default, else the first model). Only the first two are server
+/// state; the fallback is display only and must never be sent (P5).
+pub fn displayed_model(
+    pending: Option<&ModelSelection>,
+    session: Option<&Session>,
+    catalog: &ModelCatalog,
+) -> Option<ModelSelection> {
+    pending
+        .cloned()
+        .or_else(|| session.and_then(Session::model_selection))
+        .or_else(|| catalog.preferred.clone())
 }
 
-fn variants(model: &Value) -> Vec<String> {
-    match model.get("variants") {
-        Some(Value::Object(values)) => values.keys().cloned().collect(),
-        Some(Value::Array(values)) => values
-            .iter()
-            .filter_map(|value| {
-                value
-                    .as_str()
-                    .or_else(|| value.get("id").and_then(Value::as_str))
-                    .map(str::to_owned)
-            })
-            .collect(),
-        _ => Vec::new(),
-    }
+/// The switch an explicit pick requests, or `None` when it matches what is
+/// already shown. Re-picking a displayed default therefore leaves the session
+/// following the server default instead of pinning it.
+pub fn model_switch_for_pick(
+    displayed: Option<&ModelSelection>,
+    picked: ModelSelection,
+) -> Option<ModelSelection> {
+    (displayed != Some(&picked)).then_some(picked)
 }
 
 fn variant_rank(value: &str) -> (usize, String) {
@@ -239,6 +214,42 @@ fn variant_rank(value: &str) -> (usize, String) {
         _ => 5,
     };
     (rank, value.to_ascii_lowercase())
+}
+
+/// Why the model catalogs must be refetched (R5.5).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CatalogInvalidation {
+    /// The event's location; `None` means every loaded catalog.
+    pub directory: Option<String>,
+    /// `location.shutdown`: the location's instance is gone, so the session
+    /// list is refreshed as well.
+    pub shutdown: bool,
+}
+
+impl CatalogInvalidation {
+    /// `payload` is the whole `/api/event` event.
+    pub fn from_event(payload: &Value) -> Option<Self> {
+        let event = protocol::Event::deserialize(payload).ok()?;
+        let shutdown = match protocol::decode_event(&event) {
+            protocol::EventKind::LocationShutdown => true,
+            protocol::EventKind::CatalogChanged(
+                protocol::CatalogChange::Model
+                | protocol::CatalogChange::Provider
+                | protocol::CatalogChange::ModelsDev
+                | protocol::CatalogChange::Integration
+                | protocol::CatalogChange::Credential
+                | protocol::CatalogChange::Config,
+            ) => false,
+            _ => return None,
+        };
+        Some(Self {
+            directory: event
+                .directory()
+                .filter(|directory| !directory.is_empty())
+                .map(str::to_owned),
+            shutdown,
+        })
+    }
 }
 
 fn json_u64(value: Option<&Value>) -> Option<u64> {
@@ -266,14 +277,6 @@ fn message_context_tokens(info: &Value) -> Option<u64> {
             )
         })
         .filter(|total| *total > 0)
-}
-
-fn model_context_limit(model: &Value) -> Option<u64> {
-    json_u64(model.pointer("/limit/context"))
-        .or_else(|| json_u64(model.get("context")))
-        .or_else(|| json_u64(model.get("contextWindow")))
-        .or_else(|| json_u64(model.get("context_window")))
-        .filter(|limit| *limit > 0)
 }
 
 pub fn format_context_usage(used: u64, limit: u64) -> String {
@@ -1518,7 +1521,6 @@ impl Session {
                 archived: info.time.archived.map(|archived| archived as f64),
             },
             parent_id: info.parent_id.clone(),
-            agent: None,
             model: info.model.as_ref().map(SessionModel::from_ref),
         }
     }
@@ -1535,7 +1537,6 @@ impl Session {
                 archived: None,
             },
             parent_id: data.parent_id.clone(),
-            agent: None,
             model: data.model.as_ref().map(SessionModel::from_ref),
         }
     }
@@ -1547,6 +1548,14 @@ impl SessionModel {
             id: model.id.clone(),
             provider_id: model.provider_id.clone(),
             variant: model.variant.clone(),
+        }
+    }
+
+    pub fn from_selection(selection: &ModelSelection) -> Self {
+        Self {
+            id: selection.model_id.clone(),
+            provider_id: selection.provider_id.clone(),
+            variant: selection.variant.clone(),
         }
     }
 }
@@ -1569,8 +1578,19 @@ impl Project {
 #[derive(Clone, Debug, PartialEq)]
 pub enum SessionChange {
     Created(Session),
-    Renamed { id: String, title: String },
-    Moved { id: String, directory: String },
+    Renamed {
+        id: String,
+        title: String,
+    },
+    Moved {
+        id: String,
+        directory: String,
+    },
+    /// `session.model.selected`, from this client or another one.
+    ModelSelected {
+        id: String,
+        model: SessionModel,
+    },
     Deleted(String),
 }
 
@@ -1592,6 +1612,10 @@ impl SessionChange {
                     directory: data.location.directory,
                 })
             }
+            protocol::EventKind::SessionModelSelected(data) => Some(Self::ModelSelected {
+                model: SessionModel::from_ref(&data.model),
+                id: data.session_id,
+            }),
             protocol::EventKind::SessionDeleted(data) => Some(Self::Deleted(data.session_id)),
             _ => None,
         }
@@ -1600,7 +1624,10 @@ impl SessionChange {
     pub fn session_id(&self) -> &str {
         match self {
             Self::Created(session) => &session.id,
-            Self::Renamed { id, .. } | Self::Moved { id, .. } | Self::Deleted(id) => id,
+            Self::Renamed { id, .. }
+            | Self::Moved { id, .. }
+            | Self::ModelSelected { id, .. }
+            | Self::Deleted(id) => id,
         }
     }
 
@@ -1628,6 +1655,11 @@ impl SessionChange {
                 .find(|session| &session.id == id && &session.directory != directory)
                 .map(|session| session.directory.clone_from(directory))
                 .is_some(),
+            Self::ModelSelected { id, model } => sessions
+                .iter_mut()
+                .find(|session| &session.id == id && session.model.as_ref() != Some(model))
+                .map(|session| session.model = Some(model.clone()))
+                .is_some(),
             Self::Deleted(id) => {
                 let before = sessions.len();
                 sessions.retain(|session| &session.id != id);
@@ -1643,73 +1675,240 @@ mod tests {
 
     use super::*;
 
-    #[test]
-    fn catalog_uses_configured_model_and_server_variants() {
-        let providers = json!({
-            "providers": [{
-                "id": "openai",
-                "name": "OpenAI",
-                "models": {
-                    "gpt-5.6": {
-                        "id": "gpt-5.6",
-                        "name": "GPT 5.6",
-                        "status": "active",
-                        "capabilities": { "attachment": true },
-                        "limit": { "context": 200000, "output": 8192 },
-                        "variants": { "high": {}, "low": {}, "medium": {} }
-                    }
-                }
-            }],
-            "default": { "openai": "gpt-5.6" }
-        });
-        let catalog = ModelCatalog::from_values(&providers, &json!({ "model": "openai/gpt-5.6" }));
+    fn fixture_body(name: &str) -> Value {
+        let path = format!(
+            "{}/tests/fixtures/v2-2.0.8/{name}.json",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let text = std::fs::read_to_string(&path).unwrap_or_else(|error| panic!("{path}: {error}"));
+        serde_json::from_str::<Value>(&text).unwrap()["response"]["body"].take()
+    }
 
-        assert_eq!(catalog.models.len(), 1);
-        assert_eq!(catalog.models[0].variants, ["low", "medium", "high"]);
-        assert!(catalog.models[0].supports_attachments);
-        assert_eq!(catalog.models[0].context_limit, Some(200_000));
+    fn selection(provider: &str, model: &str, variant: Option<&str>) -> ModelSelection {
+        ModelSelection {
+            provider_id: provider.into(),
+            model_id: model.into(),
+            variant: variant.map(str::to_owned),
+        }
+    }
+
+    #[test]
+    fn catalog_builds_from_the_captured_model_routes() {
+        let list: protocol::ModelListResponse =
+            serde_json::from_value(fixture_body("model.list")).unwrap();
+        let default: protocol::ModelDefaultResponse =
+            serde_json::from_value(fixture_body("model.default")).unwrap();
+        let catalog = ModelCatalog::from_models(&list.data, default.data.as_ref());
+
+        assert_eq!(
+            catalog.models,
+            [
+                ModelOption {
+                    provider_id: "mock".into(),
+                    model_id: "mock-model".into(),
+                    label: "mock / Mock Model".into(),
+                    variants: vec!["low".into(), "medium".into(), "high".into()],
+                    supports_attachments: true,
+                    context_limit: Some(128_000),
+                },
+                ModelOption {
+                    provider_id: "mock".into(),
+                    model_id: "mock-model-alt".into(),
+                    label: "mock / Mock Model Alt".into(),
+                    variants: vec!["low".into(), "high".into()],
+                    supports_attachments: false,
+                    context_limit: Some(32_000),
+                },
+            ]
+        );
         assert_eq!(
             catalog.preferred,
-            Some(ModelSelection {
-                provider_id: "openai".into(),
-                model_id: "gpt-5.6".into(),
-                variant: None,
-            })
+            Some(selection("mock", "mock-model", None))
+        );
+        let debug = format!("{catalog:?}");
+        assert!(fixture_body("model.list")
+            .to_string()
+            .contains("dummy-not-a-secret"));
+        assert!(!debug.contains("dummy-not-a-secret"), "{debug}");
+        assert!(!debug.contains("baseURL") && !debug.contains("reasoning"));
+    }
+
+    #[test]
+    fn catalog_uses_catalog_ids_and_skips_disabled_and_deprecated_models() {
+        let models: Vec<protocol::ModelInfo> = serde_json::from_value(json!([
+            {
+                "id": "gpt-6-fast", "modelID": "gpt-6", "providerID": "openai", "name": "GPT 6 Fast",
+                "settings": { "apiKey": "sk-hidden" },
+                "headers": { "authorization": "Bearer sk-hidden" },
+                "capabilities": { "tools": true, "input": ["text", "pdf"], "output": ["text"] },
+                "variants": [
+                    { "id": "xhigh", "settings": {} }, { "id": "Minimal" }, { "id": "custom" },
+                    { "id": "medium", "body": { "k": "sk-hidden" } }
+                ],
+                "limit": { "context": 400000, "output": 1 }, "status": "active", "enabled": true
+            },
+            { "id": "old", "modelID": "old", "providerID": "openai", "name": "Old", "status": "deprecated" },
+            { "id": "off", "modelID": "off", "providerID": "openai", "name": "Off", "enabled": false },
+            {
+                "id": "text-only", "modelID": "t", "providerID": "anthropic", "name": "",
+                "capabilities": { "input": ["text"] }, "limit": { "context": 0 }, "status": "beta"
+            },
+            { "id": "defaults", "modelID": "d", "providerID": "zed", "name": "Defaults" }
+        ]))
+        .unwrap();
+        let catalog = ModelCatalog::from_models(&models, Some(&models[0]));
+
+        let ids: Vec<_> = catalog.models.iter().map(|m| m.model_id.as_str()).collect();
+        assert_eq!(
+            ids,
+            ["text-only", "gpt-6-fast", "defaults"],
+            "sorted by label"
+        );
+        let text_only = &catalog.models[0];
+        assert_eq!(text_only.label, "anthropic / text-only");
+        assert!(!text_only.supports_attachments);
+        assert_eq!(text_only.context_limit, None);
+        let fast = &catalog.models[1];
+        assert_eq!(fast.variants, ["Minimal", "medium", "xhigh", "custom"]);
+        assert!(fast.supports_attachments, "pdf input accepts attachments");
+        assert_eq!(fast.context_limit, Some(400_000));
+        assert!(
+            catalog.models[2].supports_attachments,
+            "missing capabilities default to text and image"
+        );
+        assert_eq!(
+            catalog.preferred,
+            Some(selection("openai", "gpt-6-fast", None)),
+            "the default uses ModelInfo.id, not modelID"
+        );
+        assert!(!format!("{catalog:?}").contains("sk-hidden"));
+
+        // A disabled or missing default falls back to the first model.
+        let fallback = ModelCatalog::from_models(&models, Some(&models[2]));
+        assert_eq!(
+            fallback.preferred,
+            Some(selection("anthropic", "text-only", None))
+        );
+        assert_eq!(
+            ModelCatalog::from_models(&models, None).preferred,
+            fallback.preferred
+        );
+        assert_eq!(
+            ModelCatalog::from_models(&[], None),
+            ModelCatalog::default()
         );
     }
 
     #[test]
-    fn catalog_prefers_build_agent_model_and_variant() {
-        let providers = json!({
-            "providers": [{
-                "id": "openrouter",
-                "name": "OpenRouter",
-                "models": {
-                    "google/gemini-3.8-flash": {
-                        "id": "google/gemini-3.8-flash",
-                        "name": "Gemini 3.8 Flash",
-                        "variants": { "high": {}, "low": {} }
-                    }
-                }
-            }]
-        });
-        let config = json!({
-            "agent": {
-                "build": {
-                    "model": "openrouter/google/gemini-3.8-flash",
-                    "variant": "high"
-                }
-            }
-        });
-        let catalog = ModelCatalog::from_values(&providers, &config);
+    fn displayed_model_prefers_a_pending_pick_then_the_session_model() {
+        let catalog = ModelCatalog {
+            models: Vec::new(),
+            preferred: Some(selection("p", "default", None)),
+        };
+        let mut session = listed("ses_a", "A");
         assert_eq!(
-            catalog.preferred,
-            Some(ModelSelection {
-                provider_id: "openrouter".into(),
-                model_id: "google/gemini-3.8-flash".into(),
-                variant: Some("high".into()),
+            displayed_model(None, Some(&session), &catalog),
+            Some(selection("p", "default", None)),
+            "a session without a model shows the server default"
+        );
+        session.model = Some(SessionModel {
+            id: "saved".into(),
+            provider_id: "p".into(),
+            variant: Some("high".into()),
+        });
+        assert_eq!(
+            displayed_model(None, Some(&session), &catalog),
+            Some(selection("p", "saved", Some("high")))
+        );
+        let pending = selection("q", "picked", None);
+        assert_eq!(
+            displayed_model(Some(&pending), Some(&session), &catalog),
+            Some(pending.clone())
+        );
+        assert_eq!(displayed_model(None, None, &ModelCatalog::default()), None);
+    }
+
+    #[test]
+    fn only_a_pick_that_changes_the_display_requests_a_switch() {
+        let shown_default = selection("p", "default", None);
+        assert_eq!(
+            model_switch_for_pick(Some(&shown_default), shown_default.clone()),
+            None,
+            "re-picking the displayed default keeps following the server default"
+        );
+        assert_eq!(
+            model_switch_for_pick(
+                Some(&shown_default),
+                selection("p", "default", Some("high"))
+            ),
+            Some(selection("p", "default", Some("high")))
+        );
+        assert_eq!(
+            model_switch_for_pick(Some(&shown_default), selection("p", "other", None)),
+            Some(selection("p", "other", None))
+        );
+        assert_eq!(
+            model_switch_for_pick(None, shown_default.clone()),
+            Some(shown_default)
+        );
+        assert_eq!(
+            selection("p", "m", Some("low")).to_ref(),
+            protocol::ModelRef {
+                id: "m".into(),
+                provider_id: "p".into(),
+                variant: Some("low".into()),
+            }
+        );
+    }
+
+    #[test]
+    fn catalog_invalidation_events_carry_their_location() {
+        let event = |event_type: &str, location: Option<&str>| {
+            let mut event = json!({ "id": "evt_1", "created": 1, "type": event_type, "data": {} });
+            if let Some(directory) = location {
+                event["location"] = json!({ "directory": directory });
+            }
+            event
+        };
+        for event_type in [
+            "model.updated",
+            "provider.updated",
+            "integration.updated",
+            "credential.updated",
+            "credential.switched",
+            "config.updated",
+            "models-dev.refreshed",
+        ] {
+            assert_eq!(
+                CatalogInvalidation::from_event(&event(event_type, Some("/work"))),
+                Some(CatalogInvalidation {
+                    directory: Some("/work".into()),
+                    shutdown: false,
+                }),
+                "{event_type}"
+            );
+        }
+        assert_eq!(
+            CatalogInvalidation::from_event(&event("model.updated", None)),
+            Some(CatalogInvalidation {
+                directory: None,
+                shutdown: false,
             })
         );
+        assert_eq!(
+            CatalogInvalidation::from_event(&event("location.shutdown", Some("/work"))),
+            Some(CatalogInvalidation {
+                directory: Some("/work".into()),
+                shutdown: true,
+            })
+        );
+        for ignored in [
+            "agent.updated",
+            "session.renamed",
+            "server.instance.disposed",
+        ] {
+            assert_eq!(CatalogInvalidation::from_event(&event(ignored, None)), None);
+        }
     }
 
     #[test]
@@ -2400,7 +2599,6 @@ mod tests {
                     archived: Some(30.0),
                 },
                 parent_id: Some("ses_parent".into()),
-                agent: None,
                 model: Some(SessionModel {
                     id: "gpt-6".into(),
                     provider_id: "openai".into(),
@@ -2469,7 +2667,6 @@ mod tests {
                 archived: None,
             },
             parent_id: None,
-            agent: None,
             model: None,
         }
     }
@@ -2571,6 +2768,40 @@ mod tests {
     }
 
     #[test]
+    fn session_model_selected_updates_the_saved_model() {
+        let mut sessions = vec![listed("ses_a", "A")];
+        let selected = SessionChange::from_event(&session_event(
+            "session.model.selected",
+            json!({
+                "sessionID": "ses_a",
+                "model": { "id": "alt", "providerID": "mock", "variant": "high" },
+                "previous": { "id": "base", "providerID": "mock" }
+            }),
+        ))
+        .unwrap();
+        assert_eq!(selected.session_id(), "ses_a");
+        assert!(selected.apply(&mut sessions));
+        assert_eq!(
+            sessions[0].model_selection(),
+            Some(selection("mock", "alt", Some("high")))
+        );
+        assert!(!selected.apply(&mut sessions), "an echo changes nothing");
+        assert!(!SessionChange::ModelSelected {
+            id: "ses_missing".into(),
+            model: SessionModel::from_selection(&selection("mock", "alt", None)),
+        }
+        .apply(&mut sessions));
+        assert_eq!(
+            SessionChange::from_event(&session_event(
+                "session.agent.selected",
+                json!({ "sessionID": "ses_a", "agent": "plan" }),
+            )),
+            None,
+            "agent selections are tolerated and ignored"
+        );
+    }
+
+    #[test]
     fn captured_session_lifecycle_events_decode() {
         let path = concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -2580,6 +2811,7 @@ mod tests {
         let mut sessions = Vec::new();
         let mut created = 0;
         let mut renamed = 0;
+        let mut model_selected = 0;
         for line in text.lines().filter(|line| !line.trim().is_empty()) {
             let payload: Value = serde_json::from_str(line).unwrap();
             match SessionChange::from_event(&payload) {
@@ -2591,11 +2823,26 @@ mod tests {
                     renamed += 1;
                     assert!(change.apply(&mut sessions));
                 }
+                Some(change @ SessionChange::ModelSelected { .. }) => {
+                    model_selected += 1;
+                    assert!(change.apply(&mut sessions));
+                }
                 Some(other) => panic!("unexpected {other:?}"),
                 None => {}
             }
         }
-        assert!(created > 0 && renamed > 0);
+        assert!(created > 0 && renamed > 0 && model_selected > 0);
+        let switched: protocol::SessionResponse =
+            serde_json::from_value(fixture_body("session.get.modelSwitched")).unwrap();
+        let switched = Session::from_info(&switched.data);
+        assert_eq!(
+            sessions
+                .iter()
+                .find(|session| session.id == switched.id)
+                .and_then(|session| session.model.as_ref()),
+            switched.model.as_ref(),
+            "the event and the refetched session agree on the model"
+        );
         assert!(sessions
             .iter()
             .all(|session| !session.directory.is_empty() && session.time.created > 0));

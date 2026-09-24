@@ -59,7 +59,9 @@ pub struct ServerState {
     pub tabs: Vec<PersistedTab>,
     #[serde(default)]
     pub active: Option<String>,
-    #[serde(default)]
+    /// v1 per-tab model overrides. Still decoded so older state files load,
+    /// but no longer used or written: v2 saves the model on the session.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub selections: HashMap<String, ModelSelection>,
     #[serde(default)]
     pub unread: HashSet<String>,
@@ -212,6 +214,51 @@ mod tests {
         assert!(warning.is_none());
         assert_eq!(loaded.connection, ConnectionSettings::default());
         assert_eq!(loaded.zoom_level, 1.0);
+    }
+
+    #[test]
+    fn v1_model_selections_still_load() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("state.json");
+        fs::write(
+            &path,
+            br#"{"servers":{"https://opencode1.example.com":{
+                "tabs":[{"id":"ses_1","directory":"/repo","title":"T"}],
+                "active":"ses_1",
+                "selections":{
+                    "ses_1":{"provider_id":"openai","model_id":"gpt-5.6","variant":"high"},
+                    "ses_2":{"provider_id":"openai","model_id":"gpt-5.6"}
+                },
+                "unread":[],"busy":[]}}}"#,
+        )
+        .unwrap();
+
+        let (loaded, warning) = PersistedState::load(&path).unwrap();
+
+        assert!(warning.is_none());
+        let server = &loaded.servers["https://opencode1.example.com"];
+        assert_eq!(server.tabs[0].id, "ses_1");
+        assert_eq!(
+            server.selections["ses_1"],
+            ModelSelection {
+                provider_id: "openai".into(),
+                model_id: "gpt-5.6".into(),
+                variant: Some("high".into()),
+            }
+        );
+        assert_eq!(server.selections["ses_2"].variant, None);
+        loaded.save(&path).unwrap();
+        assert!(fs::read_to_string(&path)
+            .unwrap()
+            .contains("\"selections\""));
+
+        let mut fresh = PersistedState::default();
+        fresh.servers.insert(
+            "https://opencode.example.com".into(),
+            ServerState::default(),
+        );
+        fresh.save(&path).unwrap();
+        assert!(!fs::read_to_string(&path).unwrap().contains("selections"));
     }
 
     #[test]

@@ -21,9 +21,9 @@ use crate::{
     credentials::{self, CloudflareAccessCredentials},
     markdown,
     model::{
-        event_data, event_run_status, event_session_id, format_context_usage, Conversation,
-        ModelCatalog, ModelOption, ModelSelection, Project, RunStatus, Session, SessionChange,
-        SessionTime,
+        displayed_model, event_data, event_run_status, event_session_id, format_context_usage,
+        model_switch_for_pick, CatalogInvalidation, Conversation, ModelCatalog, ModelOption,
+        ModelSelection, Project, RunStatus, Session, SessionChange, SessionModel, SessionTime,
     },
     persist::{default_path, ConnectionSettings, PersistedState, PersistedTab, ServerState},
 };
@@ -31,6 +31,12 @@ use crate::{
 const STREAM_FRAME: Duration = Duration::from_millis(33);
 const BOOTSTRAP_RETRY_MIN: Duration = Duration::from_secs(2);
 const BOOTSTRAP_RETRY_MAX: Duration = Duration::from_secs(30);
+/// The server can list no models right after it starts (R5.5). Retry an empty
+/// catalog with backoff, a bounded number of times; catalog events also
+/// trigger a reload.
+const EMPTY_CATALOG_RETRY_MIN: Duration = Duration::from_secs(1);
+const EMPTY_CATALOG_RETRY_MAX: Duration = Duration::from_secs(30);
+const EMPTY_CATALOG_RETRY_LIMIT: u32 = 6;
 const SESSION_PICKER_LIMIT: usize = 200;
 const ICON_SEND: &str = "opencode-send-symbolic";
 const ICON_STOP: &str = "opencode-stop-symbolic";
@@ -69,6 +75,10 @@ struct FlushEffects {
     transcript_changed: bool,
     tabs_changed: bool,
     tab_status_changed: bool,
+    /// The active session's saved model changed.
+    model_changed: bool,
+    /// Catalog invalidations, coalesced once per batch.
+    catalog_invalidations: Vec<CatalogInvalidation>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -130,6 +140,13 @@ enum AppModalKind {
     Rename,
 }
 
+/// An explicit model pick whose `POST /api/session/{id}/model` is in flight.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ModelSwitch {
+    request_id: u64,
+    model: ModelSelection,
+}
+
 #[derive(Clone)]
 struct ComposerPrompt {
     request_id: String,
@@ -145,7 +162,9 @@ struct State {
     active: Option<String>,
     conversations: HashMap<String, Conversation>,
     catalogs: HashMap<String, ModelCatalog>,
-    selections: HashMap<String, ModelSelection>,
+    /// Pending explicit picks by session. The model itself is server state
+    /// (`Session.model`); nothing here is persisted.
+    model_switches: HashMap<String, ModelSwitch>,
     statuses: HashMap<String, RunStatus>,
     unread: HashSet<String>,
     drafts: HashMap<String, Draft>,
@@ -155,6 +174,89 @@ struct State {
     abort_requested: HashSet<String>,
     loading_messages: HashSet<String>,
     loading_models: HashSet<String>,
+}
+
+impl State {
+    /// The model shown for a session; see [`displayed_model`].
+    fn displayed_model(&self, session_id: &str) -> Option<ModelSelection> {
+        let session = self
+            .sessions
+            .iter()
+            .find(|session| session.id == session_id);
+        let catalog = self
+            .catalogs
+            .get(session.map_or("", |s| s.directory.as_str()))?;
+        let pending = self
+            .model_switches
+            .get(session_id)
+            .map(|switch| &switch.model);
+        displayed_model(pending, session, catalog)
+    }
+
+    /// Starts saving an explicit pick, or returns `None` when the pick matches
+    /// what is shown: a displayed default never becomes a switch (P5).
+    fn begin_model_switch(
+        &mut self,
+        session_id: &str,
+        request_id: u64,
+        picked: ModelSelection,
+    ) -> Option<Command> {
+        let displayed = self.displayed_model(session_id);
+        let model = model_switch_for_pick(displayed.as_ref(), picked)?;
+        let command = Command::SelectModel {
+            request_id,
+            session_id: session_id.to_owned(),
+            model: model.to_ref(),
+        };
+        self.model_switches
+            .insert(session_id.to_owned(), ModelSwitch { request_id, model });
+        Some(command)
+    }
+
+    /// Settles a finished switch request. Only the newest pick counts: on
+    /// success it becomes the session's model, on failure the display falls
+    /// back to the saved model. A pick superseded by a newer one or by a
+    /// `session.model.selected` event changes nothing. Returns whether the
+    /// request was still current.
+    fn settle_model_switch(
+        &mut self,
+        request_id: u64,
+        session_id: &str,
+        model: &crate::protocol::ModelRef,
+        succeeded: bool,
+    ) -> bool {
+        let current = self
+            .model_switches
+            .get(session_id)
+            .is_some_and(|switch| switch.request_id == request_id);
+        if !current {
+            return false;
+        }
+        self.model_switches.remove(session_id);
+        if succeeded {
+            if let Some(session) = self
+                .sessions
+                .iter_mut()
+                .find(|session| session.id == session_id)
+            {
+                session.model = Some(SessionModel::from_selection(&ModelSelection::from_ref(
+                    model,
+                )));
+            }
+        }
+        true
+    }
+
+    /// `session.model.selected`, from this client or another one: the
+    /// server's model wins over a pick still in flight. Returns whether the
+    /// session's display may have changed.
+    fn apply_model_selected(&mut self, change: &SessionChange) -> bool {
+        let SessionChange::ModelSelected { id, .. } = change else {
+            return false;
+        };
+        let dropped = self.model_switches.remove(id).is_some();
+        change.apply(&mut self.sessions) || dropped
+    }
 }
 
 #[derive(Clone)]
@@ -266,6 +368,8 @@ struct Controller {
     message_load_errors: HashMap<String, String>,
     models_reload_pending: HashSet<String>,
     model_load_errors: HashMap<String, String>,
+    empty_catalog_retries: HashMap<String, u32>,
+    empty_catalog_retry_scheduled: HashSet<String>,
     bootstrap_pending: bool,
     bootstrap_reload_pending: bool,
     bootstrap_dialogs_at_start: HashSet<String>,
@@ -284,6 +388,7 @@ struct Controller {
     pending_session_request: Option<u64>,
     pending_rename_request: Option<u64>,
     next_prompt_request_id: u64,
+    next_model_request_id: u64,
     connected_once: bool,
     event_connected: bool,
     tab_shortcut_hint: bool,
@@ -732,6 +837,8 @@ pub fn launch(
         message_load_errors: HashMap::new(),
         models_reload_pending: HashSet::new(),
         model_load_errors: HashMap::new(),
+        empty_catalog_retries: HashMap::new(),
+        empty_catalog_retry_scheduled: HashSet::new(),
         bootstrap_pending: true,
         bootstrap_reload_pending: false,
         bootstrap_dialogs_at_start: HashSet::new(),
@@ -750,6 +857,7 @@ pub fn launch(
         pending_session_request: None,
         pending_rename_request: None,
         next_prompt_request_id: 0,
+        next_model_request_id: 0,
         connected_once: false,
         event_connected: false,
         tab_shortcut_hint: false,
@@ -903,7 +1011,6 @@ fn restored_state(server_state: ServerState) -> State {
     let mut state = State {
         tabs: server_state.tabs.iter().map(|tab| tab.id.clone()).collect(),
         active: server_state.active,
-        selections: server_state.selections,
         unread: server_state.unread,
         ..State::default()
     };
@@ -919,7 +1026,6 @@ fn restored_state(server_state: ServerState) -> State {
                 archived: None,
             },
             parent_id: None,
-            agent: None,
             model: None,
         }));
     state
@@ -2655,9 +2761,16 @@ impl Controller {
                 match result {
                     Ok(catalog) => {
                         this.model_load_errors.remove(&directory);
+                        let empty = catalog.models.is_empty();
                         this.state.catalogs.insert(directory.clone(), catalog);
+                        if empty {
+                            this.schedule_empty_catalog_retry(&directory);
+                        } else {
+                            this.empty_catalog_retries.remove(&directory);
+                        }
                         if this.active_directory().as_deref() == Some(directory.as_str()) {
                             this.refresh_model_control();
+                            this.refresh_send_button();
                         }
                     }
                     Err(error) => {
@@ -2717,6 +2830,23 @@ impl Controller {
                     this.show_error(&format!("Could not rename session {session_id}: {error}"));
                 }
             },
+            UiEvent::ModelSelected {
+                request_id,
+                session_id,
+                model,
+                result,
+            } => {
+                let mut this = controller.borrow_mut();
+                this.state
+                    .settle_model_switch(request_id, &session_id, &model, result.is_ok());
+                if let Err(error) = result {
+                    this.show_error(&format!("Could not switch the model: {error}"));
+                }
+                if this.state.active.as_deref() == Some(session_id.as_str()) {
+                    this.refresh_model_control();
+                    this.refresh_send_button();
+                }
+            }
             UiEvent::PromptAccepted {
                 request_id,
                 session_id,
@@ -3002,7 +3132,7 @@ impl Controller {
                 }
                 this.state.tabs.retain(|id| known.contains(id));
                 this.state.conversations.retain(|id, _| known.contains(id));
-                this.state.selections.retain(|id, _| known.contains(id));
+                this.state.model_switches.retain(|id, _| known.contains(id));
                 this.state.drafts.retain(|id, _| known.contains(id));
                 this.state
                     .pending_prompts
@@ -3216,6 +3346,9 @@ impl Controller {
             this.flush_session_event(&payload, &mut effects);
             this.flush_run_status_event(&payload, active.as_deref(), &mut effects);
             this.flush_conversation_event(&payload, active.as_deref(), &mut effects);
+            if let Some(invalidation) = CatalogInvalidation::from_event(&payload) {
+                effects.catalog_invalidations.push(invalidation);
+            }
             match payload.get("type").and_then(serde_json::Value::as_str) {
                 Some("permission.asked") | Some("permission.updated") => {
                     permission_events.push((envelope.directory, payload));
@@ -3238,34 +3371,20 @@ impl Controller {
                         this.remove_composer_prompt(request_id);
                     }
                 }
-                Some("server.instance.disposed") => {
-                    if let Some(directory) = envelope.directory {
-                        this.state.catalogs.remove(&directory);
-                        this.model_load_errors.remove(&directory);
-                        if this
-                            .state
-                            .tabs
-                            .iter()
-                            .filter_map(|id| this.session(id))
-                            .any(|session| session.directory == directory)
-                        {
-                            if this.state.loading_models.insert(directory.clone()) {
-                                this.api.send(Command::LoadModels { directory });
-                            } else {
-                                this.models_reload_pending.insert(directory);
-                            }
-                        }
-                    }
-                    if this.bootstrap_pending {
-                        this.bootstrap_reload_pending = true;
-                    } else {
-                        this.begin_bootstrap();
-                        this.api.send(Command::Bootstrap);
-                    }
-                }
                 _ => {}
             }
         }
+        let catalog_invalidations = std::mem::take(&mut effects.catalog_invalidations);
+        if catalog_invalidations.iter().any(|change| change.shutdown) {
+            if this.bootstrap_pending {
+                this.bootstrap_reload_pending = true;
+            } else {
+                this.begin_bootstrap();
+                effects.api_commands.push(Command::Bootstrap);
+            }
+        }
+        let catalog_reloads = this.invalidate_catalogs(&catalog_invalidations);
+        effects.api_commands.extend(catalog_reloads);
         permission_events.retain(|(_, payload)| {
             event_data(payload)
                 .get("id")
@@ -3284,6 +3403,8 @@ impl Controller {
             transcript_changed,
             tabs_changed,
             tab_status_changed,
+            model_changed,
+            catalog_invalidations: _,
         } = effects;
         if tabs_changed {
             this.persist_state();
@@ -3300,6 +3421,9 @@ impl Controller {
         if transcript_changed {
             this.refresh_transcript(TranscriptUpdate::Content);
             this.refresh_context_usage();
+        }
+        if model_changed && !tabs_changed {
+            this.refresh_model_control();
         }
         this.refresh_send_button();
         let activate_fallback = tabs_changed
@@ -3333,6 +3457,12 @@ impl Controller {
         }
         match &change {
             SessionChange::Deleted(id) => self.remove_session(id),
+            SessionChange::ModelSelected { id, .. } => {
+                let changed = self.state.apply_model_selected(&change);
+                effects.model_changed |=
+                    changed && self.state.active.as_deref() == Some(id.as_str());
+                return;
+            }
             _ => {
                 if change.apply(&mut self.state.sessions) {
                     self.state
@@ -3921,6 +4051,111 @@ impl Controller {
         self.refresh_composer_prompt();
     }
 
+    /// Reloads the catalogs an invalidation batch affects: the named
+    /// locations, or every loaded one. Cached catalogs without an open tab
+    /// are dropped instead and reload when a tab needs them. Returns the
+    /// commands to send; loads already in flight are coalesced.
+    fn invalidate_catalogs(&mut self, invalidations: &[CatalogInvalidation]) -> Vec<Command> {
+        if invalidations.is_empty() {
+            return Vec::new();
+        }
+        let open: HashSet<String> = self
+            .state
+            .tabs
+            .iter()
+            .filter_map(|id| self.session(id))
+            .map(|session| session.directory.clone())
+            .collect();
+        let loaded: HashSet<String> = self
+            .state
+            .catalogs
+            .keys()
+            .chain(self.state.loading_models.iter())
+            .chain(self.model_load_errors.keys())
+            .chain(open.iter())
+            .cloned()
+            .collect();
+        let targets: HashSet<String> = if invalidations
+            .iter()
+            .any(|change| change.directory.is_none())
+        {
+            loaded
+        } else {
+            invalidations
+                .iter()
+                .filter_map(|change| change.directory.clone())
+                .filter(|directory| loaded.contains(directory))
+                .collect()
+        };
+        let mut commands = Vec::new();
+        for directory in targets {
+            self.empty_catalog_retries.remove(&directory);
+            if !open.contains(&directory) {
+                if !self.state.loading_models.contains(&directory) {
+                    self.state.catalogs.remove(&directory);
+                    self.model_load_errors.remove(&directory);
+                }
+                continue;
+            }
+            if self.state.loading_models.insert(directory.clone()) {
+                commands.push(Command::LoadModels { directory });
+            } else {
+                self.models_reload_pending.insert(directory);
+            }
+        }
+        commands
+    }
+
+    fn schedule_empty_catalog_retry(&mut self, directory: &str) {
+        let attempts = self
+            .empty_catalog_retries
+            .entry(directory.to_owned())
+            .or_insert(0);
+        if *attempts >= EMPTY_CATALOG_RETRY_LIMIT
+            || !self
+                .empty_catalog_retry_scheduled
+                .insert(directory.to_owned())
+        {
+            return;
+        }
+        let delay = EMPTY_CATALOG_RETRY_MIN
+            .saturating_mul(1 << *attempts)
+            .min(EMPTY_CATALOG_RETRY_MAX);
+        *attempts += 1;
+        let generation = self.connection_generation;
+        let directory = directory.to_owned();
+        let weak = self.self_weak.clone();
+        glib::timeout_add_local_once(delay, move || {
+            let Some(controller) = weak.upgrade() else {
+                return;
+            };
+            let command = {
+                let mut this = controller.borrow_mut();
+                if this.connection_generation != generation
+                    || !this.empty_catalog_retry_scheduled.remove(&directory)
+                {
+                    return;
+                }
+                let still_empty = this
+                    .state
+                    .catalogs
+                    .get(&directory)
+                    .is_some_and(|catalog| catalog.models.is_empty());
+                let open = this
+                    .state
+                    .tabs
+                    .iter()
+                    .filter_map(|id| this.session(id))
+                    .any(|session| session.directory == directory);
+                if !still_empty || !open || !this.state.loading_models.insert(directory.clone()) {
+                    return;
+                }
+                Command::LoadModels { directory }
+            };
+            controller.borrow().api.send(command);
+        });
+    }
+
     fn refresh_model_control(&mut self) {
         self.controls_updating = true;
         self.widgets.model_button.set_tooltip_text(None);
@@ -3969,7 +4204,6 @@ impl Controller {
         self.widgets.model_button.set_tooltip_text(None);
         self.current_models = catalog.models.clone();
         if self.current_models.is_empty() {
-            self.state.selections.remove(&active);
             self.widgets
                 .model_button_label
                 .set_text("No models available");
@@ -3980,22 +4214,28 @@ impl Controller {
             return;
         }
         let selection = self.current_model_selection_for_active();
-        if let Some(selection) = selection {
-            let index = self
-                .current_models
-                .iter()
-                .position(|model| {
-                    model.provider_id == selection.provider_id
-                        && model.model_id == selection.model_id
-                })
-                .unwrap_or_default();
-            if let Some(model) = self.current_models.get(index) {
-                self.widgets.model_button_label.set_text(&model.label);
+        let unavailable = selection.as_ref().and_then(|selection| {
+            match catalog.find(selection) {
+                Some(model) => {
+                    self.widgets.model_button_label.set_text(&model.label);
+                    None
+                }
+                // The session's saved model is not in this catalog; show it
+                // as is rather than pretending another model is in use.
+                None => {
+                    let id = format!("{}/{}", selection.provider_id, selection.model_id);
+                    self.widgets.model_button_label.set_text(&id);
+                    Some(format!("{id} is not available; select another model"))
+                }
             }
-        }
+        });
         let model_ready = !self.state.loading_models.contains(&directory)
             && !self.model_load_errors.contains_key(&directory);
-        if self.state.loading_models.contains(&directory) {
+        if let Some(unavailable) = &unavailable {
+            self.widgets
+                .model_button
+                .set_tooltip_text(Some(unavailable));
+        } else if self.state.loading_models.contains(&directory) {
             self.widgets
                 .model_button
                 .set_tooltip_text(Some("Refreshing models..."));
@@ -4013,28 +4253,10 @@ impl Controller {
         self.refresh_context_usage();
     }
 
+    /// See [`displayed_model`]. Display only: sending uses the session's
+    /// saved model on the server.
     fn current_model_selection_for_active(&self) -> Option<ModelSelection> {
-        let active = self.state.active.as_deref()?;
-        let session = self.session(active);
-        let directory = session.map(|s| s.directory.as_str()).unwrap_or("");
-        let catalog = self.state.catalogs.get(directory)?;
-        let session_selection = session
-            .and_then(Session::model_selection)
-            .filter(|selection| catalog.find(selection).is_some());
-        self.state
-            .selections
-            .get(active)
-            .filter(|selection| catalog.find(selection).is_some())
-            .cloned()
-            .or(session_selection)
-            .or_else(|| catalog.preferred.clone())
-            .or_else(|| {
-                self.current_models.first().map(|model| ModelSelection {
-                    provider_id: model.provider_id.clone(),
-                    model_id: model.model_id.clone(),
-                    variant: None,
-                })
-            })
+        self.state.displayed_model(self.state.active.as_deref()?)
     }
 
     fn refresh_variant_control(&mut self) {
@@ -4051,22 +4273,14 @@ impl Controller {
                     .flat_map(|model| model.variants.iter().cloned().map(Some)),
             )
             .collect();
-        let saved = selection.as_ref().map(|selection| &selection.variant);
-        let (selected, clear_invalid) =
-            resolved_variant_index(saved, &self.current_variants, model.is_some());
-        if clear_invalid {
-            if let Some(active) = self.state.active.as_ref() {
-                if let Some(selection) = self.state.selections.get_mut(active) {
-                    selection.variant = None;
-                }
-            }
-            self.persist_state();
-        }
-        let label = self
-            .current_variants
-            .get(selected)
-            .and_then(|v| v.as_deref())
-            .unwrap_or("Default");
+        let saved = selection
+            .as_ref()
+            .and_then(|selection| selection.variant.as_deref());
+        let label = match resolved_variant_index(saved, &self.current_variants) {
+            Some(index) => self.current_variants[index].as_deref().unwrap_or("Default"),
+            // A saved variant the catalog does not list is shown, not cleared.
+            None => saved.unwrap_or("Default"),
+        };
         self.widgets.variant_button_label.set_text(label);
         self.widgets
             .variant_button
@@ -4895,7 +5109,6 @@ impl Controller {
                     })
                 }
             } else {
-                let selection = this.state.selections.get(&active).cloned();
                 let supports_attachments = this.selected_model_supports_attachments();
                 let draft = this.state.drafts.entry(active.clone()).or_default();
                 if draft.text.trim() == "/debug error" {
@@ -4954,8 +5167,6 @@ impl Controller {
                     session_id: active.clone(),
                     directory: session.directory,
                     text: pending.text.clone(),
-                    selection,
-                    agent: session.agent,
                     attachments: pending.attachments.clone(),
                 };
                 let baseline_you = this
@@ -5239,33 +5450,42 @@ impl Controller {
     }
 
     fn select_model(controller: &Rc<RefCell<Self>>, index: usize) {
-        let _active = {
+        let picked = {
+            let this = controller.borrow();
+            let Some(model) = this.current_models.get(index) else {
+                return;
+            };
+            ModelSelection {
+                provider_id: model.provider_id.clone(),
+                model_id: model.model_id.clone(),
+                variant: None,
+            }
+        };
+        Self::request_model_switch(controller, picked);
+        let mut this = controller.borrow_mut();
+        this.refresh_model_control();
+        this.refresh_send_button();
+        this.widgets.model_popover.popdown();
+        this.widgets.composer.grab_focus();
+    }
+
+    /// Saves an explicit pick on the session (R5.2). The pick shows at once and
+    /// reverts if the server refuses it. Picks that match the display send
+    /// nothing, so a displayed default never becomes a switch (P5).
+    fn request_model_switch(controller: &Rc<RefCell<Self>>, picked: ModelSelection) {
+        let command = {
             let mut this = controller.borrow_mut();
             let Some(active) = this.state.active.clone() else {
                 return;
             };
-            let Some(model) = this.current_models.get(index).cloned() else {
+            let request_id = this.next_model_request_id + 1;
+            let Some(command) = this.state.begin_model_switch(&active, request_id, picked) else {
                 return;
             };
-            this.state.selections.insert(
-                active.clone(),
-                ModelSelection {
-                    provider_id: model.provider_id,
-                    model_id: model.model_id,
-                    variant: None,
-                },
-            );
-            active
+            this.next_model_request_id = request_id;
+            command
         };
-        let mut this = controller.borrow_mut();
-        this.refresh_model_control();
-        this.refresh_variant_control();
-        this.refresh_attachment_control();
-        this.refresh_context_usage();
-        this.persist_state();
-        this.refresh_send_button();
-        this.widgets.model_popover.popdown();
-        this.widgets.composer.grab_focus();
+        controller.borrow().api.send(command);
     }
 
     fn show_variant_picker(controller: &Rc<RefCell<Self>>) {
@@ -5416,23 +5636,29 @@ impl Controller {
     }
 
     fn select_variant(controller: &Rc<RefCell<Self>>, index: usize) {
-        let _active = {
-            let mut this = controller.borrow_mut();
-            let Some(active) = this.state.active.clone() else {
+        let picked = {
+            let this = controller.borrow();
+            let Some(variant) = this.current_variants.get(index).cloned() else {
                 return;
             };
-            let variant = this.current_variants.get(index).cloned().flatten();
-            if let Some(selection) = this.state.selections.get_mut(&active) {
-                selection.variant = variant;
-            } else if let Some(mut selection) = this.current_model_selection_for_active() {
-                selection.variant = variant;
-                this.state.selections.insert(active.clone(), selection);
-            }
-            active
+            this.current_model_selection_for_active()
+                .filter(|selection| {
+                    this.current_models.iter().any(|model| {
+                        model.provider_id == selection.provider_id
+                            && model.model_id == selection.model_id
+                    })
+                })
+                .map(|selection| ModelSelection {
+                    variant,
+                    ..selection
+                })
         };
+        if let Some(picked) = picked {
+            Self::request_model_switch(controller, picked);
+        }
         let mut this = controller.borrow_mut();
-        this.refresh_variant_control();
-        this.persist_state();
+        this.refresh_model_control();
+        this.refresh_send_button();
         this.widgets.variant_popover.popdown();
         this.widgets.composer.grab_focus();
     }
@@ -6222,6 +6448,8 @@ impl Controller {
             this.message_load_errors.clear();
             this.models_reload_pending.clear();
             this.model_load_errors.clear();
+            this.empty_catalog_retries.clear();
+            this.empty_catalog_retry_scheduled.clear();
             this.pending_actions.clear();
             this.bootstrap_pending = true;
             this.bootstrap_reload_pending = false;
@@ -7013,7 +7241,6 @@ impl Controller {
                         archived: None,
                     },
                     parent_id: None,
-                    agent: None,
                     model: None,
                 })
             })
@@ -7058,7 +7285,7 @@ impl Controller {
         self.replacing_messages.remove(id);
         self.message_reload_pending.remove(id);
         self.state.loading_messages.remove(id);
-        self.state.selections.remove(id);
+        self.state.model_switches.remove(id);
         self.state.statuses.remove(id);
         self.clear_session_unread(id);
         self.state.server_busy.remove(id);
@@ -7108,12 +7335,19 @@ impl Controller {
                 })
             })
             .collect();
+        let legacy_selections = self
+            .persisted
+            .servers
+            .get(&self.server_key)
+            .map(|server| server.selections.clone())
+            .unwrap_or_default();
         self.persisted.servers.insert(
             self.server_key.clone(),
             ServerState {
                 tabs,
                 active: self.state.active.clone(),
-                selections: self.state.selections.clone(),
+                // Left as loaded so a v1 build sharing this file keeps them.
+                selections: legacy_selections,
                 unread: self.state.unread.clone(),
                 busy: {
                     let mut busy: HashSet<_> = self
@@ -7733,20 +7967,15 @@ fn sticky_message_text(row: TranscriptRow) -> String {
     }
 }
 
+/// Index of the displayed variant in `current_variants` (`None` = the
+/// model's default variant), or `None` when the model does not list it.
 fn resolved_variant_index(
-    saved: Option<&Option<String>>,
+    saved: Option<&str>,
     current_variants: &[Option<String>],
-    model_loaded: bool,
-) -> (usize, bool) {
-    if let Some(saved) = saved {
-        if let Some(index) = current_variants.iter().position(|variant| variant == saved) {
-            return (index, false);
-        }
-        if model_loaded && saved.is_some() {
-            return (0, true);
-        }
-    }
-    (0, false)
+) -> Option<usize> {
+    current_variants
+        .iter()
+        .position(|variant| variant.as_deref() == saved)
 }
 
 fn project_paths(projects: &[Project], sessions: &[Session]) -> Vec<String> {
@@ -8606,31 +8835,178 @@ mod tests {
         );
     }
 
+    fn model_state(session_model: Option<SessionModel>) -> State {
+        let catalog = ModelCatalog {
+            models: ["default", "alt"]
+                .into_iter()
+                .map(|id| ModelOption {
+                    provider_id: "mock".into(),
+                    model_id: id.into(),
+                    label: format!("mock / {id}"),
+                    variants: vec!["low".into(), "high".into()],
+                    supports_attachments: false,
+                    context_limit: None,
+                })
+                .collect(),
+            preferred: Some(pick("default", None)),
+        };
+        State {
+            sessions: vec![Session {
+                id: "ses_a".into(),
+                directory: "/repo".into(),
+                title: "A".into(),
+                time: SessionTime {
+                    created: 1,
+                    updated: 2,
+                    archived: None,
+                },
+                parent_id: None,
+                model: session_model,
+            }],
+            catalogs: HashMap::from([("/repo".to_owned(), catalog)]),
+            ..State::default()
+        }
+    }
+
+    fn pick(model: &str, variant: Option<&str>) -> ModelSelection {
+        ModelSelection {
+            provider_id: "mock".into(),
+            model_id: model.into(),
+            variant: variant.map(str::to_owned),
+        }
+    }
+
+    fn switch_ref(command: Option<Command>) -> (u64, crate::protocol::ModelRef) {
+        match command {
+            Some(Command::SelectModel {
+                request_id,
+                session_id,
+                model,
+            }) => {
+                assert_eq!(session_id, "ses_a");
+                (request_id, model)
+            }
+            other => panic!("expected a model switch, got {other:?}"),
+        }
+    }
+
     #[test]
-    fn variant_index_keeps_saved_effort_until_the_model_is_loaded() {
+    fn a_displayed_default_never_requests_a_switch() {
+        let mut state = model_state(None);
+        assert_eq!(state.displayed_model("ses_a"), Some(pick("default", None)));
+        assert!(state
+            .begin_model_switch("ses_a", 1, pick("default", None))
+            .is_none());
+        assert!(state.model_switches.is_empty());
+        assert_eq!(state.sessions[0].model, None, "still follows the default");
+
+        let (_, model) =
+            switch_ref(state.begin_model_switch("ses_a", 2, pick("default", Some("high"))));
+        assert_eq!(model.id, "default");
+        assert_eq!(model.variant.as_deref(), Some("high"));
+    }
+
+    #[test]
+    fn a_successful_pick_becomes_the_session_model() {
+        let mut state = model_state(None);
+        let (request_id, model) =
+            switch_ref(state.begin_model_switch("ses_a", 1, pick("alt", None)));
+        assert_eq!(model.id, "alt");
+        assert_eq!(model.variant, None);
+        assert_eq!(
+            state.displayed_model("ses_a"),
+            Some(pick("alt", None)),
+            "shown while in flight"
+        );
+
+        assert!(state.settle_model_switch(request_id, "ses_a", &model, true));
+        assert!(state.model_switches.is_empty());
+        assert_eq!(state.sessions[0].model_selection(), Some(pick("alt", None)));
+        assert_eq!(state.displayed_model("ses_a"), Some(pick("alt", None)));
+    }
+
+    #[test]
+    fn a_failed_pick_reverts_to_the_saved_model() {
+        let saved = SessionModel::from_selection(&pick("default", Some("low")));
+        let mut state = model_state(Some(saved.clone()));
+        let (request_id, model) =
+            switch_ref(state.begin_model_switch("ses_a", 1, pick("alt", None)));
+
+        assert!(state.settle_model_switch(request_id, "ses_a", &model, false));
+        assert_eq!(state.sessions[0].model, Some(saved));
+        assert_eq!(
+            state.displayed_model("ses_a"),
+            Some(pick("default", Some("low")))
+        );
+    }
+
+    #[test]
+    fn only_the_newest_pick_settles() {
+        let mut state = model_state(None);
+        let (first, first_model) =
+            switch_ref(state.begin_model_switch("ses_a", 1, pick("alt", None)));
+        let (second, second_model) =
+            switch_ref(state.begin_model_switch("ses_a", 2, pick("alt", Some("high"))));
+
+        assert!(!state.settle_model_switch(first, "ses_a", &first_model, true));
+        assert_eq!(state.sessions[0].model, None);
+        assert_eq!(
+            state.displayed_model("ses_a"),
+            Some(pick("alt", Some("high")))
+        );
+        assert!(state.settle_model_switch(second, "ses_a", &second_model, true));
+        assert_eq!(
+            state.sessions[0].model_selection(),
+            Some(pick("alt", Some("high")))
+        );
+    }
+
+    #[test]
+    fn a_selected_model_event_wins_over_a_pending_pick() {
+        let mut state = model_state(None);
+        let (request_id, model) =
+            switch_ref(state.begin_model_switch("ses_a", 1, pick("alt", None)));
+        let external = SessionChange::ModelSelected {
+            id: "ses_a".into(),
+            model: SessionModel::from_selection(&pick("default", Some("high"))),
+        };
+
+        assert!(state.apply_model_selected(&external));
+        assert!(state.model_switches.is_empty());
+        assert_eq!(
+            state.displayed_model("ses_a"),
+            Some(pick("default", Some("high")))
+        );
+        assert!(
+            !state.settle_model_switch(request_id, "ses_a", &model, true),
+            "the late response is stale"
+        );
+        assert_eq!(
+            state.sessions[0].model_selection(),
+            Some(pick("default", Some("high")))
+        );
+        assert!(
+            !state.apply_model_selected(&external),
+            "an echo changes nothing"
+        );
+        assert!(!state.apply_model_selected(&SessionChange::Deleted("ses_a".into())));
+    }
+
+    #[test]
+    fn variant_index_finds_the_saved_variant_without_clearing_it() {
         let variants = [
             None,
             Some("low".into()),
             Some("medium".into()),
             Some("high".into()),
         ];
-        let high = Some("high".into());
+        assert_eq!(resolved_variant_index(Some("high"), &variants), Some(3));
+        assert_eq!(resolved_variant_index(None, &variants), Some(0));
         assert_eq!(
-            resolved_variant_index(Some(&high), &[None], false),
-            (0, false)
+            resolved_variant_index(Some("high"), &[None, Some("low".into())]),
+            None
         );
-        assert_eq!(
-            resolved_variant_index(Some(&high), &variants, true),
-            (3, false)
-        );
-        assert_eq!(
-            resolved_variant_index(Some(&high), &[None, Some("low".into())], true),
-            (0, true)
-        );
-        assert_eq!(
-            resolved_variant_index(Some(&None), &variants, true),
-            (0, false)
-        );
+        assert_eq!(resolved_variant_index(Some("high"), &[None]), None);
     }
 
     #[test]
@@ -8660,7 +9036,6 @@ mod tests {
                         archived: None,
                     },
                     parent_id: None,
-                    agent: None,
                     model: None,
                 }]
             ),
@@ -9015,7 +9390,6 @@ mod tests {
                 archived: None,
             },
             parent_id: None,
-            agent: None,
             model: None,
         };
         let s2 = Session {
@@ -9028,7 +9402,6 @@ mod tests {
                 archived: None,
             },
             parent_id: None,
-            agent: None,
             model: None,
         };
         let sessions = vec![s1, s2];
@@ -9050,7 +9423,6 @@ mod tests {
                 archived: None,
             },
             parent_id: None,
-            agent: None,
             model: None,
         };
         let s2 = Session {
@@ -9063,7 +9435,6 @@ mod tests {
                 archived: None,
             },
             parent_id: None,
-            agent: None,
             model: None,
         };
         let sessions = vec![s1, s2];
@@ -9084,7 +9455,6 @@ mod tests {
                 archived: None,
             },
             parent_id: None,
-            agent: None,
             model: None,
         };
         let s2 = Session {
@@ -9097,7 +9467,6 @@ mod tests {
                 archived: None,
             },
             parent_id: None,
-            agent: None,
             model: None,
         };
         let sessions = vec![s1, s2];
@@ -9119,7 +9488,6 @@ mod tests {
                 archived: None,
             },
             parent_id: None,
-            agent: None,
             model: None,
         };
         let s2 = Session {
@@ -9132,7 +9500,6 @@ mod tests {
                 archived: None,
             },
             parent_id: None,
-            agent: None,
             model: None,
         };
         let sessions = vec![s1, s2];
