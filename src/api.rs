@@ -25,10 +25,10 @@ use serde_json::{json, Value};
 use crate::{
     credentials::CloudflareAccessCredentials,
     model::{ModelCatalog, ModelSelection, Project, RunStatus, Session},
-    protocol::{self, QueryPairs},
+    protocol,
 };
 
-const MESSAGE_PAGE_SIZE: usize = 80;
+const MESSAGE_PAGE_SIZE: u32 = 80;
 const SESSION_PAGE_SIZE: u32 = 200;
 const MAX_SESSION_PAGES: usize = 1_000;
 const MAX_ERROR_BODY_CHARS: usize = 500;
@@ -47,10 +47,10 @@ pub struct ApiConfig {
 #[derive(Debug)]
 pub enum Command {
     Bootstrap,
+    /// `cursor: None` loads the newest page; `Some` the page before it.
     LoadMessages {
         session_id: String,
-        directory: String,
-        before: Option<String>,
+        cursor: Option<String>,
     },
     LoadModels {
         directory: String,
@@ -109,10 +109,43 @@ pub struct Bootstrap {
     pub warnings: Vec<String>,
 }
 
+/// One page of history, oldest entry first.
 #[derive(Debug)]
 pub struct MessagePage {
-    pub messages: Vec<Value>,
+    pub messages: Vec<protocol::SessionMessage>,
+    /// Cursor for the next older page; `None` once history is exhausted.
     pub next_cursor: Option<String>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum MessageLoadError {
+    /// The server does not know the session (e.g. a saved v1 tab ID), so
+    /// the tab is dropped quietly (R2.8).
+    SessionNotFound,
+    Failed(String),
+}
+
+impl MessageLoadError {
+    fn from_error(error: anyhow::Error) -> Self {
+        if error
+            .chain()
+            .filter_map(|cause| cause.downcast_ref::<ApiFailure>())
+            .any(ApiFailure::is_session_not_found)
+        {
+            Self::SessionNotFound
+        } else {
+            Self::Failed(format_error(error))
+        }
+    }
+}
+
+impl std::fmt::Display for MessageLoadError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::SessionNotFound => formatter.write_str("Session not found"),
+            Self::Failed(message) => formatter.write_str(message),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -130,8 +163,8 @@ pub enum UiEvent {
     Bootstrap(Result<Bootstrap, String>),
     MessagesLoaded {
         session_id: String,
-        before: Option<String>,
-        result: Result<MessagePage, String>,
+        cursor: Option<String>,
+        result: Result<MessagePage, MessageLoadError>,
     },
     ModelsLoaded {
         directory: String,
@@ -582,32 +615,26 @@ impl Api {
             .collect())
     }
 
-    fn load_messages(
-        &self,
-        session_id: &str,
-        _directory: &str,
-        before: Option<&str>,
-    ) -> Result<MessagePage> {
-        let mut query: QueryPairs = vec![("limit".into(), MESSAGE_PAGE_SIZE.to_string())];
-        if let Some(before) = before {
-            query.push(("before".into(), before.to_owned()));
-        }
-        let url = self.url(&protocol::session_messages_path(session_id), &query)?;
-        let response = expect_success(
-            self.request(Method::GET, url)
-                .send()
-                .context("failed to load messages")?,
-        )?;
-        let next_cursor = response
-            .headers()
-            .get("X-Next-Cursor")
-            .and_then(|value| value.to_str().ok())
-            .map(str::to_owned);
-        let messages = response
-            .json::<Vec<Value>>()
-            .context("server returned invalid messages")?;
+    /// Pages run newest first (the server default): the first page sends no
+    /// `order`, older pages send only `cursor` and `limit`, because the server
+    /// rejects `order` with a cursor and the cursor does not keep `limit`.
+    /// Each page is reversed into chronological order. A short or empty page
+    /// ends history, even though the server returns a cursor for any
+    /// non-empty page.
+    fn load_messages(&self, session_id: &str, cursor: Option<&str>) -> Result<MessagePage> {
+        let query = protocol::MessageListQuery {
+            limit: Some(MESSAGE_PAGE_SIZE),
+            order: None,
+            cursor: cursor.map(str::to_owned),
+        };
+        let mut page: protocol::MessageListResponse = self
+            .get(&protocol::session_messages_path(session_id), &query.pairs())
+            .context("failed to load messages")?;
+        let full = page.data.len() >= MESSAGE_PAGE_SIZE as usize;
+        let next_cursor = page.next_cursor().filter(|_| full).map(str::to_owned);
+        page.data.reverse();
         Ok(MessagePage {
-            messages,
+            messages: page.data,
             next_cursor,
         })
     }
@@ -758,17 +785,13 @@ fn spawn_command_worker(api: Api, commands: Receiver<Command>, ui: Sender<UiEven
         while let Ok(command) = commands.recv_blocking() {
             let event = match command {
                 Command::Bootstrap => UiEvent::Bootstrap(api.bootstrap().map_err(format_error)),
-                Command::LoadMessages {
-                    session_id,
-                    directory,
-                    before,
-                } => {
+                Command::LoadMessages { session_id, cursor } => {
                     let result = api
-                        .load_messages(&session_id, &directory, before.as_deref())
-                        .map_err(format_error);
+                        .load_messages(&session_id, cursor.as_deref())
+                        .map_err(MessageLoadError::from_error);
                     UiEvent::MessagesLoaded {
                         session_id,
-                        before,
+                        cursor,
                         result,
                     }
                 }
@@ -1054,6 +1077,15 @@ impl std::fmt::Display for ApiFailure {
 }
 
 impl std::error::Error for ApiFailure {}
+
+impl ApiFailure {
+    /// A declared `SessionNotFoundError`; a bare 404 (e.g. from a proxy) is not.
+    pub fn is_session_not_found(&self) -> bool {
+        self.error
+            .as_ref()
+            .is_some_and(|error| error.kind() == protocol::ApiErrorKind::SessionNotFound)
+    }
+}
 
 fn expect_success(response: Response) -> Result<Response> {
     if response.status().is_success() {
@@ -1758,5 +1790,157 @@ mod tests {
             let session = Session::from_info(&response.data);
             assert!(session.directory.starts_with('/'), "{name}");
         }
+    }
+
+    fn user_entry(index: usize) -> Value {
+        json!({
+            "id": format!("msg_{index:04}"),
+            "type": "user",
+            "time": { "created": index },
+            "text": format!("turn {index}")
+        })
+    }
+
+    /// Entries `from..to`, newest first as the server sends them.
+    fn newest_first(from: usize, to: usize) -> Vec<Value> {
+        (from..to).rev().map(user_entry).collect()
+    }
+
+    #[test]
+    fn message_history_pages_newest_first_and_reverses_each_page() {
+        let size = MESSAGE_PAGE_SIZE as usize;
+        let (base, requests, server) = serve(3, move |request| {
+            assert_eq!(request.path(), "/api/session/ses_a/message");
+            match request.query().get("cursor").map(String::as_str) {
+                None => ok(json!({
+                    "data": newest_first(size + 5, 2 * size + 5),
+                    "cursor": { "previous": "p0", "next": "c1" }
+                })),
+                Some("c1") => ok(json!({
+                    "data": newest_first(5, size + 5),
+                    "cursor": { "previous": "p1", "next": "c2" }
+                })),
+                Some("c2") => {
+                    ok(json!({ "data": [], "cursor": { "previous": null, "next": null } }))
+                }
+                Some(other) => panic!("unexpected cursor {other}"),
+            }
+        });
+        let api = Api::new(config(base, None)).unwrap();
+        let first = api.load_messages("ses_a", None).unwrap();
+        let second = api
+            .load_messages("ses_a", first.next_cursor.as_deref())
+            .unwrap();
+        let last = api
+            .load_messages("ses_a", second.next_cursor.as_deref())
+            .unwrap();
+        server.join().unwrap();
+
+        assert_eq!(first.next_cursor.as_deref(), Some("c1"));
+        assert_eq!(second.next_cursor.as_deref(), Some("c2"));
+        assert!(last.messages.is_empty());
+        assert_eq!(last.next_cursor, None, "the empty final page ends history");
+        let ids = |page: &MessagePage| -> Vec<String> {
+            page.messages
+                .iter()
+                .map(|entry| entry.id().unwrap().to_owned())
+                .collect()
+        };
+        assert_eq!(ids(&first).first().unwrap(), "msg_0085");
+        assert_eq!(ids(&first).last().unwrap(), "msg_0164");
+        assert!(ids(&second).windows(2).all(|pair| pair[0] < pair[1]));
+
+        let mut conversation = crate::model::Conversation::default();
+        conversation.replace_from_api(&first.messages, first.next_cursor.clone());
+        conversation.prepend_from_api(&second.messages, second.next_cursor.clone());
+        conversation.prepend_from_api(&last.messages, last.next_cursor.clone());
+        assert_eq!(conversation.next_cursor, None);
+        let bodies: Vec<String> = conversation
+            .transcript_rows()
+            .iter()
+            .map(|row| {
+                serde_json::from_str::<Value>(row).unwrap()["body"]
+                    .as_str()
+                    .unwrap()
+                    .to_owned()
+            })
+            .collect();
+        let expected: Vec<String> = (5..2 * size + 5)
+            .map(|index| format!("turn {index}"))
+            .collect();
+        assert_eq!(
+            bodies, expected,
+            "chronological after reversing and prepending"
+        );
+
+        let requests = requests.lock().unwrap();
+        let queries: Vec<_> = requests.iter().map(HttpRequest::query).collect();
+        assert_eq!(queries[0].get("limit"), Some(&size.to_string()));
+        assert!(!queries[0].contains_key("cursor"));
+        for (query, cursor) in queries[1..].iter().zip(["c1", "c2"]) {
+            assert_eq!(query.get("cursor").map(String::as_str), Some(cursor));
+            assert_eq!(query.get("limit"), Some(&size.to_string()));
+        }
+        assert!(queries.iter().all(|query| !query.contains_key("order")
+            && !query.contains_key("before")
+            && !query.contains_key("directory")));
+    }
+
+    #[test]
+    fn a_short_message_page_ends_history() {
+        let (base, _, server) = serve(1, |_| {
+            ok(json!({ "data": newest_first(0, 3), "cursor": { "previous": "p", "next": "n" } }))
+        });
+        let api = Api::new(config(base, None)).unwrap();
+        let page = api.load_messages("ses_a", None).unwrap();
+        server.join().unwrap();
+        assert_eq!(page.messages.len(), 3);
+        assert_eq!(page.messages[0].id(), Some("msg_0000"));
+        assert_eq!(page.next_cursor, None);
+    }
+
+    #[test]
+    fn only_a_declared_missing_session_is_dropped() {
+        let not_found = fixture("error.404.session").to_string();
+        let (base, _, server) = serve(3, move |request| match request.path() {
+            "/api/session/ses_gone/message" => (404, not_found.clone()),
+            "/api/session/ses_proxy/message" => (404, "not found".into()),
+            _ => (503, String::new()),
+        });
+        let api = Api::new(config(base, None)).unwrap();
+        let load = |id: &str| {
+            api.load_messages(id, None)
+                .map_err(MessageLoadError::from_error)
+                .unwrap_err()
+        };
+        assert_eq!(load("ses_gone"), MessageLoadError::SessionNotFound);
+        assert_eq!(
+            load("ses_proxy"),
+            MessageLoadError::Failed(
+                "failed to load messages: server returned 404 Not Found: not found".into()
+            )
+        );
+        assert!(matches!(load("ses_busy"), MessageLoadError::Failed(_)));
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn preview_pages_typed_history() {
+        let mut state = crate::preview::State::new();
+        let UiEvent::MessagesLoaded {
+            result: Ok(page),
+            cursor: None,
+            ..
+        } = state.handle(Command::LoadMessages {
+            session_id: "ses_preview".into(),
+            cursor: None,
+        })
+        else {
+            panic!("preview history failed");
+        };
+        assert!(page
+            .messages
+            .iter()
+            .any(|entry| matches!(entry, protocol::SessionMessage::Assistant(_))));
     }
 }

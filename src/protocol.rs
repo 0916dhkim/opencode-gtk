@@ -144,25 +144,52 @@ pub fn decode<T: DeserializeOwned>(body: &[u8]) -> Result<T, serde_json::Error> 
     serde_json::from_slice(body)
 }
 
-/// One recorded HTTP exchange, as stored in captured fixtures.
+/// One recorded HTTP exchange, as stored in `tests/fixtures/v2-2.0.8/<name>.json`.
 #[derive(Clone, Debug, Deserialize)]
 pub struct CapturedExchange {
+    pub name: String,
+    pub request: CapturedRequest,
+    pub response: CapturedResponse,
+    #[serde(default)]
+    pub note: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct CapturedRequest {
     pub method: String,
     pub path: String,
-    pub status: u16,
+    /// e.g. `/api/session/{sessionID}/message`.
+    #[serde(rename = "pathTemplate")]
+    pub path_template: String,
+    /// Raw query string, without `?`.
     #[serde(default)]
-    pub headers: JsonMap,
+    pub query: Option<String>,
     #[serde(default)]
     pub body: Value,
 }
 
+#[derive(Clone, Debug, Deserialize)]
+pub struct CapturedResponse {
+    pub status: u16,
+    #[serde(default)]
+    pub headers: JsonMap,
+    /// Parsed JSON body; `null` for empty bodies (204, and the bodiless 401).
+    #[serde(default)]
+    pub body: Value,
+    /// A body that was not JSON, verbatim.
+    #[serde(rename = "bodyText", default)]
+    pub body_text: Option<String>,
+}
+
 impl CapturedExchange {
     pub fn decode_body<T: DeserializeOwned>(&self) -> Result<T, serde_json::Error> {
-        T::deserialize(&self.body)
+        T::deserialize(&self.response.body)
     }
 
     pub fn error(&self) -> Option<ApiError> {
-        ApiError::deserialize(&self.body).ok()
+        ApiError::deserialize(&self.response.body)
+            .ok()
+            .filter(|error| error.tag.is_some() || error.message.is_some())
     }
 }
 
@@ -3674,23 +3701,302 @@ mod tests {
     #[test]
     fn captured_exchange_wrapper_decodes_bodies_and_errors() {
         let exchange: CapturedExchange = from(json!({
-            "method": "GET",
-            "path": "/api/session/ses_1/message?limit=2",
-            "status": 200,
-            "headers": { "content-type": "application/json" },
-            "body": message_page()
+            "name": "session.messages.page1",
+            "request": {
+                "method": "GET",
+                "path": "/api/session/ses_1/message",
+                "pathTemplate": "/api/session/{sessionID}/message",
+                "query": "limit=2",
+                "body": null
+            },
+            "response": {
+                "status": 200,
+                "headers": { "content-type": "application/json" },
+                "body": message_page()
+            }
         }));
+        assert_eq!(exchange.request.query.as_deref(), Some("limit=2"));
         let page: MessageListResponse = exchange.decode_body().unwrap();
         assert_eq!(page.data.len(), 14);
         let failure: CapturedExchange = from(json!({
-            "method": "POST",
-            "path": "/api/session/ses_1/permission/per_1/reply",
-            "status": 404,
-            "body": { "_tag": "PermissionNotFoundError", "requestID": "per_1", "message": "gone" }
+            "name": "reply.gone",
+            "request": {
+                "method": "POST",
+                "path": "/api/session/ses_1/permission/per_1/reply",
+                "pathTemplate": "/api/session/{sessionID}/permission/{requestID}/reply",
+                "query": null,
+                "body": { "decision": "once" }
+            },
+            "response": {
+                "status": 404,
+                "headers": {},
+                "body": { "_tag": "PermissionNotFoundError", "requestID": "per_1", "message": "gone" }
+            },
+            "note": "stale"
         }));
         assert!(failure.error().unwrap().is_already_resolved());
-        let empty: CapturedExchange =
-            from(json!({ "method": "PATCH", "path": "/api/session/ses_1", "status": 204 }));
-        assert_eq!(empty.body, Value::Null);
+        assert_eq!(failure.note.as_deref(), Some("stale"));
+        let empty: CapturedExchange = from(json!({
+            "name": "session.rename",
+            "request": { "method": "PATCH", "path": "/api/session/ses_1", "pathTemplate": "/api/session/{sessionID}" },
+            "response": { "status": 204, "headers": {}, "body": null }
+        }));
+        assert_eq!(empty.response.body, Value::Null);
+        assert!(empty.error().is_none());
+    }
+
+    fn fixture_dir() -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/v2-2.0.8")
+    }
+
+    fn captured_exchanges() -> Vec<CapturedExchange> {
+        let mut paths: Vec<_> = std::fs::read_dir(fixture_dir())
+            .expect("fixture directory")
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| {
+                path.extension().is_some_and(|ext| ext == "json")
+                    && path.file_name().is_some_and(|name| name != "index.json")
+            })
+            .collect();
+        paths.sort();
+        paths
+            .iter()
+            .map(|path| {
+                let text = std::fs::read_to_string(path).unwrap();
+                serde_json::from_str(&text)
+                    .unwrap_or_else(|error| panic!("{}: {error}", path.display()))
+            })
+            .collect()
+    }
+
+    fn strict<T: DeserializeOwned>(exchange: &CapturedExchange) -> T {
+        exchange
+            .decode_body()
+            .unwrap_or_else(|error| panic!("{}: {error}", exchange.name))
+    }
+
+    /// Tolerant decoding would hide a renamed field or tag, so the known
+    /// unions must not fall back to their `Unknown` arms on real data.
+    fn assert_message_page_is_fully_typed(name: &str, page: &MessageListResponse) {
+        for entry in &page.data {
+            assert!(
+                !matches!(entry, SessionMessage::Unknown(_)),
+                "{name}: {entry:?}"
+            );
+            match entry {
+                SessionMessage::Assistant(message) => {
+                    for item in &message.content {
+                        match item {
+                            AssistantContent::Unknown(unknown) => panic!("{name}: {unknown:?}"),
+                            AssistantContent::Tool(tool) => {
+                                assert!(!matches!(tool.state, ToolState::Unknown), "{name}");
+                                assert!(!tool.name.is_empty() && tool.time.created > 0, "{name}");
+                            }
+                            _ => {}
+                        }
+                    }
+                    assert!(message.time.created > 0, "{name}");
+                }
+                SessionMessage::User(message) => {
+                    for file in &message.files {
+                        assert!(!file.data.is_empty() && !file.mime.is_empty(), "{name}");
+                        assert_eq!(file.source, Some(FileSource::Inline), "{name}");
+                    }
+                }
+                SessionMessage::Idle(message) => {
+                    assert_ne!(message.outcome, Outcome::Unknown, "{name}")
+                }
+                _ => {}
+            }
+        }
+    }
+
+    #[test]
+    fn every_captured_http_fixture_decodes_with_its_typed_response() {
+        let exchanges = captured_exchanges();
+        assert!(exchanges.len() >= 72, "{}", exchanges.len());
+        let mut message_pages = 0;
+        for exchange in &exchanges {
+            let name = exchange.name.as_str();
+            let status = exchange.response.status;
+            let body = &exchange.response.body;
+            assert!(exchange.response.body_text.is_none(), "{name}");
+            if !(200..300).contains(&status) {
+                if status == 401 {
+                    assert!(body.is_null(), "{name}: 401 has no body");
+                    continue;
+                }
+                let error = exchange.error().unwrap_or_else(|| panic!("{name}: {body}"));
+                assert!(error.message.is_some(), "{name}");
+                let expected = match status {
+                    400 => [ApiErrorKind::InvalidRequest, ApiErrorKind::InvalidCursor].as_slice(),
+                    404 => &[ApiErrorKind::SessionNotFound],
+                    409 => &[ApiErrorKind::FormAlreadySettled],
+                    _ => panic!("{name}: unexpected status {status}"),
+                };
+                assert!(expected.contains(&error.kind()), "{name}: {error:?}");
+                continue;
+            }
+            if status == 204 {
+                assert!(body.is_null(), "{name}");
+                continue;
+            }
+            let method = exchange.request.method.as_str();
+            match (method, exchange.request.path_template.as_str()) {
+                ("GET", "/api/info") => assert!(strict::<ServerInfoResponse>(exchange).is_v2()),
+                ("GET", "/api/project") => {
+                    let projects = strict::<ProjectListResponse>(exchange);
+                    assert!(projects.iter().all(|project| !project.canonical.is_empty()));
+                }
+                ("GET", "/api/session") => {
+                    let page = strict::<SessionListResponse>(exchange);
+                    assert!(
+                        page.data
+                            .iter()
+                            .all(|session| !session.directory().is_empty()
+                                && session.time.created > 0)
+                    );
+                }
+                ("POST", "/api/session") | ("GET", "/api/session/{sessionID}") => {
+                    let session = strict::<SessionResponse>(exchange).data;
+                    assert!(!session.directory().is_empty(), "{name}");
+                }
+                ("GET", "/api/session/active") => {
+                    let active = strict::<SessionActiveResponse>(exchange);
+                    assert!(active.data.values().all(|s| *s == ActiveStatus::Running));
+                }
+                ("POST", "/api/session/{sessionID}/prompt") => {
+                    let prompt = strict::<PromptResponse>(exchange).data;
+                    assert!(prompt.id.starts_with("msg_"), "{name}");
+                }
+                ("POST", "/api/session/{sessionID}/interrupt") => {
+                    strict::<InterruptResponse>(exchange);
+                }
+                ("GET", "/api/session/{sessionID}/inbox") => {
+                    let inbox = strict::<InboxListResponse>(exchange);
+                    assert!(inbox
+                        .data
+                        .iter()
+                        .all(|entry| !matches!(entry.item, InboxItem::Unknown)));
+                }
+                ("GET", "/api/session/{sessionID}/message") => {
+                    let page = strict::<MessageListResponse>(exchange);
+                    assert_message_page_is_fully_typed(name, &page);
+                    message_pages += 1;
+                }
+                ("GET", "/api/model") => {
+                    let models = strict::<ModelListResponse>(exchange);
+                    assert!(models
+                        .data
+                        .iter()
+                        .all(|model| model.status != Some(ModelStatus::Unknown)));
+                }
+                ("GET", "/api/model/default") => {
+                    strict::<ModelDefaultResponse>(exchange);
+                }
+                ("GET", "/api/permission/request") => {
+                    let requests = strict::<PermissionRequestListResponse>(exchange);
+                    assert!(requests
+                        .data
+                        .iter()
+                        .all(|request| !request.action.is_empty()
+                            && !matches!(request.source, Some(PermissionSource::Unknown))));
+                }
+                ("GET", "/api/session/{sessionID}/permission") => {
+                    strict::<SessionPermissionListResponse>(exchange);
+                }
+                ("GET", "/api/session/{sessionID}/permission/{requestID}") => {
+                    let request = strict::<Data<PermissionRequest>>(exchange).data;
+                    assert!(request.offers_always(), "{name}");
+                }
+                ("GET", "/api/form") => {
+                    strict::<FormListResponse>(exchange);
+                }
+                ("GET", "/api/session/{sessionID}/form") => {
+                    strict::<SessionFormListResponse>(exchange);
+                }
+                ("POST", "/api/session/{sessionID}/form") => {
+                    let form = strict::<Data<FormInfo>>(exchange).data;
+                    assert!(!form.title.is_empty() && !form.fields.is_empty(), "{name}");
+                }
+                ("GET", "/api/session/{sessionID}/form/{formID}") => {
+                    let form = strict::<FormDetailResponse>(exchange).data;
+                    assert_eq!(form.state, FormState::Pending, "{name}");
+                }
+                (method, template) => panic!("{name}: unmapped fixture {method} {template}"),
+            }
+        }
+        assert!(message_pages >= 19, "{message_pages}");
+    }
+
+    /// Event types seen in the captures that the client deliberately ignores.
+    const IGNORED_CAPTURED_EVENTS: &[&str] =
+        &["session.step.streamed", "shell.created", "shell.exited"];
+
+    #[test]
+    fn every_captured_event_decodes_without_malformed_payloads() {
+        let mut paths: Vec<_> = std::fs::read_dir(fixture_dir().join("events"))
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| path.extension().is_some_and(|ext| ext == "jsonl"))
+            .collect();
+        paths.sort();
+        assert!(paths.len() >= 14);
+        let mut decoded = 0;
+        for path in paths {
+            let file = path.file_name().unwrap().to_string_lossy().into_owned();
+            let text = std::fs::read_to_string(&path).unwrap();
+            for (index, line) in text
+                .lines()
+                .filter(|line| !line.trim().is_empty())
+                .enumerate()
+            {
+                let event =
+                    parse_event(line).unwrap_or_else(|error| panic!("{file}:{index}: {error}"));
+                let at = format!("{file}:{index} {}", event.type_);
+                match decode_event(&event) {
+                    EventKind::Malformed { type_, error } => panic!("{at}: {type_}: {error}"),
+                    EventKind::Other(type_) => {
+                        assert!(IGNORED_CAPTURED_EVENTS.contains(&type_.as_str()), "{at}")
+                    }
+                    EventKind::ServerConnected => assert_eq!(event.created, None, "{at}"),
+                    EventKind::InboxEnqueued(data) => {
+                        assert!(!matches!(data.item, InboxItem::Unknown), "{at}")
+                    }
+                    EventKind::TextEnded(data) | EventKind::ReasoningEnded(data) => {
+                        assert!(!data.text.is_empty(), "{at}")
+                    }
+                    EventKind::ToolInputStarted(data) => assert!(!data.name.is_empty(), "{at}"),
+                    EventKind::ToolInputEnded(data) => assert!(!data.text.is_empty(), "{at}"),
+                    EventKind::ToolCalled(data) => assert!(!data.input.is_empty(), "{at}"),
+                    EventKind::ToolSuccess(data) => assert!(!data.content.is_empty(), "{at}"),
+                    EventKind::StepStarted(data) => assert!(data.started > 0, "{at}"),
+                    EventKind::StepEnded(data) => assert!(data.tokens.total() > 0.0, "{at}"),
+                    EventKind::StepFailed(data) => assert!(!data.error.kind.is_empty(), "{at}"),
+                    EventKind::ExecutionFailed(data) => {
+                        assert!(!data.error.message.is_empty(), "{at}")
+                    }
+                    EventKind::ExecutionInterrupted(data) => {
+                        assert!(!data.reason.is_empty(), "{at}")
+                    }
+                    EventKind::RetryScheduled(data) => {
+                        assert!(data.attempt > 0 && !data.error.message.is_empty(), "{at}")
+                    }
+                    EventKind::PermissionAsked(data) => assert!(
+                        !data.action.is_empty()
+                            && !matches!(data.source, Some(PermissionSource::Unknown)),
+                        "{at}"
+                    ),
+                    EventKind::PermissionReplied(data) => assert!(!data.reply.is_empty(), "{at}"),
+                    EventKind::FormCreated(data) => assert!(!data.form.title.is_empty(), "{at}"),
+                    _ => {}
+                }
+                if !matches!(event.type_.as_str(), "server.connected") {
+                    assert!(event.created.is_some(), "{at}");
+                }
+                decoded += 1;
+            }
+        }
+        assert!(decoded > 300, "{decoded}");
     }
 }

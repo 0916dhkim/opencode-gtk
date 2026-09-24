@@ -494,22 +494,32 @@ pub struct Conversation {
 }
 
 impl Conversation {
-    pub fn replace_from_api(&mut self, envelopes: &[Value], next_cursor: Option<String>) {
-        self.messages = envelopes.iter().filter_map(message_from_api).collect();
+    /// `entries` is one history page in chronological order (oldest first).
+    pub fn replace_from_api(
+        &mut self,
+        entries: &[protocol::SessionMessage],
+        next_cursor: Option<String>,
+    ) {
+        self.messages = entries.iter().filter_map(message_from_entry).collect();
         self.next_cursor = next_cursor;
         self.loaded = true;
     }
 
-    pub fn prepend_from_api(&mut self, envelopes: &[Value], next_cursor: Option<String>) {
+    /// Prepends an older page (chronological order), skipping known entries.
+    pub fn prepend_from_api(
+        &mut self,
+        entries: &[protocol::SessionMessage],
+        next_cursor: Option<String>,
+    ) {
         let existing: HashMap<_, _> = self
             .messages
             .iter()
             .enumerate()
             .map(|(index, message)| (message.id.as_str(), index))
             .collect();
-        let mut earlier: Vec<_> = envelopes
+        let mut earlier: Vec<_> = entries
             .iter()
-            .filter_map(message_from_api)
+            .filter_map(message_from_entry)
             .filter(|message| !existing.contains_key(message.id.as_str()))
             .collect();
         earlier.append(&mut self.messages);
@@ -829,7 +839,7 @@ impl Conversation {
             .map(str::to_owned)
             .or(previous_name)
             .unwrap_or_else(|| "tool".to_owned());
-        let title = tool_title(data)
+        let title = legacy_tool_title(data)
             .or(previous_title)
             .filter(|title| !title.is_empty())
             .map(|title| format!(" — {title}"))
@@ -888,35 +898,379 @@ impl Conversation {
     }
 }
 
-fn message_from_api(envelope: &Value) -> Option<ChatMessage> {
-    let info = envelope.get("info")?;
-    let role = match info.get("role")?.as_str()? {
-        "user" => Role::User,
-        "assistant" => Role::Assistant,
-        _ => return None,
-    };
-    let mut message = ChatMessage {
-        id: info.get("id")?.as_str()?.to_owned(),
-        role,
-        created: info
-            .pointer("/time/created")
-            .and_then(Value::as_u64)
-            .unwrap_or_default(),
-        segments: Vec::new(),
-        error: error_text(info.get("error")),
-        context_tokens: message_context_tokens(info),
-    };
-    for part in envelope
-        .get("parts")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-    {
-        if let Some(segment) = segment_from_part(part) {
-            message.segments.push(segment);
+/// Projects one v2 message-list entry into the transcript model, or `None`
+/// when the entry renders nothing (`idle`, unknown entries without text).
+/// Every entry other than `user` renders as an AGENT message styled like
+/// assistant text (R3.4).
+///
+/// Message and segment keys are shared with live events (R3.5), so a refresh
+/// or a replay of events onto fresh history never duplicates rows:
+/// - message: the entry `id`. Event-projected entries (switches, synthetic,
+///   system, skill, shell, idle) carry the event ID with `evt_` replaced by
+///   `msg_` ([`protocol::Event::projected_message_id`]); compaction uses its
+///   `inputID` when present; user entries use the prompt/inbox `id`; assistant
+///   entries use the `assistantMessageID` of their `session.step.*` events.
+/// - assistant text and reasoning: `text:{k}` / `reasoning:{k}`, where `k` is
+///   the item's index among same-kind items of `content[]`. That is the live
+///   `ordinal` of `session.{text,reasoning}.{started,delta,ended}`.
+/// - assistant tool: `tool:{id}`, the provider call ID that `session.tool.*`
+///   events carry as `data.id`; it is unique only within one message.
+/// - user text `text:0`, user files `file:{index}`; the other entries have a
+///   single `text:0` segment.
+pub fn message_from_entry(entry: &protocol::SessionMessage) -> Option<ChatMessage> {
+    use protocol::SessionMessage as Entry;
+    match entry {
+        Entry::User(message) => Some(user_message(message)),
+        Entry::Assistant(message) => Some(assistant_message(message)),
+        Entry::Synthetic(note) => note_message(
+            &note.id,
+            note.time.created,
+            non_blank(&note.text).or_else(|| note.description.as_deref().and_then(non_blank)),
+        ),
+        // System text is the full instruction set; its description names what changed.
+        Entry::System(note) => note_message(
+            &note.id,
+            note.time.created,
+            note.description
+                .as_deref()
+                .and_then(non_blank)
+                .or_else(|| non_blank(&note.text)),
+        ),
+        // Skill text is the whole skill body, so only the name is shown.
+        Entry::Skill(skill) => {
+            let name = non_blank(&skill.name).or_else(|| non_blank(&skill.skill));
+            note_message(
+                &skill.id,
+                skill.time.created,
+                name.map(|name| format!("Skill: {name}")),
+            )
+        }
+        Entry::Shell(shell) => note_message(&shell.id, shell.time.created, shell_body(shell)),
+        Entry::Compaction(compaction) => note_message(
+            &compaction.id,
+            compaction.time.created,
+            compaction_body(compaction),
+        ),
+        Entry::AgentSwitched(switch) => note_message(
+            &switch.id,
+            switch.time.created,
+            non_blank(&switch.agent).map(|agent| format!("Switched agent to {agent}")),
+        ),
+        Entry::ModelSwitched(switch) => {
+            let model = &switch.model;
+            let variant = model
+                .variant
+                .as_deref()
+                .and_then(non_blank)
+                .map(|variant| format!(" ({variant})"))
+                .unwrap_or_default();
+            note_message(
+                &switch.id,
+                switch.time.created,
+                Some(format!(
+                    "Switched model to {}/{}{variant}",
+                    model.provider_id, model.id
+                )),
+            )
+        }
+        Entry::LocationSwitched(switch) => note_message(
+            &switch.id,
+            switch.time.created,
+            non_blank(&switch.location.directory).map(|directory| format!("Moved to {directory}")),
+        ),
+        Entry::Idle(_) => None,
+        Entry::Unknown(unknown) => {
+            let id = unknown.id.as_deref()?;
+            let created = unknown
+                .raw
+                .pointer("/time/created")
+                .and_then(Value::as_i64)
+                .unwrap_or_default();
+            let text = unknown
+                .raw
+                .get("text")
+                .and_then(Value::as_str)
+                .and_then(non_blank);
+            note_message(id, created, text)
         }
     }
-    Some(message)
+}
+
+fn user_message(message: &protocol::UserMessage) -> ChatMessage {
+    let mut segments = Vec::new();
+    if !message.text.is_empty() {
+        segments.push(Segment {
+            key: "text:0".to_owned(),
+            kind: SegmentKind::Text,
+            text: message.text.clone(),
+            image_url: None,
+            created: 0,
+        });
+    }
+    for (index, file) in message.files.iter().enumerate() {
+        let name = file
+            .name
+            .as_deref()
+            .and_then(non_blank)
+            .unwrap_or("attachment");
+        let mime = non_blank(&file.mime).unwrap_or("application/octet-stream");
+        segments.push(Segment {
+            key: format!("file:{index}"),
+            kind: SegmentKind::File,
+            text: format!("Attached: {name} ({mime})"),
+            image_url: (mime.starts_with("image/") && !file.data.is_empty())
+                .then(|| file.data_url()),
+            created: 0,
+        });
+    }
+    ChatMessage {
+        id: message.id.clone(),
+        role: Role::User,
+        created: millis(message.time.created),
+        segments,
+        error: None,
+        context_tokens: None,
+    }
+}
+
+fn assistant_message(message: &protocol::AssistantMessage) -> ChatMessage {
+    use protocol::AssistantContent as Content;
+    let mut segments = Vec::new();
+    let mut texts = 0;
+    let mut reasonings = 0;
+    for item in &message.content {
+        match item {
+            Content::Text(text) => {
+                segments.push(Segment {
+                    key: format!("text:{texts}"),
+                    kind: SegmentKind::Text,
+                    text: text.text.clone(),
+                    image_url: None,
+                    created: 0,
+                });
+                texts += 1;
+            }
+            Content::Reasoning(reasoning) => {
+                segments.push(Segment {
+                    key: format!("reasoning:{reasonings}"),
+                    kind: SegmentKind::Reasoning,
+                    text: reasoning.text.clone(),
+                    image_url: None,
+                    created: reasoning.time.map(|time| millis(time.created)).unwrap_or(0),
+                });
+                reasonings += 1;
+            }
+            Content::Tool(tool) => segments.push(tool_segment(tool)),
+            // Keep ordinals aligned when a known kind fails to decode.
+            Content::Unknown(unknown) => match unknown.kind.as_str() {
+                "text" => texts += 1,
+                "reasoning" => reasonings += 1,
+                _ => {}
+            },
+        }
+    }
+    ChatMessage {
+        id: message.id.clone(),
+        role: Role::Assistant,
+        created: millis(message.time.created),
+        segments,
+        error: message
+            .error
+            .as_ref()
+            .filter(|error| !is_interrupt(error))
+            .map(structured_error_text),
+        context_tokens: message.tokens.as_ref().and_then(usage_tokens),
+    }
+}
+
+/// An interrupted step fails with `type: "aborted"`; like v1 "Aborted" it is
+/// not an error worth showing.
+fn is_interrupt(error: &protocol::StructuredError) -> bool {
+    error.kind == "aborted"
+}
+
+fn structured_error_text(error: &protocol::StructuredError) -> String {
+    non_blank(&error.message)
+        .or_else(|| non_blank(&error.kind))
+        .unwrap_or("Request failed")
+        .to_owned()
+}
+
+fn usage_tokens(tokens: &protocol::TokenUsage) -> Option<u64> {
+    let total = tokens.total();
+    (total.is_finite() && total >= 1.0).then(|| total.round() as u64)
+}
+
+/// `"{name} · {status}{ — title}{: error}"`, the tool row body.
+fn tool_segment(tool: &protocol::ToolCall) -> Segment {
+    use protocol::ToolState;
+    let empty = protocol::JsonMap::new();
+    let streamed: protocol::JsonMap;
+    let (status, input, error) = match &tool.state {
+        ToolState::Streaming { input } => {
+            streamed = serde_json::from_str(input).unwrap_or_default();
+            ("running", &streamed, None)
+        }
+        ToolState::Running { input, .. } => ("running", input, None),
+        ToolState::Completed { input, .. } => ("completed", input, None),
+        ToolState::Error { input, error, .. } => {
+            ("error", input, Some(structured_error_text(error)))
+        }
+        ToolState::Unknown => ("pending", &empty, None),
+    };
+    let name = non_blank(&tool.name).unwrap_or("tool");
+    let title = tool_title(name, input)
+        .map(|title| format!(" — {title}"))
+        .unwrap_or_default();
+    let detail = error.map(|error| format!(": {error}")).unwrap_or_default();
+    Segment {
+        key: format!("tool:{}", tool.id),
+        kind: SegmentKind::Tool,
+        text: format!("{name} · {status}{title}{detail}"),
+        image_url: None,
+        created: millis(tool.time.created),
+    }
+}
+
+/// A one-line summary of a tool call from its input, per v2 tool schema
+/// (`core/src/tool/plugin/*.ts`); other tools (MCP, plugins) try common keys.
+fn tool_title(name: &str, input: &protocol::JsonMap) -> Option<String> {
+    let keys: &[&str] = match name {
+        "shell" => &["command", "description"],
+        "subagent" => &["description", "agent"],
+        "read" | "write" | "edit" => &["path"],
+        "glob" | "grep" => &["pattern"],
+        "webfetch" => &["url"],
+        "websearch" => &["query"],
+        "skill" => &["id"],
+        _ => &[
+            "command",
+            "description",
+            "path",
+            "filePath",
+            "pattern",
+            "query",
+            "url",
+        ],
+    };
+    keys.iter().find_map(|key| {
+        input
+            .get(*key)
+            .and_then(Value::as_str)
+            .and_then(single_line)
+    })
+}
+
+/// v1 live tool events: an explicit title, else one derived from the input.
+fn legacy_tool_title(value: &Value) -> Option<String> {
+    value
+        .pointer("/state/title")
+        .or_else(|| value.get("title"))
+        .and_then(Value::as_str)
+        .and_then(single_line)
+        .or_else(|| {
+            let input = value
+                .pointer("/state/input")
+                .or_else(|| value.get("input"))?
+                .as_object()?;
+            let tool = value
+                .get("tool")
+                .or_else(|| value.get("name"))
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            tool_title(tool, input)
+        })
+}
+
+fn single_line(text: &str) -> Option<String> {
+    let line = text
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    (!line.is_empty()).then_some(line)
+}
+
+fn non_blank(text: &str) -> Option<&str> {
+    (!text.trim().is_empty()).then_some(text)
+}
+
+/// A non-user entry shown as one AGENT text segment.
+fn note_message(
+    id: &str,
+    created: protocol::Millis,
+    body: Option<impl Into<String>>,
+) -> Option<ChatMessage> {
+    let text = body?.into();
+    Some(ChatMessage {
+        id: id.to_owned(),
+        role: Role::Assistant,
+        created: millis(created),
+        segments: vec![Segment {
+            key: "text:0".to_owned(),
+            kind: SegmentKind::Text,
+            text,
+            image_url: None,
+            created: 0,
+        }],
+        error: None,
+        context_tokens: None,
+    })
+}
+
+/// `$ command` and its output as a code block, plus how it ended if abnormal.
+fn shell_body(shell: &protocol::ShellMessage) -> Option<String> {
+    let command = shell.command.trim();
+    let output = shell
+        .output
+        .as_ref()
+        .map(|output| output.output.trim_end())
+        .filter(|output| !output.is_empty());
+    if command.is_empty() && output.is_none() {
+        return None;
+    }
+    let mut text = format!("$ {command}");
+    if let Some(output) = output {
+        text.push('\n');
+        text.push_str(output);
+    }
+    let mut body = code_block(&text);
+    match shell.status {
+        protocol::ShellStatus::Timeout => body.push_str("\n\nTimed out"),
+        protocol::ShellStatus::Killed => body.push_str("\n\nKilled"),
+        _ => {}
+    }
+    Some(body)
+}
+
+/// A fenced block whose fence is longer than any backtick run inside.
+fn code_block(text: &str) -> String {
+    let longest = text.split(|c| c != '`').map(str::len).max().unwrap_or(0);
+    let fence = "`".repeat(longest.max(2) + 1);
+    format!("{fence}\n{text}\n{fence}")
+}
+
+fn compaction_body(compaction: &protocol::CompactionMessage) -> Option<String> {
+    use protocol::CompactionStatus;
+    let summary = non_blank(&compaction.summary).map(str::to_owned);
+    match compaction.status {
+        CompactionStatus::Running => Some("Compacting the conversation…".to_owned()),
+        CompactionStatus::Completed => {
+            summary.or_else(|| Some("Compacted the conversation.".to_owned()))
+        }
+        CompactionStatus::Failed => Some(
+            match compaction
+                .error
+                .as_ref()
+                .and_then(|error| non_blank(&error.message).or_else(|| non_blank(&error.kind)))
+            {
+                Some(error) => format!("Compaction failed: {error}"),
+                None => "Compaction failed.".to_owned(),
+            },
+        ),
+        CompactionStatus::Unknown => summary,
+    }
 }
 
 fn segment_from_part(part: &Value) -> Option<Segment> {
@@ -979,7 +1333,7 @@ fn segment_from_part(part: &Value) -> Option<Segment> {
                 .pointer("/state/status")
                 .and_then(Value::as_str)
                 .unwrap_or("pending");
-            let title = tool_title(part)
+            let title = legacy_tool_title(part)
                 .filter(|title| !title.is_empty())
                 .map(|title| format!(" — {title}"))
                 .unwrap_or_default();
@@ -998,74 +1352,6 @@ fn segment_from_part(part: &Value) -> Option<Segment> {
         }
         _ => None,
     }
-}
-
-fn tool_title(part: &Value) -> Option<String> {
-    let raw = part
-        .pointer("/state/title")
-        .or_else(|| part.get("title"))
-        .and_then(Value::as_str)
-        .filter(|t| !t.trim().is_empty())
-        .map(str::to_owned)
-        .or_else(|| {
-            let input = part.pointer("/state/input").or_else(|| part.get("input"))?;
-            let tool = part
-                .get("tool")
-                .or_else(|| part.get("name"))
-                .and_then(Value::as_str)
-                .unwrap_or("");
-            match tool {
-                "bash" => input
-                    .get("command")
-                    .or_else(|| input.get("description"))
-                    .and_then(Value::as_str)
-                    .filter(|c| !c.trim().is_empty())
-                    .map(str::to_owned),
-                "task" => input
-                    .get("description")
-                    .or_else(|| input.get("subagent_type"))
-                    .and_then(Value::as_str)
-                    .filter(|d| !d.trim().is_empty())
-                    .map(str::to_owned),
-                "read" | "write" | "edit" => input
-                    .get("filePath")
-                    .and_then(Value::as_str)
-                    .filter(|p| !p.trim().is_empty())
-                    .map(str::to_owned),
-                "glob" | "grep" => input
-                    .get("pattern")
-                    .and_then(Value::as_str)
-                    .filter(|p| !p.trim().is_empty())
-                    .map(str::to_owned),
-                "webfetch" => input
-                    .get("url")
-                    .and_then(Value::as_str)
-                    .filter(|u| !u.trim().is_empty())
-                    .map(str::to_owned),
-                _ => input
-                    .get("command")
-                    .or_else(|| input.get("description"))
-                    .or_else(|| input.get("filePath"))
-                    .or_else(|| input.get("pattern"))
-                    .or_else(|| input.get("query"))
-                    .or_else(|| input.get("url"))
-                    .and_then(Value::as_str)
-                    .filter(|s| !s.trim().is_empty())
-                    .map(str::to_owned),
-            }
-        })?;
-
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-    let single_line = trimmed
-        .lines()
-        .map(str::trim)
-        .filter(|l| !l.is_empty())
-        .collect::<Vec<_>>()
-        .join(" ");
-    Some(single_line)
 }
 
 fn stream_key(data: &Value, kind: &SegmentKind) -> String {
@@ -1429,25 +1715,6 @@ mod tests {
     #[test]
     fn renders_and_updates_legacy_messages() {
         let mut conversation = Conversation::default();
-        conversation.replace_from_api(
-            &[json!({
-                "info": {
-                    "id": "msg_1",
-                    "sessionID": "ses_1",
-                    "role": "assistant",
-                    "time": { "created": 1 }
-                },
-                "parts": [{
-                    "id": "part_1",
-                    "sessionID": "ses_1",
-                    "messageID": "msg_1",
-                    "type": "text",
-                    "text": "hel"
-                }]
-            })],
-            None,
-        );
-
         assert!(conversation.apply_event(&json!({
             "type": "message.part.updated",
             "properties": {
@@ -1480,139 +1747,401 @@ mod tests {
         assert!(conversation.rendered_rows().is_empty());
     }
 
+    /// A captured `GET /api/session/{id}/message` page, reversed into
+    /// chronological order the way the client does.
+    fn fixture_entries(name: &str) -> Vec<protocol::SessionMessage> {
+        let path = format!(
+            "{}/tests/fixtures/v2-2.0.8/{name}.json",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let text = std::fs::read_to_string(&path).unwrap_or_else(|error| panic!("{path}: {error}"));
+        let exchange: protocol::CapturedExchange = serde_json::from_str(&text).unwrap();
+        let mut page: protocol::MessageListResponse = exchange.decode_body().unwrap();
+        page.data.reverse();
+        page.data
+    }
+
+    fn history(name: &str) -> Conversation {
+        let mut conversation = Conversation::default();
+        conversation.replace_from_api(&fixture_entries(name), None);
+        conversation
+    }
+
+    fn row_values(conversation: &Conversation) -> Vec<Value> {
+        conversation
+            .transcript_rows()
+            .iter()
+            .map(|row| serde_json::from_str(row).unwrap())
+            .collect()
+    }
+
+    fn entries(values: Vec<Value>) -> Vec<protocol::SessionMessage> {
+        values
+            .into_iter()
+            .map(protocol::SessionMessage::from_value)
+            .collect()
+    }
+
     #[test]
     fn transcript_rows_include_image_file_parts() {
-        let mut conversation = Conversation::default();
-        conversation.replace_from_api(
-            &[json!({
-                "info": {
-                    "id": "msg_image",
-                    "sessionID": "ses_1",
-                    "role": "user",
-                    "time": { "created": 1 }
-                },
-                "parts": [{
-                    "id": "part_image",
-                    "sessionID": "ses_1",
-                    "messageID": "msg_image",
-                    "type": "file",
-                    "filename": "clipboard.png",
-                    "mime": "image/png",
-                    "url": "data:image/png;base64,AA=="
-                }]
-            })],
-            None,
-        );
-
-        let row: Value = serde_json::from_str(&conversation.transcript_rows()[0]).unwrap();
-        assert_eq!(row["role"], "YOU");
-        assert_eq!(row["time"], 1);
-        assert_eq!(row["images"], json!(["data:image/png;base64,AA=="]));
+        let conversation = history("session.messages.attachment");
+        let rows = row_values(&conversation);
+        assert_eq!(rows.len(), 2, "idle entries render nothing: {rows:?}");
+        assert_eq!(rows[0]["role"], "YOU");
         assert_eq!(
-            conversation.rendered_rows(),
-            ["YOU\nAttached: clipboard.png (image/png)"]
+            rows[0]["body"],
+            "Describe the attached image. [[scenario:text]]\n\nAttached: pixel.png (image/png)"
         );
+        let image = rows[0]["images"][0].as_str().unwrap();
+        assert!(
+            image.starts_with("data:image/png;base64,iVBORw0KGgo"),
+            "{image}"
+        );
+        assert_eq!(rows[0]["images"].as_array().unwrap().len(), 1);
+        assert_eq!(rows[1]["role"], "AGENT");
+        assert_eq!(rows[1]["body"], "Hello from the mock provider.");
+
+        let other = entries(vec![json!({
+            "id": "msg_u", "type": "user", "time": { "created": 7 }, "text": "",
+            "files": [
+                { "data": "JVBERi0=", "mime": "application/pdf", "source": { "type": "inline" }, "name": "spec.pdf" },
+                { "data": "AA==", "mime": "image/gif", "source": { "type": "inline" } }
+            ]
+        })]);
+        let mut conversation = Conversation::default();
+        conversation.replace_from_api(&other, None);
+        let row = &row_values(&conversation)[0];
+        assert_eq!(
+            row["body"],
+            "Attached: spec.pdf (application/pdf)\n\nAttached: attachment (image/gif)"
+        );
+        assert_eq!(row["images"], json!(["data:image/gif;base64,AA=="]));
+        assert_eq!(row["time"], 7);
     }
 
     #[test]
     fn transcript_rows_split_tool_calls_with_their_own_times() {
+        let entries = fixture_entries("session.messages.tools");
+        let tool_times: Vec<i64> = entries
+            .iter()
+            .filter_map(|entry| match entry {
+                protocol::SessionMessage::Assistant(message) => Some(message),
+                _ => None,
+            })
+            .flat_map(|message| &message.content)
+            .filter_map(|item| match item {
+                protocol::AssistantContent::Tool(tool) => Some(tool.time.created),
+                _ => None,
+            })
+            .collect();
         let mut conversation = Conversation::default();
-        conversation.replace_from_api(
-            &[
-                json!({
-                    "info": {
-                        "id": "msg_user",
-                        "sessionID": "ses_1",
-                        "role": "user",
-                        "time": { "created": 1_704_067_200_000_u64 }
-                    },
-                    "parts": [{
-                        "id": "part_user",
-                        "type": "text",
-                        "text": "run it"
-                    }]
-                }),
-                json!({
-                    "info": {
-                        "id": "msg_assistant",
-                        "sessionID": "ses_1",
-                        "role": "assistant",
-                        "time": { "created": 1_704_067_260_000_u64 }
-                    },
-                    "parts": [
-                        {
-                            "id": "part_text",
-                            "type": "text",
-                            "text": "calling bash"
-                        },
-                        {
-                            "id": "part_tool",
-                            "type": "tool",
-                            "tool": "bash",
-                            "state": {
-                                "status": "completed",
-                                "time": { "start": 1_704_067_261_000_u64 }
-                            }
-                        }
-                    ]
-                }),
-            ],
-            None,
+        conversation.replace_from_api(&entries, None);
+        let rows = row_values(&conversation);
+        let bodies: Vec<_> = rows
+            .iter()
+            .map(|row| row["body"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            bodies,
+            [
+                "Read two things at once. [[scenario:tools]]",
+                "Running two tools at once.",
+                "read · completed — README.md",
+                "glob · completed — **/*.txt",
+                "Both tool calls finished.",
+            ]
+        );
+        assert_eq!(rows[0]["role"], "YOU");
+        assert!(rows[1..].iter().all(|row| row["role"] == "AGENT"));
+        assert_eq!(rows[2]["kind"], "tool");
+        assert_eq!(rows[3]["kind"], "tool");
+        assert_eq!(rows[2]["time"], tool_times[0]);
+        assert_eq!(rows[3]["time"], tool_times[1]);
+        assert_ne!(
+            rows[1]["time"], rows[2]["time"],
+            "text uses the message time"
         );
 
-        let rows: Vec<Value> = conversation
-            .transcript_rows()
+        let keys: Vec<_> = conversation.messages[1]
+            .segments
             .iter()
-            .map(|row| serde_json::from_str(row).unwrap())
+            .map(|segment| segment.key.as_str())
             .collect();
-        assert_eq!(rows.len(), 3);
-        assert_eq!(rows[0]["role"], "YOU");
-        assert_eq!(rows[0]["body"], "run it");
-        assert_eq!(rows[0]["time"], 1_704_067_200_000_u64);
-        assert_eq!(rows[1]["body"], "calling bash");
-        assert_eq!(rows[1]["time"], 1_704_067_260_000_u64);
-        assert_eq!(rows[2]["body"], "bash · completed");
-        assert_eq!(rows[2]["time"], 1_704_067_261_000_u64);
-        assert_eq!(rows[2]["kind"], "tool");
+        assert_eq!(
+            keys,
+            ["text:0", "tool:call_mock_read", "tool:call_mock_glob"]
+        );
     }
 
     #[test]
     fn transcript_rows_split_reasoning_from_replies() {
-        let mut conversation = Conversation::default();
-        conversation.replace_from_api(
-            &[json!({
-                "info": {
-                    "id": "msg_assistant",
-                    "sessionID": "ses_1",
-                    "role": "assistant",
-                    "time": { "created": 2 }
-                },
-                "parts": [
-                    {
-                        "id": "part_reason",
-                        "type": "reasoning",
-                        "text": "think first"
-                    },
-                    {
-                        "id": "part_text",
-                        "type": "text",
-                        "text": "done"
-                    }
-                ]
-            })],
-            None,
+        let conversation = history("session.messages.reasoning");
+        let rows = row_values(&conversation);
+        assert_eq!(rows.len(), 3);
+        assert_eq!(
+            rows[1]["body"],
+            "Reasoning\nLet me think about this carefully."
+        );
+        assert_eq!(rows[1]["kind"], "reasoning");
+        assert_eq!(
+            rows[1]["time"], 1_790_289_087_309_u64,
+            "reasoning time.created"
+        );
+        assert_eq!(rows[2]["body"], "After thinking, the answer is 42.");
+        assert_eq!(rows[2]["kind"], "");
+        let keys: Vec<_> = conversation.messages[1]
+            .segments
+            .iter()
+            .map(|segment| segment.key.as_str())
+            .collect();
+        assert_eq!(keys, ["reasoning:0", "text:0"]);
+    }
+
+    #[test]
+    fn segment_keys_follow_per_kind_ordinals_and_tool_ids() {
+        let conversation = {
+            let mut conversation = Conversation::default();
+            conversation.replace_from_api(
+                &entries(vec![json!({
+                    "id": "msg_a", "type": "assistant", "time": { "created": 1 }, "agent": "build",
+                    "content": [
+                        { "type": "reasoning", "text": "r0" },
+                        { "type": "text", "text": "t0" },
+                        { "type": "tool", "id": "call_1", "name": "shell", "time": { "created": 2 },
+                          "state": { "status": "streaming", "input": "{\"command\":\"ls -la\"}" } },
+                        { "type": "hologram" },
+                        { "type": "reasoning", "text": "r1" },
+                        { "type": "text", "text": "t1" },
+                        { "type": "tool", "id": "call_2", "name": "subagent", "time": { "created": 3 },
+                          "state": { "status": "error", "input": { "description": "Dig in", "agent": "general" },
+                                     "error": { "type": "tool", "message": "child failed" } } }
+                    ]
+                })]),
+                None,
+            );
+            conversation
+        };
+        let segments: Vec<_> = conversation.messages[0]
+            .segments
+            .iter()
+            .map(|segment| (segment.key.as_str(), segment.text.as_str()))
+            .collect();
+        assert_eq!(
+            segments,
+            [
+                ("reasoning:0", "r0"),
+                ("text:0", "t0"),
+                ("tool:call_1", "shell · running — ls -la"),
+                ("reasoning:1", "r1"),
+                ("text:1", "t1"),
+                ("tool:call_2", "subagent · error — Dig in: child failed"),
+            ]
         );
 
-        let rows: Vec<Value> = conversation
-            .transcript_rows()
+        // A live delta keyed by ordinal lands on the history segment.
+        let mut conversation = conversation;
+        assert!(conversation.apply_event(&json!({
+            "type": "session.text.delta",
+            "data": { "sessionID": "ses_1", "assistantMessageID": "msg_a", "ordinal": 1, "delta": "!" }
+        })));
+        assert_eq!(conversation.messages.len(), 1);
+        assert_eq!(conversation.messages[0].segments[4].text, "t1!");
+    }
+
+    #[test]
+    fn captured_scenarios_project_into_sensible_rows() {
+        let expect = |name: &str, expected: &[(&str, &str, &str)]| {
+            let rows = row_values(&history(name));
+            let actual: Vec<_> = rows
+                .iter()
+                .map(|row| {
+                    (
+                        row["role"].as_str().unwrap().to_owned(),
+                        row["kind"].as_str().unwrap().to_owned(),
+                        row["body"].as_str().unwrap().to_owned(),
+                    )
+                })
+                .collect();
+            let expected: Vec<_> = expected
+                .iter()
+                .map(|(role, kind, body)| {
+                    ((*role).to_owned(), (*kind).to_owned(), (*body).to_owned())
+                })
+                .collect();
+            assert_eq!(actual, expected, "{name}");
+        };
+        expect(
+            "session.messages.text",
+            &[
+                ("YOU", "", "Say hello. [[scenario:text]]"),
+                ("AGENT", "", "Hello from the mock provider."),
+            ],
+        );
+        expect(
+            "session.messages.permission",
+            &[
+                ("YOU", "", "Run a shell command. [[scenario:permission]]"),
+                ("AGENT", "tool", "shell · completed — echo permission-probe"),
+                ("AGENT", "", "The shell command completed."),
+            ],
+        );
+        expect(
+            "session.messages.subagent-permission",
+            &[
+                (
+                    "YOU",
+                    "",
+                    "Delegate a shell command. [[scenario:subagent-permission]]",
+                ),
+                (
+                    "AGENT",
+                    "tool",
+                    "subagent · completed — Mock child shell task",
+                ),
+                ("AGENT", "", "The child subagent finished."),
+            ],
+        );
+        expect(
+            "session.messages.error",
+            &[
+                ("YOU", "", "Fail please. [[scenario:error]]"),
+                ("AGENT", "error", "Mock provider exploded"),
+            ],
+        );
+        expect(
+            "session.messages.retry",
+            &[
+                ("YOU", "", "Fail once then recover. [[scenario:retry]]"),
+                ("AGENT", "", "Recovered after a retry."),
+            ],
+        );
+        // The interrupted step fails with `aborted`; only its partial text shows.
+        expect(
+            "session.messages.interrupt",
+            &[
+                ("YOU", "", "Stream slowly. [[scenario:slow]]"),
+                ("AGENT", "", "slow-0 slow-1 slow-2 "),
+            ],
+        );
+
+        // A background subagent completes later as a synthetic entry, which
+        // renders like assistant text.
+        let conversation = history("session.messages.subagent");
+        let rows = row_values(&conversation);
+        assert_eq!(rows.len(), 5, "{rows:?}");
+        assert_eq!(rows[0]["role"], "YOU");
+        assert_eq!(rows[1]["body"], "subagent · completed — Mock child task");
+        assert_eq!(rows[1]["kind"], "tool");
+        assert_eq!(rows[2]["body"], "Launched a background subagent.");
+        assert!(rows[3]["body"]
+            .as_str()
+            .unwrap()
+            .contains("Hello from the child subagent."));
+        assert_eq!(
+            (&rows[3]["role"], &rows[3]["kind"]),
+            (&json!("AGENT"), &json!(""))
+        );
+        assert_eq!(rows[4]["body"], "Hello from the mock provider.");
+        assert!(conversation
+            .messages
             .iter()
-            .map(|row| serde_json::from_str(row).unwrap())
+            .all(|message| message.id.starts_with("msg_")));
+    }
+
+    #[test]
+    fn non_user_entries_render_as_agent_text() {
+        let mut conversation = Conversation::default();
+        conversation.replace_from_api(
+            &entries(vec![
+                json!({ "id": "msg_1", "type": "model-switched", "time": { "created": 1 },
+                        "model": { "id": "gpt-6", "providerID": "openai", "variant": "high" } }),
+                json!({ "id": "msg_2", "type": "agent-switched", "time": { "created": 2 }, "agent": "plan" }),
+                json!({ "id": "msg_3", "type": "location-switched", "time": { "created": 3 },
+                        "location": { "directory": "/work/b" } }),
+                json!({ "id": "msg_4", "type": "system", "time": { "created": 4 },
+                        "text": "<all instructions>", "description": "Instructions updated: AGENTS.md" }),
+                json!({ "id": "msg_5", "type": "skill", "time": { "created": 5 },
+                        "skill": "pdf", "name": "PDF tools", "text": "# Long skill body" }),
+                json!({ "id": "msg_6", "type": "shell", "time": { "created": 6, "completed": 7 },
+                        "shellID": "sh_1", "command": "ls", "status": "exited", "exit": 0,
+                        "output": { "output": "a\nb\n", "cursor": 4, "size": 4, "truncated": false } }),
+                json!({ "id": "msg_7", "type": "shell", "time": { "created": 8 },
+                        "shellID": "sh_2", "command": "sleep 99", "status": "timeout" }),
+                json!({ "id": "msg_8", "type": "compaction", "time": { "created": 9 },
+                        "status": "completed", "summary": "Earlier work summary." }),
+                json!({ "id": "msg_9", "type": "compaction", "time": { "created": 10 }, "status": "running" }),
+                json!({ "id": "msg_10", "type": "compaction", "time": { "created": 11 }, "status": "failed",
+                        "error": { "type": "provider", "message": "too long" } }),
+                json!({ "id": "msg_11", "type": "synthetic", "time": { "created": 12 }, "text": "Continue." }),
+                json!({ "id": "msg_12", "type": "idle", "time": { "created": 13 }, "outcome": "succeeded" }),
+                json!({ "id": "msg_13", "type": "teleported", "time": { "created": 14 }, "text": "Beamed up" }),
+                json!({ "id": "msg_14", "type": "teleported", "time": { "created": 15 } }),
+            ]),
+            None,
+        );
+        let rows = row_values(&conversation);
+        let bodies: Vec<_> = rows
+            .iter()
+            .map(|row| row["body"].as_str().unwrap())
             .collect();
-        assert_eq!(rows.len(), 2);
-        assert_eq!(rows[0]["body"], "Reasoning\nthink first");
-        assert_eq!(rows[0]["kind"], "reasoning");
-        assert_eq!(rows[1]["body"], "done");
-        assert_eq!(rows[1]["kind"], "");
+        assert_eq!(
+            bodies,
+            [
+                "Switched model to openai/gpt-6 (high)",
+                "Switched agent to plan",
+                "Moved to /work/b",
+                "Instructions updated: AGENTS.md",
+                "Skill: PDF tools",
+                "```\n$ ls\na\nb\n```",
+                "```\n$ sleep 99\n```\n\nTimed out",
+                "Earlier work summary.",
+                "Compacting the conversation…",
+                "Compaction failed: too long",
+                "Continue.",
+                "Beamed up",
+            ]
+        );
+        assert!(rows
+            .iter()
+            .all(|row| row["role"] == "AGENT" && row["kind"] == "" && row["images"] == json!([])));
+        assert_eq!(rows[0]["time"], 1);
+        assert_eq!(rows[11]["time"], 14);
+        assert_eq!(conversation.context_tokens(), None);
+    }
+
+    #[test]
+    fn shell_output_fence_outgrows_backticks_inside() {
+        assert_eq!(code_block("a ``` b"), "````\na ``` b\n````");
+        assert_eq!(code_block("plain"), "```\nplain\n```");
+    }
+
+    #[test]
+    fn paged_history_prepends_older_entries_once() {
+        let pages: Vec<_> = (1..=4)
+            .map(|index| fixture_entries(&format!("session.messages.page{index}")))
+            .collect();
+        let mut conversation = Conversation::default();
+        conversation.replace_from_api(&pages[0], Some("c1".into()));
+        for (index, page) in pages.iter().enumerate().skip(1) {
+            conversation.prepend_from_api(page, Some(format!("c{}", index + 1)));
+        }
+        conversation.prepend_from_api(&pages[1], None);
+        assert_eq!(conversation.next_cursor, None);
+        let rows = row_values(&conversation);
+        let users: Vec<_> = rows
+            .iter()
+            .filter(|row| row["role"] == "YOU")
+            .map(|row| row["body"].as_str().unwrap().to_owned())
+            .collect();
+        assert_eq!(users.len(), 4, "{users:?}");
+        let mut sorted = users.clone();
+        sorted.sort();
+        assert_eq!(users, sorted, "oldest turn first: {users:?}");
+        let times: Vec<_> = rows
+            .iter()
+            .map(|row| row["time"].as_u64().unwrap())
+            .collect();
+        assert!(times.windows(2).all(|pair| pair[0] <= pair[1]), "{times:?}");
     }
 
     #[test]
@@ -1721,39 +2250,17 @@ mod tests {
     fn context_usage_uses_the_latest_assistant_window_tokens() {
         let mut conversation = Conversation::default();
         conversation.replace_from_api(
-            &[
-                json!({
-                    "info": {
-                        "id": "msg_user",
-                        "role": "user",
-                        "time": { "created": 1 }
-                    },
-                    "parts": []
-                }),
-                json!({
-                    "info": {
-                        "id": "msg_old",
-                        "role": "assistant",
-                        "time": { "created": 2 },
-                        "tokens": { "input": 800 }
-                    },
-                    "parts": []
-                }),
-                json!({
-                    "info": {
-                        "id": "msg_new",
-                        "role": "assistant",
-                        "time": { "created": 3 },
-                        "tokens": {
-                            "input": 124,
-                            "output": 40,
-                            "reasoning": 10,
-                            "cache": { "read": 48000, "write": 200 }
-                        }
-                    },
-                    "parts": []
-                }),
-            ],
+            &entries(vec![
+                json!({ "id": "msg_user", "type": "user", "time": { "created": 1 }, "text": "hi" }),
+                json!({ "id": "msg_old", "type": "assistant", "time": { "created": 2 }, "agent": "build",
+                        "content": [], "tokens": { "input": 800, "output": 0, "reasoning": 0, "cache": { "read": 0, "write": 0 } } }),
+                json!({ "id": "msg_new", "type": "assistant", "time": { "created": 3 }, "agent": "build",
+                        "content": [], "tokens": { "input": 124, "output": 40, "reasoning": 10.4, "cache": { "read": 48000, "write": 200 } } }),
+                json!({ "id": "msg_streaming", "type": "assistant", "time": { "created": 4 }, "agent": "build", "content": [] }),
+                json!({ "id": "msg_idle", "type": "idle", "time": { "created": 5 }, "outcome": "succeeded" }),
+                json!({ "id": "msg_switch", "type": "model-switched", "time": { "created": 6 },
+                        "model": { "id": "m", "providerID": "p" } }),
+            ]),
             None,
         );
         assert_eq!(conversation.context_tokens(), Some(48_374));
@@ -1773,6 +2280,7 @@ mod tests {
             }
         })));
         assert_eq!(conversation.context_tokens(), Some(50_250));
+        assert_eq!(history("session.messages.long").context_tokens(), Some(342));
     }
 
     #[test]
@@ -1785,22 +2293,83 @@ mod tests {
 
     #[test]
     fn running_tool_extracts_command_from_input() {
-        let part = json!({
-            "id": "prt_1",
+        let tool: protocol::ToolCall = serde_json::from_value(json!({
             "type": "tool",
-            "tool": "bash",
+            "id": "call_1",
+            "name": "shell",
+            "time": { "created": 5 },
             "state": {
                 "status": "running",
                 "input": {
-                    "command": "pnpm exec playwright test e2e/tests/desktop/apps20-ad-resizer.spec.ts"
-                }
+                    "command": "pnpm exec playwright test\n  e2e/tests/desktop/apps20-ad-resizer.spec.ts",
+                    "description": "Run the resizer spec"
+                },
+                "metadata": {}
             }
-        });
-        let segment = segment_from_part(&part).expect("valid segment");
+        }))
+        .unwrap();
+        let segment = tool_segment(&tool);
         assert_eq!(
             segment.text,
-            "bash · running — pnpm exec playwright test e2e/tests/desktop/apps20-ad-resizer.spec.ts"
+            "shell · running — pnpm exec playwright test e2e/tests/desktop/apps20-ad-resizer.spec.ts"
         );
+        assert_eq!((segment.key.as_str(), segment.created), ("tool:call_1", 5));
+    }
+
+    #[test]
+    fn tool_titles_follow_the_v2_tool_inputs() {
+        let title = |name: &str, input: Value| tool_title(name, input.as_object().unwrap());
+        assert_eq!(
+            title("shell", json!({ "description": "d" })).as_deref(),
+            Some("d")
+        );
+        assert_eq!(
+            title(
+                "subagent",
+                json!({ "agent": "general", "description": "Mock task", "prompt": "p" })
+            )
+            .as_deref(),
+            Some("Mock task")
+        );
+        for name in ["read", "write", "edit"] {
+            assert_eq!(
+                title(name, json!({ "path": "src/a.rs" })).as_deref(),
+                Some("src/a.rs")
+            );
+        }
+        assert_eq!(
+            title("grep", json!({ "pattern": "fn main", "path": "src" })).as_deref(),
+            Some("fn main")
+        );
+        assert_eq!(
+            title("glob", json!({ "pattern": "**/*.rs" })).as_deref(),
+            Some("**/*.rs")
+        );
+        assert_eq!(
+            title(
+                "webfetch",
+                json!({ "url": "https://x.dev", "format": "markdown" })
+            )
+            .as_deref(),
+            Some("https://x.dev")
+        );
+        assert_eq!(
+            title("websearch", json!({ "query": "gtk4" })).as_deref(),
+            Some("gtk4")
+        );
+        assert_eq!(
+            title("skill", json!({ "id": "pdf" })).as_deref(),
+            Some("pdf")
+        );
+        assert_eq!(
+            title("kagi_search", json!({ "query": "rust" })).as_deref(),
+            Some("rust")
+        );
+        assert_eq!(
+            title("patch", json!({ "patchText": "*** Begin Patch" })),
+            None
+        );
+        assert_eq!(title("shell", json!({ "command": "  " })), None);
     }
 
     fn session_info(value: Value) -> protocol::SessionInfo {

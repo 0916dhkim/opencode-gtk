@@ -14,7 +14,10 @@ use gtk::{gdk, gio, glib, pango, prelude::*};
 use serde::Deserialize;
 
 use crate::{
-    api::{ApiConfig, ApiHandle, Bootstrap, Command, MessagePage, ServerEnvelope, UiEvent},
+    api::{
+        ApiConfig, ApiHandle, Bootstrap, Command, MessageLoadError, MessagePage, ServerEnvelope,
+        UiEvent,
+    },
     credentials::{self, CloudflareAccessCredentials},
     markdown,
     model::{
@@ -2574,8 +2577,7 @@ impl Controller {
                                 this.replacing_messages.insert(session.id.clone());
                                 commands.push(Command::LoadMessages {
                                     session_id: session.id,
-                                    directory: session.directory,
-                                    before: None,
+                                    cursor: None,
                                 });
                             }
                             let model_directories: HashSet<_> = this
@@ -2637,9 +2639,9 @@ impl Controller {
             },
             UiEvent::MessagesLoaded {
                 session_id,
-                before,
+                cursor,
                 result,
-            } => Self::apply_messages(controller, session_id, before, result),
+            } => Self::apply_messages(controller, session_id, cursor, result),
             UiEvent::ModelsLoaded { directory, result } => {
                 let mut this = controller.borrow_mut();
                 this.state.loading_models.remove(&directory);
@@ -3073,9 +3075,13 @@ impl Controller {
     fn apply_messages(
         controller: &Rc<RefCell<Self>>,
         session_id: String,
-        before: Option<String>,
-        result: Result<MessagePage, String>,
+        cursor: Option<String>,
+        result: Result<MessagePage, MessageLoadError>,
     ) {
+        if matches!(result, Err(MessageLoadError::SessionNotFound)) {
+            Self::drop_unknown_session(controller, &session_id);
+            return;
+        }
         let mut this = controller.borrow_mut();
         this.state.loading_messages.remove(&session_id);
         this.replacing_messages.remove(&session_id);
@@ -3095,7 +3101,7 @@ impl Controller {
                     .conversations
                     .entry(session_id.clone())
                     .or_default();
-                if before.is_some() {
+                if cursor.is_some() {
                     conversation.prepend_from_api(&page.messages, page.next_cursor);
                 } else {
                     conversation.replace_from_api(&page.messages, page.next_cursor);
@@ -3104,7 +3110,7 @@ impl Controller {
                     conversation.apply_event(&event);
                 }
                 if this.state.active.as_deref() == Some(session_id.as_str()) {
-                    this.refresh_transcript(if before.is_some() {
+                    this.refresh_transcript(if cursor.is_some() {
                         TranscriptUpdate::Prepend
                     } else {
                         TranscriptUpdate::Content
@@ -3113,7 +3119,8 @@ impl Controller {
                 }
             }
             Err(error) => {
-                if before.is_none() {
+                let error = error.to_string();
+                if cursor.is_none() {
                     this.message_load_errors
                         .insert(session_id.clone(), error.clone());
                 }
@@ -3139,9 +3146,24 @@ impl Controller {
             drop(this);
             api.send(Command::LoadMessages {
                 session_id: session.id,
-                directory: session.directory,
-                before: None,
+                cursor: None,
             });
+        }
+    }
+
+    /// The server does not know this session, typically a saved v1 tab on the
+    /// first v2 connection (R2.8): forget it without an error or a retry loop.
+    fn drop_unknown_session(controller: &Rc<RefCell<Self>>, session_id: &str) {
+        let active = {
+            let mut this = controller.borrow_mut();
+            let was_active = this.state.active.as_deref() == Some(session_id);
+            this.remove_session(session_id);
+            this.persist_state();
+            was_active.then(|| this.state.active.clone()).flatten()
+        };
+        Self::refresh_all(controller);
+        if let Some(active) = active {
+            Self::activate_tab(controller, &active);
         }
     }
 
@@ -3704,8 +3726,7 @@ impl Controller {
         if let Some(session) = load_messages {
             this.api.send(Command::LoadMessages {
                 session_id: session.id,
-                directory: session.directory,
-                before: None,
+                cursor: None,
             });
         }
         if let Some(session) = load_models {
@@ -4983,10 +5004,10 @@ impl Controller {
             let Some(active) = this.state.active.clone() else {
                 return;
             };
-            let Some(session) = this.session(&active).cloned() else {
+            if this.session(&active).is_none() {
                 return;
-            };
-            let Some(before) = this
+            }
+            let Some(cursor) = this
                 .state
                 .conversations
                 .get(&active)
@@ -5000,8 +5021,7 @@ impl Controller {
             this.refresh_transcript(TranscriptUpdate::Content);
             Command::LoadMessages {
                 session_id: active,
-                directory: session.directory,
-                before: Some(before),
+                cursor: Some(cursor),
             }
         };
         controller.borrow().api.send(command);

@@ -39,7 +39,8 @@ pub fn server_state() -> ServerState {
 
 pub struct State {
     sessions: Vec<Session>,
-    messages: HashMap<String, Vec<Value>>,
+    /// v2 message-list entries per session, oldest first.
+    messages: HashMap<String, Vec<protocol::SessionMessage>>,
     next_id: u64,
 }
 
@@ -58,12 +59,10 @@ impl State {
     pub fn handle(&mut self, command: Command) -> UiEvent {
         match command {
             Command::Bootstrap => UiEvent::Bootstrap(Ok(self.bootstrap())),
-            Command::LoadMessages {
-                session_id, before, ..
-            } => UiEvent::MessagesLoaded {
-                result: Ok(self.message_page(&session_id, before.as_deref())),
+            Command::LoadMessages { session_id, cursor } => UiEvent::MessagesLoaded {
+                result: Ok(self.message_page(&session_id, cursor.as_deref())),
                 session_id,
-                before,
+                cursor,
             },
             Command::LoadModels { directory } => UiEvent::ModelsLoaded {
                 directory,
@@ -145,8 +144,10 @@ impl State {
         }
     }
 
-    fn message_page(&self, session_id: &str, before: Option<&str>) -> MessagePage {
-        if before.is_some() {
+    /// History as the client presents it: the whole canned transcript is one
+    /// chronological page, so there is never an older page.
+    fn message_page(&self, session_id: &str, cursor: Option<&str>) -> MessagePage {
+        if cursor.is_some() {
             return MessagePage {
                 messages: Vec::new(),
                 next_cursor: None,
@@ -186,13 +187,12 @@ impl State {
     fn append_user_message(&mut self, session_id: &str, text: String) {
         let id = format!("msg_user_{}", self.next_id);
         self.next_id += 1;
-        let message = text_message(
-            &id,
-            session_id,
-            "user",
-            CREATED + self.next_id * 1_000,
-            &text,
-        );
+        let message = entry(json!({
+            "id": id,
+            "type": "user",
+            "time": { "created": CREATED + self.next_id * 1_000 },
+            "text": text
+        }));
         self.messages
             .entry(session_id.to_owned())
             .or_default()
@@ -273,105 +273,102 @@ fn other_session() -> Session {
     )
 }
 
-fn active_messages() -> Vec<Value> {
+fn entry(value: Value) -> protocol::SessionMessage {
+    let message = protocol::SessionMessage::from_value(value);
+    assert!(
+        !matches!(message, protocol::SessionMessage::Unknown(_)),
+        "canned preview entry matches the v2 protocol: {message:?}"
+    );
+    message
+}
+
+fn user_text(id: &str, created: u64, text: &str) -> protocol::SessionMessage {
+    entry(json!({ "id": id, "type": "user", "time": { "created": created }, "text": text }))
+}
+
+fn idle(id: &str, created: u64) -> protocol::SessionMessage {
+    entry(
+        json!({ "id": id, "type": "idle", "time": { "created": created }, "outcome": "succeeded" }),
+    )
+}
+
+fn active_messages() -> Vec<protocol::SessionMessage> {
     vec![
-        text_message(
+        user_text(
             "msg_user",
-            ACTIVE_ID,
-            "user",
             CREATED,
             "The paperclip is crowding the attach button. Match send's padding.",
         ),
-        json!({
-            "info": {
-                "id": "msg_assistant",
-                "sessionID": ACTIVE_ID,
-                "role": "assistant",
-                "time": { "created": CREATED + 30_000 },
-                "tokens": { "input": 12400, "output": 800, "reasoning": 200, "cache": { "read": 0, "write": 0 } }
-            },
-            "parts": [
+        entry(json!({
+            "id": "msg_assistant",
+            "type": "assistant",
+            "time": { "created": CREATED + 30_000, "completed": CREATED + 50_000 },
+            "agent": "build",
+            "model": { "id": "gpt-5.6", "providerID": "openai" },
+            "content": [
                 {
-                    "id": "part_reason",
-                    "messageID": "msg_assistant",
-                    "sessionID": ACTIVE_ID,
                     "type": "reasoning",
-                    "text": "The clip is a tall outline, so it reads larger than the paper plane at the same pixel size."
+                    "text": "The clip is a tall outline, so it reads larger than the paper plane at the same pixel size.",
+                    "time": { "created": CREATED + 31_000, "completed": CREATED + 33_000 }
                 },
                 {
-                    "id": "part_text",
-                    "messageID": "msg_assistant",
-                    "sessionID": ACTIVE_ID,
                     "type": "text",
                     "text": "# Padding\n\nDraw the clip at **22px**, same as send.\n\n- Inner wire stays visible\n- Composer actions stay `34×32`\n\n```rust\npaperclip_icon(COMPOSER_ICON_PX)\n```"
                 },
                 {
-                    "id": "part_tool",
-                    "messageID": "msg_assistant",
-                    "sessionID": ACTIVE_ID,
                     "type": "tool",
-                    "tool": "bash",
+                    "id": "call_preview_shell",
+                    "name": "shell",
                     "state": {
                         "status": "completed",
-                        "time": { "start": CREATED + 45_000 }
-                    }
+                        "input": { "command": "cargo test composer", "description": "Run composer tests" },
+                        "content": [{ "type": "text", "text": "test result: ok. 12 passed" }]
+                    },
+                    "time": { "created": CREATED + 45_000, "ran": CREATED + 45_100, "completed": CREATED + 48_000 }
                 }
-            ]
-        }),
+            ],
+            "finish": "stop",
+            "tokens": { "input": 12400, "output": 800, "reasoning": 200, "cache": { "read": 0, "write": 0 } }
+        })),
+        idle("msg_idle", CREATED + 50_000),
     ]
 }
 
-fn other_messages() -> Vec<Value> {
+fn other_messages() -> Vec<protocol::SessionMessage> {
     vec![
-        text_message(
+        user_text(
             "msg_other_user",
-            OTHER_ID,
-            "user",
             CREATED - 86_400_000,
             "How do I reach the remote serve over SSH?",
         ),
-        text_message(
-            "msg_other_assistant",
-            OTHER_ID,
-            "assistant",
-            CREATED - 86_370_000,
-            "Tunnel loopback: `ssh -N -L 4096:127.0.0.1:4096 host`, then connect to `http://127.0.0.1:4096`.",
-        ),
-        json!({
-            "info": {
-                "id": "msg_other_error",
-                "sessionID": OTHER_ID,
-                "role": "assistant",
-                "time": { "created": CREATED - 86_300_000 },
-                "error": {
-                    "name": "APIError",
-                    "data": {
-                        "message": "AI_APICallError: Not Found (404)",
-                        "statusCode": 404
-                    }
-                }
-            },
-            "parts": []
-        }),
+        entry(json!({
+            "id": "msg_other_assistant",
+            "type": "assistant",
+            "time": { "created": CREATED - 86_370_000 },
+            "agent": "build",
+            "content": [{
+                "type": "text",
+                "text": "Tunnel loopback: `ssh -N -L 4096:127.0.0.1:4096 host`, then connect to `http://127.0.0.1:4096`."
+            }]
+        })),
+        entry(json!({
+            "id": "msg_other_synthetic",
+            "type": "synthetic",
+            "time": { "created": CREATED - 86_340_000 },
+            "text": "The background subagent finished: port 4096 is reachable through the tunnel.",
+            "description": "Check the tunnel",
+            "metadata": { "source": "subagent", "state": "completed" }
+        })),
+        entry(json!({
+            "id": "msg_other_error",
+            "type": "assistant",
+            "time": { "created": CREATED - 86_300_000 },
+            "agent": "build",
+            "content": [],
+            "finish": "error",
+            "error": { "type": "provider.api", "message": "AI_APICallError: Not Found (404)", "status": 404 }
+        })),
     ]
-}
-
-fn text_message(id: &str, session_id: &str, role: &str, created: u64, text: &str) -> Value {
-    json!({
-        "info": {
-            "id": id,
-            "sessionID": session_id,
-            "role": role,
-            "time": { "created": created }
-        },
-        "parts": [{
-            "id": format!("part_{id}"),
-            "messageID": id,
-            "sessionID": session_id,
-            "type": "text",
-            "text": text
-        }]
-    })
 }
 
 #[cfg(test)]
@@ -388,19 +385,47 @@ mod tests {
         assert!(catalog().models[0].supports_attachments);
     }
 
-    #[test]
-    fn canned_messages_render_as_transcript_rows() {
+    fn render(messages: &[protocol::SessionMessage]) -> Vec<Value> {
         let mut conversation = Conversation::default();
-        conversation.replace_from_api(&active_messages(), None);
-        let rows: Vec<Value> = conversation
+        conversation.replace_from_api(messages, None);
+        conversation
             .transcript_rows()
             .iter()
             .map(|row| serde_json::from_str(row).unwrap())
-            .collect();
+            .collect()
+    }
+
+    #[test]
+    fn canned_messages_render_as_transcript_rows() {
+        let rows = render(&active_messages());
+        assert_eq!(rows.len(), 4, "the idle entry renders nothing");
         assert_eq!(rows[0]["role"], "YOU");
         assert_eq!(rows[1]["kind"], "reasoning");
+        assert_eq!(rows[1]["time"], CREATED + 31_000);
         assert!(rows[2]["body"].as_str().unwrap().contains("22px"));
         assert_eq!(rows[3]["kind"], "tool");
+        assert_eq!(rows[3]["body"], "shell · completed — cargo test composer");
+        assert_eq!(rows[3]["time"], CREATED + 45_000);
+
+        let rows = render(&other_messages());
+        let kinds: Vec<_> = rows
+            .iter()
+            .map(|row| (row["role"].as_str().unwrap(), row["kind"].as_str().unwrap()))
+            .collect();
+        assert_eq!(
+            kinds,
+            [
+                ("YOU", ""),
+                ("AGENT", ""),
+                ("AGENT", ""),
+                ("AGENT", "error")
+            ]
+        );
+        assert!(rows[2]["body"]
+            .as_str()
+            .unwrap()
+            .starts_with("The background subagent"));
+        assert_eq!(rows[3]["body"], "AI_APICallError: Not Found (404)");
     }
 
     #[test]
