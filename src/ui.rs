@@ -15,8 +15,8 @@ use serde::Deserialize;
 
 use crate::{
     api::{
-        ApiConfig, ApiHandle, Bootstrap, Command, MessageLoadError, MessagePage, ServerEnvelope,
-        UiEvent,
+        self, ApiConfig, ApiHandle, Bootstrap, Command, MessageLoadError, MessagePage,
+        ServerEnvelope, UiEvent,
     },
     credentials::{self, CloudflareAccessCredentials},
     markdown,
@@ -26,6 +26,7 @@ use crate::{
         ModelSelection, Project, RunStatus, Session, SessionChange, SessionModel, SessionTime,
     },
     persist::{default_path, ConnectionSettings, PersistedState, PersistedTab, ServerState},
+    protocol,
 };
 
 const STREAM_FRAME: Duration = Duration::from_millis(33);
@@ -49,7 +50,7 @@ const ICON_CONNECTION: &str = "opencode-connection-symbolic";
 const ICON_SEARCH: &str = "opencode-search-symbolic";
 const COMPOSER_ICON_PX: i32 = 22;
 const BOTTOM_EPSILON: f64 = 2.0;
-const MAX_INLINE_IMAGE_BYTES: usize = 25 * 1024 * 1024;
+const MAX_INLINE_IMAGE_BYTES: usize = protocol::MAX_ATTACHMENT_BYTES;
 const ROW_ESTIMATE: i32 = 88;
 const ROW_MIN_HEIGHT: i32 = 24;
 const ROW_OVERSCAN: usize = 4;
@@ -112,18 +113,34 @@ struct TranscriptVisible {
 struct Draft {
     text: String,
     attachments: Vec<PathBuf>,
+    /// Set when a failed prompt was restored as this whole draft.
+    failed: Option<FailedPrompt>,
 }
 
+/// A send that failed, possibly after the server admitted it. Resending the
+/// same content reuses its `id`, which the server treats as the same prompt.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct FailedPrompt {
+    message_id: String,
+    text: String,
+    attachments: Vec<PathBuf>,
+}
+
+/// A prompt whose `POST .../prompt` has not been answered yet. It owns the
+/// draft (and its clipboard files) so a failed send can restore it.
 #[derive(Clone, Debug)]
 struct PendingPrompt {
     request_id: u64,
+    message_id: String,
     draft: Draft,
 }
 
+/// The local YOU row shown until the conversation holds the user message
+/// whose ID is the prompt `id`.
 #[derive(Clone, Debug)]
 struct OptimisticPrompt {
     row: String,
-    baseline_you: usize,
+    message_id: String,
 }
 
 #[derive(Clone)]
@@ -169,6 +186,11 @@ struct State {
     unread: HashSet<String>,
     drafts: HashMap<String, Draft>,
     pending_prompts: HashMap<String, PendingPrompt>,
+    /// Attachments of prompts dropped from `pending_prompts` while their send
+    /// was still in flight, by request ID. The API worker reads the files
+    /// while sending, so clipboard files are deleted only once that request
+    /// reports back (`PromptAccepted`).
+    detached_attachments: HashMap<u64, Vec<PathBuf>>,
     optimistic_prompts: HashMap<String, OptimisticPrompt>,
     server_busy: HashSet<String>,
     abort_requested: HashSet<String>,
@@ -177,6 +199,25 @@ struct State {
 }
 
 impl State {
+    /// Stops tracking the session's in-flight prompt, so its reply is
+    /// ignored. Its files stay on disk until the worker reports back.
+    fn detach_pending_prompt(&mut self, session_id: &str) {
+        if let Some(pending) = self.pending_prompts.remove(session_id) {
+            if !pending.draft.attachments.is_empty() {
+                self.detached_attachments
+                    .insert(pending.request_id, pending.draft.attachments);
+            }
+        }
+    }
+
+    /// Drops the session's draft, deleting its clipboard files. Drafts are
+    /// never being sent: sending moves the attachments into the pending prompt.
+    fn remove_draft(&mut self, session_id: &str) {
+        if let Some(draft) = self.drafts.remove(session_id) {
+            remove_clipboard_attachments(&draft.attachments);
+        }
+    }
+
     /// The model shown for a session; see [`displayed_model`].
     fn displayed_model(&self, session_id: &str) -> Option<ModelSelection> {
         let session = self
@@ -1789,14 +1830,10 @@ fn remove_clipboard_attachment(path: &PathBuf) {
     let _ = fs::remove_dir(clipboard_attachment_dir());
 }
 
-fn remove_pending_clipboard_attachments(pending: Option<PendingPrompt>) {
-    if let Some(pending) = pending {
-        pending
-            .draft
-            .attachments
-            .iter()
-            .for_each(remove_clipboard_attachment);
-    }
+/// Only files in the clipboard directory are deleted; picked files are the
+/// user's own.
+fn remove_clipboard_attachments(paths: &[PathBuf]) {
+    paths.iter().for_each(remove_clipboard_attachment);
 }
 
 fn wire_callbacks(controller: &Rc<RefCell<Controller>>) {
@@ -2854,6 +2891,10 @@ impl Controller {
             } => {
                 let command = {
                     let mut this = controller.borrow_mut();
+                    // The worker has finished reading this request's files.
+                    if let Some(paths) = this.state.detached_attachments.remove(&request_id) {
+                        remove_clipboard_attachments(&paths);
+                    }
                     let current = this
                         .state
                         .pending_prompts
@@ -2864,9 +2905,9 @@ impl Controller {
                     }
                     match result {
                         Ok(()) => {
-                            remove_pending_clipboard_attachments(
-                                this.state.pending_prompts.remove(&session_id),
-                            );
+                            if let Some(pending) = this.state.pending_prompts.remove(&session_id) {
+                                remove_clipboard_attachments(&pending.draft.attachments);
+                            }
                             this.state.abort_requested.remove(&session_id).then(|| {
                                 this.session(&session_id).map(|session| Command::Abort {
                                     session_id: session_id.clone(),
@@ -2883,20 +2924,10 @@ impl Controller {
                                 .state
                                 .pending_prompts
                                 .remove(&session_id)
-                                .expect("matching pending prompt")
-                                .draft;
+                                .expect("matching pending prompt");
                             this.state.optimistic_prompts.remove(&session_id);
                             let draft = this.state.drafts.entry(session_id.clone()).or_default();
-                            if draft.text.trim().is_empty() {
-                                draft.text = pending.text;
-                            } else if !pending.text.trim().is_empty() {
-                                draft.text = format!("{}\n\n{}", pending.text, draft.text);
-                            }
-                            for attachment in pending.attachments.into_iter().rev() {
-                                if !draft.attachments.contains(&attachment) {
-                                    draft.attachments.insert(0, attachment);
-                                }
-                            }
+                            restore_failed_prompt(draft, pending);
                             this.show_error(&error);
                             if this.state.active.as_deref() == Some(session_id.as_str()) {
                                 this.refresh_composer();
@@ -3064,9 +3095,7 @@ impl Controller {
                 match status {
                     RunStatus::Busy | RunStatus::Retry { .. } => {
                         this.state.server_busy.insert(session_id.clone());
-                        remove_pending_clipboard_attachments(
-                            this.state.pending_prompts.remove(&session_id),
-                        );
+                        this.state.detach_pending_prompt(&session_id);
                         if this.state.abort_requested.remove(&session_id) {
                             if let Some(session) = this.session(&session_id) {
                                 api_commands.push(Command::Abort {
@@ -3078,9 +3107,7 @@ impl Controller {
                     }
                     RunStatus::Idle => {
                         this.state.server_busy.remove(&session_id);
-                        remove_pending_clipboard_attachments(
-                            this.state.pending_prompts.remove(&session_id),
-                        );
+                        this.state.detach_pending_prompt(&session_id);
                         this.state.abort_requested.remove(&session_id);
                     }
                 }
@@ -3133,10 +3160,18 @@ impl Controller {
                 this.state.tabs.retain(|id| known.contains(id));
                 this.state.conversations.retain(|id, _| known.contains(id));
                 this.state.model_switches.retain(|id, _| known.contains(id));
-                this.state.drafts.retain(|id, _| known.contains(id));
-                this.state
-                    .pending_prompts
-                    .retain(|id, _| known.contains(id));
+                let unknown: HashSet<_> = this
+                    .state
+                    .drafts
+                    .keys()
+                    .chain(this.state.pending_prompts.keys())
+                    .filter(|id| !known.contains(*id))
+                    .cloned()
+                    .collect();
+                for id in unknown {
+                    this.state.remove_draft(&id);
+                    this.state.detach_pending_prompt(&id);
+                }
                 this.state
                     .optimistic_prompts
                     .retain(|id, _| known.contains(id));
@@ -3493,7 +3528,7 @@ impl Controller {
         match &status {
             RunStatus::Busy | RunStatus::Retry { .. } => {
                 self.state.server_busy.insert(session_id.clone());
-                self.state.pending_prompts.remove(&session_id);
+                self.state.detach_pending_prompt(&session_id);
                 if self.state.abort_requested.remove(&session_id) {
                     if let Some(session) = self.session(&session_id) {
                         effects.api_commands.push(Command::Abort {
@@ -3507,9 +3542,7 @@ impl Controller {
                 self.state.server_busy.remove(&session_id);
                 self.state.abort_requested.remove(&session_id);
                 self.state.optimistic_prompts.remove(&session_id);
-                remove_pending_clipboard_attachments(
-                    self.state.pending_prompts.remove(&session_id),
-                );
+                self.state.detach_pending_prompt(&session_id);
             }
         }
         let previous = self.state.statuses.get(&session_id).cloned();
@@ -4583,7 +4616,8 @@ impl Controller {
             .unwrap_or_default();
         if let Some(session_id) = active.as_ref() {
             let optimistic = self.state.optimistic_prompts.get(session_id);
-            let (next, superseded) = apply_optimistic_row(rows, optimistic);
+            let conversation = self.state.conversations.get(session_id);
+            let (next, superseded) = apply_optimistic_row(rows, optimistic, conversation);
             rows = next;
             if superseded {
                 self.state.optimistic_prompts.remove(session_id);
@@ -5159,36 +5193,33 @@ impl Controller {
                     this.show_error("The selected model does not accept attachments");
                     return;
                 }
+                if let Err(error) = api::check_attachments(&draft.attachments) {
+                    this.show_error(&format!("{error:#}"));
+                    return;
+                }
+                let message_id = prompt_id_for(draft);
                 let pending = std::mem::take(draft);
                 this.next_prompt_request_id += 1;
                 let request_id = this.next_prompt_request_id;
                 let command = Command::SendPrompt {
                     request_id,
+                    message_id: message_id.clone(),
                     session_id: active.clone(),
-                    directory: session.directory,
                     text: pending.text.clone(),
                     attachments: pending.attachments.clone(),
                 };
-                let baseline_you = this
-                    .state
-                    .conversations
-                    .get(&active)
-                    .map(Conversation::transcript_rows)
-                    .unwrap_or_default()
-                    .iter()
-                    .filter(|row| transcript_row_is_user(row))
-                    .count();
                 this.state.optimistic_prompts.insert(
                     active.clone(),
                     OptimisticPrompt {
                         row: optimistic_transcript_row(&pending, unix_millis()),
-                        baseline_you,
+                        message_id: message_id.clone(),
                     },
                 );
                 this.state.pending_prompts.insert(
                     active.clone(),
                     PendingPrompt {
                         request_id,
+                        message_id,
                         draft: pending,
                     },
                 );
@@ -7290,8 +7321,8 @@ impl Controller {
         self.clear_session_unread(id);
         self.state.server_busy.remove(id);
         self.state.abort_requested.remove(id);
-        self.state.drafts.remove(id);
-        self.state.pending_prompts.remove(id);
+        self.state.remove_draft(id);
+        self.state.detach_pending_prompt(id);
         self.state.optimistic_prompts.remove(id);
         self.message_load_errors.remove(id);
         if self.state.active.as_deref() == Some(id) {
@@ -7813,22 +7844,62 @@ fn unix_millis() -> u64 {
         .unwrap_or(0)
 }
 
+/// Puts a failed prompt back into the composer, ahead of anything typed
+/// since. Only a prompt restored as the whole draft keeps its `id`.
+fn restore_failed_prompt(draft: &mut Draft, pending: PendingPrompt) {
+    let PendingPrompt {
+        message_id,
+        draft: sent,
+        ..
+    } = pending;
+    let whole = draft.text.trim().is_empty() && draft.attachments.is_empty();
+    draft.failed = whole.then(|| FailedPrompt {
+        message_id,
+        text: sent.text.clone(),
+        attachments: sent.attachments.clone(),
+    });
+    if draft.text.trim().is_empty() {
+        draft.text = sent.text;
+    } else if !sent.text.trim().is_empty() {
+        draft.text = format!("{}\n\n{}", sent.text, draft.text);
+    }
+    for attachment in sent.attachments.into_iter().rev() {
+        if !draft.attachments.contains(&attachment) {
+            draft.attachments.insert(0, attachment);
+        }
+    }
+}
+
+/// A fresh prompt `id`, or the failed send's `id` when the draft still holds
+/// exactly that prompt: the server then returns the already-admitted prompt
+/// instead of queueing a duplicate.
+fn prompt_id_for(draft: &mut Draft) -> String {
+    draft
+        .failed
+        .take()
+        .filter(|failed| failed.text == draft.text && failed.attachments == draft.attachments)
+        .map(|failed| failed.message_id)
+        .unwrap_or_else(protocol::new_message_id)
+}
+
 fn transcript_row_is_user(row: &str) -> bool {
     serde_json::from_str::<TranscriptRow>(row).is_ok_and(|row| row.role == "YOU")
 }
 
+/// Appends the optimistic row to `rows` (the conversation's rows) until the
+/// conversation holds the user message with the prompt's `id`. Returns
+/// whether that message has arrived, superseding the optimistic row.
 fn apply_optimistic_row(
     mut rows: Vec<String>,
     optimistic: Option<&OptimisticPrompt>,
+    conversation: Option<&Conversation>,
 ) -> (Vec<String>, bool) {
     let Some(optimistic) = optimistic else {
         return (rows, false);
     };
-    let you = rows
-        .iter()
-        .filter(|row| transcript_row_is_user(row))
-        .count();
-    if you > optimistic.baseline_you {
+    if conversation
+        .is_some_and(|conversation| conversation.has_user_message(&optimistic.message_id))
+    {
         (rows, true)
     } else {
         rows.push(optimistic.row.clone());
@@ -9242,73 +9313,168 @@ mod tests {
         assert!(!bounds[1].user);
     }
 
+    fn draft(text: &str) -> Draft {
+        Draft {
+            text: text.into(),
+            ..Draft::default()
+        }
+    }
+
+    fn conversation(entries: &[serde_json::Value]) -> Conversation {
+        let entries: Vec<_> = entries
+            .iter()
+            .cloned()
+            .map(protocol::SessionMessage::from_value)
+            .collect();
+        let mut conversation = Conversation::default();
+        conversation.replace_from_api(&entries, None);
+        conversation
+    }
+
+    fn user_entry(id: &str, text: &str) -> serde_json::Value {
+        serde_json::json!({ "id": id, "type": "user", "time": { "created": 1 }, "text": text })
+    }
+
     #[test]
     fn optimistic_user_row_stays_until_a_new_you_row_arrives() {
-        let existing = vec![optimistic_transcript_row(
-            &Draft {
-                text: "old".into(),
-                attachments: Vec::new(),
-            },
-            1,
-        )];
         let pending = OptimisticPrompt {
-            row: optimistic_transcript_row(
-                &Draft {
-                    text: "new".into(),
-                    attachments: Vec::new(),
-                },
-                2,
-            ),
-            baseline_you: 1,
+            row: optimistic_transcript_row(&draft("new"), 2),
+            message_id: "msg_new".into(),
         };
-        let (rows, superseded) = apply_optimistic_row(existing.clone(), Some(&pending));
+        let before = conversation(&[user_entry("msg_old", "old")]);
+        let (rows, superseded) =
+            apply_optimistic_row(before.transcript_rows(), Some(&pending), Some(&before));
         assert!(!superseded);
         assert_eq!(rows.len(), 2);
-        let mut arrived = existing;
-        arrived.push(pending.row.clone());
-        let (rows, superseded) = apply_optimistic_row(arrived, Some(&pending));
+        assert_eq!(rows[1], pending.row);
+
+        // Another client's prompt is a new YOU row, but not this prompt.
+        let other = conversation(&[
+            user_entry("msg_old", "old"),
+            user_entry("msg_other", "from the web UI"),
+        ]);
+        let (rows, superseded) =
+            apply_optimistic_row(other.transcript_rows(), Some(&pending), Some(&other));
+        assert!(!superseded);
+        assert_eq!(rows.len(), 3);
+
+        let arrived = conversation(&[
+            user_entry("msg_old", "old"),
+            user_entry("msg_other", "from the web UI"),
+            user_entry("msg_new", "new"),
+        ]);
+        let (rows, superseded) =
+            apply_optimistic_row(arrived.transcript_rows(), Some(&pending), Some(&arrived));
         assert!(superseded);
-        assert_eq!(rows.len(), 2);
-        assert_eq!(
-            rows.iter()
-                .filter(|row| transcript_row_is_user(row))
-                .count(),
-            2
-        );
+        assert_eq!(rows, arrived.transcript_rows());
+
+        let (rows, superseded) = apply_optimistic_row(Vec::new(), Some(&pending), None);
+        assert!(!superseded, "no conversation loaded yet");
+        assert_eq!(rows, [pending.row.clone()]);
     }
 
     #[test]
     fn agent_rows_do_not_replace_an_optimistic_user_row() {
         let pending = OptimisticPrompt {
-            row: optimistic_transcript_row(
-                &Draft {
-                    text: "hello".into(),
-                    attachments: Vec::new(),
-                },
-                2,
-            ),
-            baseline_you: 1,
+            row: optimistic_transcript_row(&draft("hello"), 2),
+            message_id: "msg_hello".into(),
         };
-        let rows = vec![
-            optimistic_transcript_row(
-                &Draft {
-                    text: "old".into(),
-                    attachments: Vec::new(),
-                },
-                1,
-            ),
+        let loaded = conversation(&[
+            user_entry("msg_old", "old"),
             serde_json::json!({
-                "role": "AGENT",
-                "body": "working",
-                "images": [],
-                "time": 3,
-                "kind": "",
-            })
-            .to_string(),
-        ];
-        let (rows, superseded) = apply_optimistic_row(rows, Some(&pending));
-        assert!(!superseded);
+                "id": "msg_hello",
+                "type": "assistant",
+                "time": { "created": 3 },
+                "content": [{ "type": "text", "text": "working" }]
+            }),
+        ]);
+        let rows = loaded.transcript_rows();
+        assert_eq!(rows.len(), 2);
+        let (rows, superseded) = apply_optimistic_row(rows, Some(&pending), Some(&loaded));
+        assert!(!superseded, "only a user entry with the prompt id counts");
         assert_eq!(rows.len(), 3);
+    }
+
+    #[test]
+    fn a_failed_prompt_restored_whole_keeps_its_id_for_an_unchanged_resend() {
+        let pending = |text: &str| PendingPrompt {
+            request_id: 1,
+            message_id: "msg_failed".into(),
+            draft: Draft {
+                text: text.into(),
+                attachments: vec![PathBuf::from("/tmp/a.png")],
+                failed: None,
+            },
+        };
+
+        let mut restored = Draft::default();
+        restore_failed_prompt(&mut restored, pending("hello"));
+        assert_eq!(restored.text, "hello");
+        assert_eq!(restored.attachments, [PathBuf::from("/tmp/a.png")]);
+        assert_eq!(prompt_id_for(&mut restored.clone()), "msg_failed");
+
+        let mut edited = restored.clone();
+        edited.text.push('!');
+        assert_ne!(prompt_id_for(&mut edited), "msg_failed");
+
+        let mut unattached = restored.clone();
+        unattached.attachments.clear();
+        assert_ne!(prompt_id_for(&mut unattached), "msg_failed");
+
+        let mut merged = draft("typed meanwhile");
+        restore_failed_prompt(&mut merged, pending("hello"));
+        assert_eq!(merged.text, "hello\n\ntyped meanwhile");
+        assert_eq!(merged.failed, None);
+        let fresh = prompt_id_for(&mut merged);
+        assert!(fresh.starts_with("msg_") && fresh != "msg_failed");
+    }
+
+    #[test]
+    fn detached_prompts_keep_clipboard_files_until_their_send_reports_back() {
+        let directory = clipboard_attachment_dir();
+        fs::create_dir_all(&directory).unwrap();
+        let pasted = directory.join("clipboard-detach-test.png");
+        fs::write(&pasted, b"png").unwrap();
+        let mut state = State::default();
+        state.pending_prompts.insert(
+            "ses_a".into(),
+            PendingPrompt {
+                request_id: 7,
+                message_id: "msg_a".into(),
+                draft: Draft {
+                    text: "look".into(),
+                    attachments: vec![pasted.clone()],
+                    failed: None,
+                },
+            },
+        );
+
+        // A Busy/Idle status arriving while the worker may still be reading.
+        state.detach_pending_prompt("ses_a");
+        assert!(state.pending_prompts.is_empty());
+        assert!(pasted.exists(), "the worker may not have read it yet");
+        assert_eq!(
+            state.detached_attachments.get(&7),
+            Some(&vec![pasted.clone()])
+        );
+        state.detach_pending_prompt("ses_a");
+        assert_eq!(state.detached_attachments.len(), 1);
+
+        // `PromptAccepted` for request 7.
+        let paths = state.detached_attachments.remove(&7).unwrap();
+        remove_clipboard_attachments(&paths);
+        assert!(!pasted.exists());
+
+        let picked = tempfile::NamedTempFile::new().unwrap();
+        state.drafts.insert(
+            "ses_b".into(),
+            Draft {
+                attachments: vec![picked.path().to_path_buf()],
+                ..Draft::default()
+            },
+        );
+        state.remove_draft("ses_b");
+        assert!(picked.path().exists(), "picked files are never deleted");
     }
 
     #[test]

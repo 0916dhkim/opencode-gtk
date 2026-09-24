@@ -2176,14 +2176,31 @@ pub fn message_id_at(timestamp_ms: u64, counter: u16, entropy: u64) -> String {
     id
 }
 
+/// Like the server's `Identifier.ascending`: calls within one millisecond bump
+/// the counter, and a clock stepping backwards never yields a smaller ID.
 pub fn new_message_id() -> String {
+    static LAST: std::sync::Mutex<(u64, u16)> = std::sync::Mutex::new((0, 0));
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|elapsed| elapsed.as_millis() as u64)
         .unwrap_or_default();
+    let (timestamp, counter) = {
+        let mut last = LAST
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if now > last.0 {
+            *last = (now, 1);
+        } else if last.1 >= 0xfff {
+            *last = (last.0 + 1, 1);
+        } else {
+            last.1 += 1;
+        }
+        *last
+    };
     let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
-    hasher.write_u64(now);
-    message_id_at(now, 1, hasher.finish())
+    hasher.write_u64(timestamp);
+    hasher.write_u16(counter);
+    message_id_at(timestamp, counter, hasher.finish())
 }
 
 /// `SessionMessage.ID.fromEvent`: `evt_X` becomes `msg_X`.
@@ -3691,6 +3708,18 @@ mod tests {
         assert!(message_id_at(1_700_000_000_001, 1, 42) > id);
         let fresh = new_message_id();
         assert!(fresh.starts_with("msg_") && fresh.len() == 30);
+        let successive: Vec<String> = (0..5_000).map(|_| new_message_id()).collect();
+        assert!(successive.iter().all(|id| id.starts_with("msg_")
+            && id.len() == 30
+            && id[4..16].bytes().all(|byte| byte.is_ascii_hexdigit())));
+        assert!(
+            std::iter::once(&fresh)
+                .chain(&successive)
+                .collect::<Vec<_>>()
+                .windows(2)
+                .all(|pair| pair[0][..16] < pair[1][..16]),
+            "time/counter prefixes strictly ascend, even within one millisecond"
+        );
         assert_eq!(
             message_id_from_event_id("evt_abc").as_deref(),
             Some("msg_abc")

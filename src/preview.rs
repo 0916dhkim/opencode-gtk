@@ -107,11 +107,12 @@ impl State {
             }
             Command::SendPrompt {
                 request_id,
+                message_id,
                 session_id,
                 text,
                 ..
             } => {
-                self.append_user_message(&session_id, text);
+                self.append_user_message(&session_id, message_id, text);
                 UiEvent::PromptAccepted {
                     request_id,
                     session_id,
@@ -218,11 +219,11 @@ impl State {
         Ok(())
     }
 
-    fn append_user_message(&mut self, session_id: &str, text: String) {
-        let id = format!("msg_user_{}", self.next_id);
+    /// Like the server, the prompt `id` becomes the user message ID.
+    fn append_user_message(&mut self, session_id: &str, message_id: String, text: String) {
         self.next_id += 1;
         let message = entry(json!({
-            "id": id,
+            "id": message_id,
             "type": "user",
             "time": { "created": CREATED + self.next_id * 1_000 },
             "text": text
@@ -494,6 +495,36 @@ mod tests {
         }
         let untitled = state.create_session(DIRECTORY.into(), None);
         assert_eq!(untitled.title, "Untitled session");
+    }
+
+    #[test]
+    fn a_sent_prompt_becomes_a_user_entry_with_the_prompt_id() {
+        let mut state = State::new();
+        let message_id = protocol::new_message_id();
+        let event = state.handle(Command::SendPrompt {
+            request_id: 3,
+            message_id: message_id.clone(),
+            session_id: ACTIVE_ID.into(),
+            text: "Ship it".into(),
+            attachments: Vec::new(),
+        });
+        assert!(matches!(
+            event,
+            UiEvent::PromptAccepted {
+                request_id: 3,
+                result: Ok(()),
+                ..
+            }
+        ));
+        let last = state.message_page(ACTIVE_ID, None).messages.pop().unwrap();
+        let protocol::SessionMessage::User(user) = last else {
+            panic!("unexpected {last:?}");
+        };
+        assert_eq!(user.id, message_id);
+        assert_eq!(user.text, "Ship it");
+        let mut conversation = Conversation::default();
+        conversation.replace_from_api(&state.message_page(ACTIVE_ID, None).messages, None);
+        assert!(conversation.has_user_message(&message_id));
     }
 
     #[test]

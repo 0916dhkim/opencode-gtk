@@ -549,6 +549,13 @@ impl Conversation {
             .collect()
     }
 
+    /// A prompt's `id` is its user message ID once the server delivers it.
+    pub fn has_user_message(&self, id: &str) -> bool {
+        self.messages
+            .iter()
+            .any(|message| message.role == Role::User && message.id == id)
+    }
+
     pub fn context_tokens(&self) -> Option<u64> {
         self.messages.iter().rev().find_map(|message| {
             (message.role == Role::Assistant)

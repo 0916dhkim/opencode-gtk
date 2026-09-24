@@ -1,8 +1,8 @@
 use std::{
     collections::{HashMap, HashSet},
-    fs::File,
+    fs::{self, File},
     io::{BufRead, BufReader, Read},
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc, Mutex,
@@ -13,7 +13,6 @@ use std::{
 
 use anyhow::{anyhow, bail, Context, Result};
 use async_channel::{Receiver, Sender};
-use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use reqwest::{
     blocking::{Client, RequestBuilder, Response},
     header::HeaderValue,
@@ -32,7 +31,8 @@ const MESSAGE_PAGE_SIZE: u32 = 80;
 const SESSION_PAGE_SIZE: u32 = 200;
 const MAX_SESSION_PAGES: usize = 1_000;
 const MAX_ERROR_BODY_CHARS: usize = 500;
-const MAX_ATTACHMENT_BYTES: u64 = 25 * 1024 * 1024;
+const MAX_ATTACHMENT_BYTES: u64 = protocol::MAX_ATTACHMENT_BYTES as u64;
+/// Client cap: the `session.inbox.enqueued` echo carries every file as base64.
 const MAX_TOTAL_ATTACHMENT_BYTES: u64 = 40 * 1024 * 1024;
 const UI_EVENT_CAPACITY: usize = 4_096;
 
@@ -73,12 +73,14 @@ pub enum Command {
         session_id: String,
         model: protocol::ModelRef,
     },
-    /// Carries no model or agent: the session's saved model and the server's
-    /// default agent apply.
+    /// Carries no model, agent or delivery: the session's saved model, the
+    /// server's default agent and default delivery apply. `message_id` is the
+    /// client-generated prompt `id` (`msg_…`), which also becomes the user
+    /// message ID.
     SendPrompt {
         request_id: u64,
+        message_id: String,
         session_id: String,
-        directory: String,
         text: String,
         attachments: Vec<PathBuf>,
     },
@@ -466,16 +468,6 @@ impl Api {
         expect_success(response).map(|_| ())
     }
 
-    fn empty(&self, method: Method, url: Url, body: Option<&Value>) -> Result<()> {
-        let request = self.request(method, url);
-        let response = match body {
-            Some(body) => request.json(body).send(),
-            None => request.send(),
-        }
-        .context("request failed")?;
-        expect_success(response).map(|_| ())
-    }
-
     fn complete_request(&self, method: Method, url: Url, body: Option<&Value>) -> Result<()> {
         let request = self.request(method, url);
         let response = match body {
@@ -690,35 +682,44 @@ impl Api {
         Ok(Session::from_info(&renamed.data))
     }
 
+    /// The response only confirms the prompt entered the session inbox.
+    ///
+    /// A transport failure after the request may have reached the server is
+    /// retried once with the identical body: the server treats a repeated
+    /// `id` with the same content as the already-accepted prompt. HTTP error
+    /// responses are final.
     fn send_prompt(
         &self,
         session_id: &str,
-        _directory: &str,
-        text: &str,
+        message_id: String,
+        text: String,
         attachments: &[PathBuf],
-    ) -> Result<()> {
-        let mut parts = vec![json!({ "type": "text", "text": text })];
-        parts.extend(encode_attachments(attachments)?);
-        let body = json!({
-            "parts": parts
-        });
-        // v1 body on a route 2.0.8 does not serve; replaced in CP-008.
-        self.empty(
-            Method::POST,
-            self.url(
-                &format!("{}/prompt_async", protocol::session_path(session_id)),
-                &[],
-            )?,
-            Some(&body),
-        )
+    ) -> Result<protocol::InboxUser> {
+        let body = protocol::PromptBody {
+            id: message_id,
+            text,
+            files: encode_attachments(attachments)?,
+        };
+        let path = protocol::session_prompt_path(session_id);
+        let accepted: protocol::PromptResponse = match self.send_json(Method::POST, &path, &body) {
+            Err(error) if is_ambiguous_transport_failure(&error) => self
+                .send_json(Method::POST, &path, &body)
+                .context("retried after an interrupted send")?,
+            result => result?,
+        };
+        Ok(accepted.data)
     }
 
-    fn abort(&self, session_id: &str, _directory: &str) -> Result<()> {
-        self.empty(
-            Method::POST,
-            self.url(&protocol::session_interrupt_path(session_id), &[])?,
-            None,
-        )
+    fn abort(&self, session_id: &str, _directory: &str) -> Result<bool> {
+        let response = self
+            .request(
+                Method::POST,
+                self.url(&protocol::session_interrupt_path(session_id), &[])?,
+            )
+            .send()
+            .context("request failed")?;
+        let interrupted: protocol::InterruptResponse = decode_json(response)?;
+        Ok(interrupted.interrupted)
     }
 
     fn reply_permission(&self, request_id: &str, directory: &str, reply: &str) -> Result<()> {
@@ -831,13 +832,14 @@ fn spawn_command_worker(api: Api, commands: Receiver<Command>, ui: Sender<UiEven
                 },
                 Command::SendPrompt {
                     request_id,
+                    message_id,
                     session_id,
-                    directory,
                     text,
                     attachments,
                 } => {
                     let result = api
-                        .send_prompt(&session_id, &directory, &text, &attachments)
+                        .send_prompt(&session_id, message_id, text, &attachments)
+                        .map(|_| ())
                         .map_err(format_error);
                     UiEvent::PromptAccepted {
                         request_id,
@@ -849,7 +851,10 @@ fn spawn_command_worker(api: Api, commands: Receiver<Command>, ui: Sender<UiEven
                     session_id,
                     directory,
                 } => {
-                    let result = api.abort(&session_id, &directory).map_err(format_error);
+                    let result = api
+                        .abort(&session_id, &directory)
+                        .map(|_| ())
+                        .map_err(format_error);
                     UiEvent::Aborted { session_id, result }
                 }
                 Command::ReplyPermission {
@@ -1012,8 +1017,45 @@ impl SseDecoder {
     }
 }
 
-fn encode_attachments(paths: &[PathBuf]) -> Result<Vec<Value>> {
-    let mut total = 0_u64;
+fn attachment_name(path: &Path) -> String {
+    path.file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "attachment".to_owned())
+}
+
+/// Adds one attachment's decoded size to `total`, enforcing the server's
+/// per-file limit and the client's total cap.
+fn add_attachment_size(path: &Path, size: u64, total: &mut u64) -> Result<()> {
+    if size > MAX_ATTACHMENT_BYTES {
+        bail!("{} is larger than 20 MiB", attachment_name(path));
+    }
+    *total += size;
+    if *total > MAX_TOTAL_ATTACHMENT_BYTES {
+        bail!("attachments are larger than 40 MiB in total");
+    }
+    Ok(())
+}
+
+/// Checks attachments by metadata only, so the UI can reject a draft before
+/// sending it. [`encode_attachments`] repeats the checks on the bytes it reads.
+pub fn check_attachments(paths: &[PathBuf]) -> Result<()> {
+    let mut total = 0;
+    for path in paths {
+        let metadata = fs::metadata(path)
+            .with_context(|| format!("failed to inspect attachment {}", path.display()))?;
+        if !metadata.is_file() {
+            bail!("attachment {} is not a regular file", path.display());
+        }
+        add_attachment_size(path, metadata.len(), &mut total)?;
+    }
+    Ok(())
+}
+
+/// Reads local files into `data:` URIs; `file:` URIs would resolve on the
+/// server host. The MIME type is a hint: the server detects it from the bytes.
+fn encode_attachments(paths: &[PathBuf]) -> Result<Vec<protocol::PromptFile>> {
+    check_attachments(paths)?;
+    let mut total = 0;
     paths
         .iter()
         .map(|path| {
@@ -1030,31 +1072,32 @@ fn encode_attachments(paths: &[PathBuf]) -> Result<Vec<Value>> {
             file.take(MAX_ATTACHMENT_BYTES + 1)
                 .read_to_end(&mut bytes)
                 .with_context(|| format!("failed to read attachment {}", path.display()))?;
-            if bytes.len() as u64 > MAX_ATTACHMENT_BYTES {
-                bail!(
-                    "attachment {} is larger than 25 MiB",
-                    path.file_name()
-                        .and_then(|name| name.to_str())
-                        .unwrap_or("file")
-                );
-            }
-            total += bytes.len() as u64;
-            if total > MAX_TOTAL_ATTACHMENT_BYTES {
-                bail!("attachments are larger than 40 MiB in total");
-            }
+            add_attachment_size(path, bytes.len() as u64, &mut total)?;
             let mime = mime_guess::from_path(path).first_or_octet_stream();
-            let filename = path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or("attachment");
-            Ok(json!({
-                "type": "file",
-                "mime": mime.as_ref(),
-                "filename": filename,
-                "url": format!("data:{};base64,{}", mime.as_ref(), BASE64.encode(bytes))
-            }))
+            Ok(protocol::PromptFile::from_bytes(
+                &bytes,
+                mime.as_ref(),
+                Some(attachment_name(path)),
+            ))
         })
         .collect()
+}
+
+/// The request may have reached the server but no complete response came
+/// back (timeout, reset, truncated body). A failure to connect is not
+/// ambiguous, and neither is any HTTP error response.
+fn is_ambiguous_transport_failure(error: &anyhow::Error) -> bool {
+    error
+        .chain()
+        .filter_map(|cause| cause.downcast_ref::<reqwest::Error>())
+        .any(|error| {
+            !error.is_connect()
+                && error.status().is_none()
+                && (error.is_timeout()
+                    || error.is_request()
+                    || error.is_body()
+                    || error.is_decode())
+        })
 }
 
 /// A non-success HTTP response. Declared v2 failures carry a typed body.
@@ -1320,20 +1363,299 @@ mod tests {
         assert!(matches!(frames[3], EventFrame::Ignored));
     }
 
-    #[test]
-    fn attachment_becomes_a_data_url() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("note.txt");
-        fs::write(&path, "hello").unwrap();
+    const PIXEL: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
 
-        let parts = encode_attachments(&[path]).unwrap();
-
-        assert_eq!(parts[0]["type"], "file");
-        assert_eq!(parts[0]["filename"], "note.txt");
-        assert!(parts[0]["url"]
-            .as_str()
+    fn decode_base64(data: &str) -> Vec<u8> {
+        use base64::Engine as _;
+        base64::engine::general_purpose::STANDARD
+            .decode(data)
             .unwrap()
-            .starts_with("data:text/plain;base64,"));
+    }
+
+    #[test]
+    fn attachments_become_canonical_padded_data_uris() {
+        let directory = tempfile::tempdir().unwrap();
+        let one = directory.path().join("one.txt");
+        let two = directory.path().join("two.bin");
+        let image = directory.path().join("a.png");
+        fs::write(&one, b"h").unwrap();
+        fs::write(&two, b"hi").unwrap();
+        fs::write(&image, decode_base64(PIXEL)).unwrap();
+
+        let files = encode_attachments(&[one, two, image]).unwrap();
+
+        assert_eq!(
+            files,
+            vec![
+                protocol::PromptFile {
+                    uri: "data:text/plain;base64,aA==".into(),
+                    name: Some("one.txt".into()),
+                },
+                protocol::PromptFile {
+                    uri: "data:application/octet-stream;base64,aGk=".into(),
+                    name: Some("two.bin".into()),
+                },
+                protocol::PromptFile {
+                    uri: format!("data:image/png;base64,{PIXEL}"),
+                    name: Some("a.png".into()),
+                },
+            ]
+        );
+        assert!(files.iter().all(|file| !file.uri.starts_with("file:")));
+    }
+
+    #[test]
+    fn attachment_limits_are_checked_before_anything_is_read() {
+        let directory = tempfile::tempdir().unwrap();
+        let sparse = |name: &str, size: u64| {
+            let path = directory.path().join(name);
+            File::create(&path).unwrap().set_len(size).unwrap();
+            path
+        };
+        let limit = sparse("limit.bin", MAX_ATTACHMENT_BYTES);
+        let over = sparse("over.bin", MAX_ATTACHMENT_BYTES + 1);
+        let error = |paths: &[PathBuf]| format_error(check_attachments(paths).unwrap_err());
+
+        assert!(check_attachments(std::slice::from_ref(&limit)).is_ok());
+        assert_eq!(error(&[over.clone()]), "over.bin is larger than 20 MiB");
+        assert_eq!(
+            format_error(encode_attachments(&[over]).unwrap_err()),
+            "over.bin is larger than 20 MiB"
+        );
+
+        let chunk = 14 * 1024 * 1024;
+        let chunks: Vec<_> = (0..3)
+            .map(|index| sparse(&format!("chunk{index}.bin"), chunk))
+            .collect();
+        assert!(check_attachments(&chunks[..2]).is_ok());
+        assert_eq!(
+            error(&chunks),
+            "attachments are larger than 40 MiB in total"
+        );
+        assert_eq!(
+            format_error(encode_attachments(&chunks).unwrap_err()),
+            "attachments are larger than 40 MiB in total"
+        );
+
+        let mut total = 0;
+        assert!(add_attachment_size(&limit, MAX_ATTACHMENT_BYTES, &mut total).is_ok());
+        assert!(add_attachment_size(&limit, MAX_ATTACHMENT_BYTES, &mut total).is_ok());
+        assert!(add_attachment_size(&limit, 1, &mut total).is_err());
+
+        let folder = directory.path().join("folder");
+        fs::create_dir(&folder).unwrap();
+        assert!(error(&[folder]).ends_with("is not a regular file"));
+        assert!(error(&[directory.path().join("missing.png")])
+            .starts_with("failed to inspect attachment"));
+    }
+
+    fn inbox_user(id: &str) -> Value {
+        json!({
+            "data": {
+                "id": id,
+                "sessionID": "ses_a",
+                "time": { "created": 1 },
+                "type": "user",
+                "payload": { "text": "hello" },
+                "delivery": "steer"
+            }
+        })
+    }
+
+    #[test]
+    fn prompt_posts_the_id_text_and_data_files_only() {
+        let captured = fixture("session.prompt.attachment");
+        let message_id = captured["data"]["id"].as_str().unwrap().to_owned();
+        let (base, requests, server) = serve(2, move |request| {
+            assert_eq!(request.path(), "/api/session/ses_a/prompt");
+            if request.json().get("files").is_some() {
+                ok(captured.clone())
+            } else {
+                ok(inbox_user("msg_0d58b846f00123EB3tzqlo6tYt"))
+            }
+        });
+        let directory = tempfile::tempdir().unwrap();
+        let image = directory.path().join("a.png");
+        fs::write(&image, decode_base64(PIXEL)).unwrap();
+        let api = Api::new(config(base, Some("secret"))).unwrap();
+
+        let accepted = api
+            .send_prompt(
+                "ses_a",
+                message_id.clone(),
+                "Describe the attached image.".into(),
+                &[image],
+            )
+            .unwrap();
+        let text_only = api
+            .send_prompt(
+                "ses_a",
+                "msg_0d58b846f00123EB3tzqlo6tYt".into(),
+                "Say hello.".into(),
+                &[],
+            )
+            .unwrap();
+        server.join().unwrap();
+
+        assert_eq!(accepted.id, message_id);
+        assert_eq!(accepted.payload.files[0].mime, "image/png");
+        assert_eq!(accepted.delivery, Some(protocol::Delivery::Steer));
+        assert_eq!(text_only.id, "msg_0d58b846f00123EB3tzqlo6tYt");
+        let requests = requests.lock().unwrap();
+        assert_eq!(requests[0].line, "POST /api/session/ses_a/prompt HTTP/1.1");
+        assert_eq!(
+            requests[0].json(),
+            json!({
+                "id": message_id,
+                "text": "Describe the attached image.",
+                "files": [{ "uri": format!("data:image/png;base64,{PIXEL}"), "name": "a.png" }]
+            }),
+            "no agent, model, delivery or resume"
+        );
+        assert_eq!(
+            requests[1].json(),
+            json!({ "id": "msg_0d58b846f00123EB3tzqlo6tYt", "text": "Say hello." })
+        );
+    }
+
+    /// Accepts `hang_ups` connections and closes each after reading the whole
+    /// request, then answers one more with `answer` if given. Returns the
+    /// request bodies and the listener.
+    fn hang_up_server(
+        hang_ups: usize,
+        answer: Option<Value>,
+    ) -> (String, std::thread::JoinHandle<(Vec<String>, TcpListener)>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let mut bodies = Vec::new();
+            for _ in 0..hang_ups {
+                let (stream, _) = listener.accept().unwrap();
+                bodies.push(read_http_request(&stream).body);
+            }
+            if let Some(answer) = answer {
+                let (mut stream, _) = listener.accept().unwrap();
+                bodies.push(read_http_request(&stream).body);
+                let body = answer.to_string();
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                )
+                .unwrap();
+            }
+            (bodies, listener)
+        });
+        (base, server)
+    }
+
+    #[test]
+    fn an_interrupted_prompt_is_retried_once_with_the_same_body() {
+        let id = "msg_0d58b846f00123EB3tzqlo6tYt";
+        let (base, server) = hang_up_server(1, Some(inbox_user(id)));
+        let api = Api::new(config(base, None)).unwrap();
+        let accepted = api
+            .send_prompt("ses_a", id.into(), "hello".into(), &[])
+            .unwrap();
+        let (bodies, _) = server.join().unwrap();
+        assert_eq!(accepted.id, id);
+        assert_eq!(bodies.len(), 2);
+        assert_eq!(bodies[0], bodies[1]);
+        assert_eq!(
+            serde_json::from_str::<Value>(&bodies[0]).unwrap(),
+            json!({ "id": id, "text": "hello" })
+        );
+    }
+
+    #[test]
+    fn a_prompt_is_retried_at_most_once() {
+        let (base, server) = hang_up_server(2, None);
+        let api = Api::new(config(base, None)).unwrap();
+        let error = api
+            .send_prompt("ses_a", "msg_x".into(), "hello".into(), &[])
+            .unwrap_err();
+        let (bodies, listener) = server.join().unwrap();
+        assert_eq!(bodies.len(), 2);
+        assert!(
+            format_error(&error).starts_with("retried after an interrupted send"),
+            "{error:#}"
+        );
+        listener.set_nonblocking(true).unwrap();
+        assert!(listener.accept().is_err(), "no third attempt");
+    }
+
+    #[test]
+    fn prompt_error_responses_are_surfaced_without_a_retry() {
+        let (base, requests, server) = serve(2, |request| {
+            if request.json()["text"] == "reuse" {
+                (
+                    409,
+                    json!({
+                        "_tag": "ConflictError",
+                        "message": "Prompt msg_a conflicts with an existing prompt"
+                    })
+                    .to_string(),
+                )
+            } else {
+                (
+                    400,
+                    json!({
+                        "_tag": "InvalidRequestError",
+                        "message": "Attachment exceeds the 20971520 byte limit: a.png",
+                        "field": "files"
+                    })
+                    .to_string(),
+                )
+            }
+        });
+        let directory = tempfile::tempdir().unwrap();
+        let image = directory.path().join("a.png");
+        fs::write(&image, decode_base64(PIXEL)).unwrap();
+        let api = Api::new(config(base, None)).unwrap();
+
+        let files_error = api
+            .send_prompt("ses_a", "msg_a".into(), "look".into(), &[image])
+            .unwrap_err();
+        let conflict = api
+            .send_prompt("ses_a", "msg_a".into(), "reuse".into(), &[])
+            .unwrap_err();
+        server.join().unwrap();
+
+        let failure = files_error.downcast_ref::<ApiFailure>().unwrap();
+        assert_eq!(failure.status, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            failure.error.as_ref().and_then(protocol::ApiError::field),
+            Some("files")
+        );
+        assert_eq!(
+            format_error(files_error),
+            "Attachment exceeds the 20971520 byte limit: a.png"
+        );
+        assert_eq!(
+            format_error(conflict),
+            "Prompt msg_a conflicts with an existing prompt"
+        );
+        assert_eq!(requests.lock().unwrap().len(), 2, "one request per prompt");
+    }
+
+    #[test]
+    fn interrupt_decodes_the_interrupted_flag() {
+        let running = fixture("session.interrupt");
+        let idle = fixture("session.interrupt.idle");
+        let (base, requests, server) = serve(2, move |request| match request.path() {
+            "/api/session/ses_run/interrupt" => ok(running.clone()),
+            _ => ok(idle.clone()),
+        });
+        let api = Api::new(config(base, None)).unwrap();
+        assert!(api.abort("ses_run", "/repo").unwrap());
+        assert!(!api.abort("ses_idle", "/repo").unwrap());
+        server.join().unwrap();
+        let requests = requests.lock().unwrap();
+        assert_eq!(
+            requests[0].line,
+            "POST /api/session/ses_run/interrupt HTTP/1.1"
+        );
+        assert!(requests[0].body.is_empty());
     }
 
     #[test]
