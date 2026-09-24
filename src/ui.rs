@@ -21,9 +21,10 @@ use crate::{
     credentials::{self, CloudflareAccessCredentials},
     markdown,
     model::{
-        displayed_model, event_data, event_run_status, event_session_id, format_context_usage,
-        model_switch_for_pick, CatalogInvalidation, Conversation, ModelCatalog, ModelOption,
-        ModelSelection, Project, RunStatus, Session, SessionChange, SessionModel, SessionTime,
+        displayed_model, event_data, event_run_status, format_context_usage, model_switch_for_pick,
+        run_status_change, CatalogInvalidation, Conversation, DebugCommand, ModelCatalog,
+        ModelOption, ModelSelection, Project, RunStatus, Session, SessionChange, SessionModel,
+        SessionTime,
     },
     persist::{default_path, ConnectionSettings, PersistedState, PersistedTab, ServerState},
     protocol,
@@ -135,12 +136,19 @@ struct PendingPrompt {
     draft: Draft,
 }
 
-/// The local YOU row shown until the conversation holds the user message
-/// whose ID is the prompt `id`.
+/// The local YOU row shown until the conversation holds the user row whose
+/// ID is the prompt `id` (queued rows from `session.inbox.enqueued` or the
+/// inbox list count). It goes away only when that row appears, the send
+/// fails, the session goes away, or a full reload after acceptance shows the
+/// prompt is neither delivered nor queued (cancelled elsewhere) while the
+/// session is idle; the end of a run alone never drops it.
 #[derive(Clone, Debug)]
 struct OptimisticPrompt {
     row: String,
     message_id: String,
+    request_id: u64,
+    /// The server accepted the prompt into the session inbox.
+    accepted: bool,
 }
 
 #[derive(Clone)]
@@ -2895,6 +2903,16 @@ impl Controller {
                     if let Some(paths) = this.state.detached_attachments.remove(&request_id) {
                         remove_clipboard_attachments(&paths);
                     }
+                    if result.is_ok() {
+                        if let Some(optimistic) = this
+                            .state
+                            .optimistic_prompts
+                            .get_mut(&session_id)
+                            .filter(|optimistic| optimistic.request_id == request_id)
+                        {
+                            optimistic.accepted = true;
+                        }
+                    }
                     let current = this
                         .state
                         .pending_prompts
@@ -3270,9 +3288,15 @@ impl Controller {
                     conversation.prepend_from_api(&page.messages, page.next_cursor);
                 } else {
                     conversation.replace_from_api(&page.messages, page.next_cursor);
+                    if let Some(queued) = &page.queued {
+                        conversation.sync_queued(queued);
+                    }
                 }
                 for event in pending_events {
                     conversation.apply_event(&event);
+                }
+                if cursor.is_none() && page.queued.is_some() {
+                    this.settle_optimistic_prompt(&session_id);
                 }
                 if this.state.active.as_deref() == Some(session_id.as_str()) {
                     this.refresh_transcript(if cursor.is_some() {
@@ -3378,17 +3402,39 @@ impl Controller {
 
         for envelope in events {
             let payload = envelope.payload;
-            this.flush_session_event(&payload, &mut effects);
-            this.flush_run_status_event(&payload, active.as_deref(), &mut effects);
-            this.flush_conversation_event(&payload, active.as_deref(), &mut effects);
-            if let Some(invalidation) = CatalogInvalidation::from_event(&payload) {
-                effects.catalog_invalidations.push(invalidation);
+            // Decoded once: `session.inbox.enqueued` can carry megabytes of base64.
+            let decoded = protocol::Event::deserialize(&payload).ok().map(|event| {
+                let kind = protocol::decode_event(&event);
+                (event, kind)
+            });
+            // Not every event has a `location` (`session.execution.*`,
+            // `session.inbox.cancelled`, …): fall back to the session's directory.
+            let directory = envelope.directory.or_else(|| {
+                decoded
+                    .as_ref()
+                    .and_then(|(_, kind)| kind.session_id())
+                    .and_then(|id| this.session(id))
+                    .map(|session| session.directory.clone())
+            });
+            if let Some((event, kind)) = &decoded {
+                this.flush_session_event(event, kind, &mut effects);
+                this.flush_run_status_event(kind, active.as_deref(), &mut effects);
+                this.flush_conversation_event(
+                    &payload,
+                    event,
+                    kind,
+                    active.as_deref(),
+                    &mut effects,
+                );
+                if let Some(invalidation) = CatalogInvalidation::from_kind(event, kind) {
+                    effects.catalog_invalidations.push(invalidation);
+                }
             }
             match payload.get("type").and_then(serde_json::Value::as_str) {
                 Some("permission.asked") | Some("permission.updated") => {
-                    permission_events.push((envelope.directory, payload));
+                    permission_events.push((directory, payload));
                 }
-                Some("question.asked") => question_events.push((envelope.directory, payload)),
+                Some("question.asked") => question_events.push((directory, payload)),
                 Some("permission.replied")
                 | Some("question.replied")
                 | Some("question.rejected") => {
@@ -3482,8 +3528,13 @@ impl Controller {
     }
 
     /// Root-session list changes (`session.created|renamed|moved|deleted`).
-    fn flush_session_event(&mut self, payload: &serde_json::Value, effects: &mut FlushEffects) {
-        let Some(change) = SessionChange::from_event(payload) else {
+    fn flush_session_event(
+        &mut self,
+        event: &protocol::Event,
+        kind: &protocol::EventKind,
+        effects: &mut FlushEffects,
+    ) {
+        let Some(change) = SessionChange::from_kind(event, kind) else {
             return;
         };
         let open = self.state.tabs.iter().any(|tab| tab == change.session_id());
@@ -3511,11 +3562,11 @@ impl Controller {
 
     fn flush_run_status_event(
         &mut self,
-        payload: &serde_json::Value,
+        kind: &protocol::EventKind,
         active: Option<&str>,
         effects: &mut FlushEffects,
     ) {
-        let Some((session_id, status)) = event_run_status(payload) else {
+        let Some((session_id, status)) = run_status_change(kind) else {
             return;
         };
         if active == Some(session_id.as_str()) {
@@ -3539,9 +3590,12 @@ impl Controller {
                 }
             }
             RunStatus::Idle => {
+                // The optimistic row stays: a prompt steered into a run that
+                // then ends is still queued (its row comes with
+                // `session.inbox.enqueued`, which supersedes it). See
+                // `Controller::settle_optimistic_prompt`.
                 self.state.server_busy.remove(&session_id);
                 self.state.abort_requested.remove(&session_id);
-                self.state.optimistic_prompts.remove(&session_id);
                 self.state.detach_pending_prompt(&session_id);
             }
         }
@@ -3556,13 +3610,19 @@ impl Controller {
         effects.tab_status_changed |= status_changed && open;
     }
 
+    /// Routes by `sessionID`, never by `location`, which many events lack.
+    /// While a transcript is being replaced the raw event is also buffered,
+    /// and replayed onto the fresh snapshot (`apply_messages`); the reducer
+    /// converges when the snapshot already reflects it.
     fn flush_conversation_event(
         &mut self,
         payload: &serde_json::Value,
+        event: &protocol::Event,
+        kind: &protocol::EventKind,
         active: Option<&str>,
         effects: &mut FlushEffects,
     ) {
-        let Some(session_id) = event_session_id(payload).map(str::to_owned) else {
+        let Some(session_id) = kind.session_id().map(str::to_owned) else {
             return;
         };
         if self.replacing_messages.contains(&session_id) {
@@ -3579,7 +3639,7 @@ impl Controller {
                 .conversations
                 .entry(session_id.clone())
                 .or_default();
-            let changed = conversation.apply_event(payload);
+            let changed = conversation.apply(event, kind);
             if active == Some(session_id.as_str()) {
                 effects.transcript_changed |= changed;
             }
@@ -5145,44 +5205,21 @@ impl Controller {
             } else {
                 let supports_attachments = this.selected_model_supports_attachments();
                 let draft = this.state.drafts.entry(active.clone()).or_default();
-                if draft.text.trim() == "/debug error" {
+                if let Some(debug) = DebugCommand::parse(&draft.text) {
                     draft.text.clear();
                     this.widgets.composer.buffer().set_text("");
-                    let conversation = this.state.conversations.entry(active.clone()).or_default();
-                    conversation.apply_event(&serde_json::json!({
-                        "type": "session.error",
-                        "properties": {
-                            "sessionID": active,
-                            "error": {
-                                "name": "APIError",
-                                "data": {
-                                    "message": "AI_APICallError: Not Found (404)",
-                                    "statusCode": 404
-                                }
-                            }
+                    for event in debug.events(&active, unix_millis()) {
+                        this.state
+                            .conversations
+                            .entry(active.clone())
+                            .or_default()
+                            .apply_event(&event);
+                        if let Some((_, status)) = event_run_status(&event) {
+                            this.update_session_status(&active, status);
                         }
-                    }));
-                    this.refresh_transcript(TranscriptUpdate::Content);
-                    return;
-                }
-                if draft.text.trim() == "/debug retry" {
-                    draft.text.clear();
-                    this.widgets.composer.buffer().set_text("");
-                    this.update_session_status(
-                        &active,
-                        RunStatus::Retry {
-                            message: "Rate limited upstream. Retrying in 4s (attempt 1/3)..."
-                                .into(),
-                            attempt: 1,
-                        },
-                    );
-                    this.refresh_transcript(TranscriptUpdate::Content);
-                    return;
-                }
-                if draft.text.trim() == "/debug clear" || draft.text.trim() == "/debug idle" {
-                    draft.text.clear();
-                    this.widgets.composer.buffer().set_text("");
-                    this.update_session_status(&active, RunStatus::Idle);
+                    }
+                    let weak = this.self_weak.clone();
+                    this.refresh_tabs(&weak);
                     this.refresh_transcript(TranscriptUpdate::Content);
                     return;
                 }
@@ -5213,6 +5250,8 @@ impl Controller {
                     OptimisticPrompt {
                         row: optimistic_transcript_row(&pending, unix_millis()),
                         message_id: message_id.clone(),
+                        request_id,
+                        accepted: false,
                     },
                 );
                 this.state.pending_prompts.insert(
@@ -7330,6 +7369,28 @@ impl Controller {
         }
     }
 
+    /// After a full reload (history plus inbox): an accepted prompt that is
+    /// neither a delivered nor a queued user row of an idle session was
+    /// cancelled, so its optimistic row goes.
+    fn settle_optimistic_prompt(&mut self, session_id: &str) {
+        let Some(optimistic) = self.state.optimistic_prompts.get(session_id) else {
+            return;
+        };
+        let idle = self
+            .state
+            .statuses
+            .get(session_id)
+            .is_none_or(RunStatus::is_idle);
+        let present = self
+            .state
+            .conversations
+            .get(session_id)
+            .is_some_and(|conversation| conversation.has_user_message(&optimistic.message_id));
+        if optimistic.accepted && idle && !present {
+            self.state.optimistic_prompts.remove(session_id);
+        }
+    }
+
     fn apply_missed_idle(&mut self, statuses_complete: bool) {
         let pending = std::mem::take(&mut self.offline_busy);
         let mut leftover = HashSet::new();
@@ -8266,9 +8327,11 @@ fn transcript_indicator(
     }
 }
 
+/// Whether the event ends a run, handing control back to the user (idle
+/// notification, unread mark).
 #[cfg(test)]
 fn event_returns_control(payload: &serde_json::Value) -> bool {
-    payload.get("type").and_then(serde_json::Value::as_str) == Some("session.idle")
+    matches!(event_run_status(payload), Some((_, RunStatus::Idle)))
 }
 
 fn session_idle_marks_unread(previous: Option<&RunStatus>) -> bool {
@@ -9148,18 +9211,50 @@ mod tests {
     }
 
     #[test]
-    fn notifications_only_follow_the_terminal_idle_event() {
-        assert!(event_returns_control(&serde_json::json!({
-            "type": "session.idle"
-        })));
-        for event_type in [
-            "session.status",
-            "session.execution.succeeded",
-            "session.error",
+    fn notifications_only_follow_terminal_execution_events() {
+        let event = |event_type: &str, data: serde_json::Value| {
+            let mut data = data;
+            data["sessionID"] = "ses_1".into();
+            serde_json::json!({ "id": "evt_1", "created": 1, "type": event_type, "data": data })
+        };
+        for (event_type, data) in [
+            ("session.execution.succeeded", serde_json::json!({})),
+            (
+                "session.execution.failed",
+                serde_json::json!({ "error": { "type": "provider", "message": "x" } }),
+            ),
+            (
+                "session.execution.interrupted",
+                serde_json::json!({ "reason": "user" }),
+            ),
         ] {
-            assert!(!event_returns_control(&serde_json::json!({
-                "type": event_type
-            })));
+            assert!(
+                event_returns_control(&event(event_type, data)),
+                "{event_type}"
+            );
+        }
+        for (event_type, data) in [
+            // Declared but never published by 2.0.8.
+            ("session.idle", serde_json::json!({})),
+            (
+                "session.status",
+                serde_json::json!({ "status": { "type": "idle" } }),
+            ),
+            ("session.error", serde_json::json!({})),
+            ("session.execution.started", serde_json::json!({})),
+            (
+                "session.step.ended",
+                serde_json::json!({ "assistantMessageID": "msg_a" }),
+            ),
+            (
+                "session.execution.interrupted",
+                serde_json::json!({ "reason": "shutdown" }),
+            ),
+        ] {
+            assert!(
+                !event_returns_control(&event(event_type, data)),
+                "{event_type}"
+            );
         }
     }
 
@@ -9340,6 +9435,8 @@ mod tests {
         let pending = OptimisticPrompt {
             row: optimistic_transcript_row(&draft("new"), 2),
             message_id: "msg_new".into(),
+            request_id: 1,
+            accepted: false,
         };
         let before = conversation(&[user_entry("msg_old", "old")]);
         let (rows, superseded) =
@@ -9374,10 +9471,44 @@ mod tests {
     }
 
     #[test]
+    fn the_inbox_echo_supersedes_the_optimistic_row_before_delivery() {
+        let pending = OptimisticPrompt {
+            row: optimistic_transcript_row(&draft("steer"), 2),
+            message_id: "msg_steer".into(),
+            request_id: 1,
+            accepted: true,
+        };
+        let mut live = conversation(&[user_entry("msg_old", "old")]);
+        // The run ends before the prompt is delivered: nothing changes.
+        live.apply_event(&serde_json::json!({
+            "id": "evt_1", "created": 3, "type": "session.execution.succeeded",
+            "data": { "sessionID": "ses_1" }
+        }));
+        let (_, superseded) =
+            apply_optimistic_row(live.transcript_rows(), Some(&pending), Some(&live));
+        assert!(!superseded);
+        live.apply_event(&serde_json::json!({
+            "id": "evt_2", "created": 4, "type": "session.inbox.enqueued",
+            "data": { "sessionID": "ses_1", "inboxID": "msg_steer",
+                      "item": { "type": "user", "payload": { "text": "steer" }, "delivery": "steer" } }
+        }));
+        let (rows, superseded) =
+            apply_optimistic_row(live.transcript_rows(), Some(&pending), Some(&live));
+        assert!(superseded, "the queued row is the prompt's row");
+        assert_eq!(rows.len(), 2);
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&rows[1]).unwrap()["body"],
+            "steer"
+        );
+    }
+
+    #[test]
     fn agent_rows_do_not_replace_an_optimistic_user_row() {
         let pending = OptimisticPrompt {
             row: optimistic_transcript_row(&draft("hello"), 2),
             message_id: "msg_hello".into(),
+            request_id: 1,
+            accepted: false,
         };
         let loaded = conversation(&[
             user_entry("msg_old", "old"),

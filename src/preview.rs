@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use serde_json::{json, Value};
 
 use crate::{
-    api::{Bootstrap, Command, MessagePage, UiEvent},
+    api::{Bootstrap, Command, MessagePage, ServerEnvelope, UiEvent},
     model::{ModelCatalog, Project, RunStatus, Session, SessionModel},
     persist::{PersistedTab, ServerState},
     protocol,
@@ -42,6 +42,8 @@ pub struct State {
     /// v2 message-list entries per session, oldest first.
     messages: HashMap<String, Vec<protocol::SessionMessage>>,
     next_id: u64,
+    /// Canned `/api/event` events produced by the last command.
+    server_events: Vec<Value>,
 }
 
 impl State {
@@ -53,6 +55,7 @@ impl State {
             sessions: vec![active_session(), other_session()],
             messages,
             next_id: 1,
+            server_events: Vec::new(),
         }
     }
 
@@ -165,11 +168,13 @@ impl State {
             return MessagePage {
                 messages: Vec::new(),
                 next_cursor: None,
+                queued: None,
             };
         }
         MessagePage {
             messages: self.messages.get(session_id).cloned().unwrap_or_default(),
             next_cursor: None,
+            queued: Some(Vec::new()),
         }
     }
 
@@ -219,19 +224,99 @@ impl State {
         Ok(())
     }
 
-    /// Like the server, the prompt `id` becomes the user message ID.
+    /// Like the server, the prompt `id` becomes the user message ID, and a
+    /// canned reply streams back as v2 events that match the stored entries.
     fn append_user_message(&mut self, session_id: &str, message_id: String, text: String) {
         self.next_id += 1;
-        let message = entry(json!({
+        let delivered = CREATED + self.next_id * 1_000;
+        let assistant_id = format!("msg_preview_reply_{}", self.next_id);
+        let reply = format!("(preview) You said: {text}");
+        let tokens = json!({ "input": 1200, "output": 40, "reasoning": 0, "cache": { "read": 0, "write": 0 } });
+        let messages = self.messages.entry(session_id.to_owned()).or_default();
+        messages.push(entry(json!({
             "id": message_id,
             "type": "user",
-            "time": { "created": CREATED + self.next_id * 1_000 },
+            "time": { "created": delivered },
             "text": text
-        }));
-        self.messages
-            .entry(session_id.to_owned())
-            .or_default()
-            .push(message);
+        })));
+        messages.push(entry(json!({
+            "id": assistant_id,
+            "type": "assistant",
+            "time": { "created": delivered + 100, "completed": delivered + 200 },
+            "agent": "build",
+            "content": [{ "type": "text", "text": reply }],
+            "finish": "stop",
+            "tokens": tokens
+        })));
+        let session = json!(session_id);
+        let events = [
+            (
+                0,
+                "session.inbox.enqueued",
+                json!({ "inboxID": message_id,
+                "item": { "type": "user", "payload": { "text": text }, "delivery": "steer" } }),
+            ),
+            (0, "session.execution.started", json!({})),
+            (
+                0,
+                "session.inbox.delivered",
+                json!({ "inboxID": message_id }),
+            ),
+            (
+                100,
+                "session.step.started",
+                json!({ "assistantMessageID": assistant_id,
+                "agent": "build", "started": delivered + 100 }),
+            ),
+            (
+                100,
+                "session.text.started",
+                json!({ "assistantMessageID": assistant_id, "ordinal": 0 }),
+            ),
+            (
+                150,
+                "session.text.delta",
+                json!({ "assistantMessageID": assistant_id, "ordinal": 0,
+                "delta": "(preview) " }),
+            ),
+            (
+                200,
+                "session.text.ended",
+                json!({ "assistantMessageID": assistant_id, "ordinal": 0,
+                "text": reply }),
+            ),
+            (
+                200,
+                "session.step.ended",
+                json!({ "assistantMessageID": assistant_id,
+                "finish": "stop", "cost": 0, "tokens": tokens }),
+            ),
+            (200, "session.execution.succeeded", json!({})),
+        ];
+        for (offset, kind, mut data) in events {
+            self.next_id += 1;
+            data["sessionID"] = session.clone();
+            self.server_events.push(json!({
+                "id": format!("evt_preview_{:06}", self.next_id),
+                "created": delivered + offset,
+                "type": kind,
+                "location": { "directory": DIRECTORY },
+                "data": data
+            }));
+        }
+    }
+
+    /// Events of the last command, as the event stream would deliver them.
+    pub fn take_server_events(&mut self) -> Vec<UiEvent> {
+        std::mem::take(&mut self.server_events)
+            .into_iter()
+            .map(|payload| {
+                UiEvent::ServerEvent(ServerEnvelope {
+                    directory: Some(DIRECTORY.to_owned()),
+                    payload,
+                })
+            })
+            .collect()
     }
 }
 
@@ -516,15 +601,41 @@ mod tests {
                 ..
             }
         ));
-        let last = state.message_page(ACTIVE_ID, None).messages.pop().unwrap();
-        let protocol::SessionMessage::User(user) = last else {
-            panic!("unexpected {last:?}");
+        let page = state.message_page(ACTIVE_ID, None);
+        let user = &page.messages[page.messages.len() - 2];
+        let protocol::SessionMessage::User(user) = user else {
+            panic!("unexpected {user:?}");
         };
         assert_eq!(user.id, message_id);
         assert_eq!(user.text, "Ship it");
-        let mut conversation = Conversation::default();
-        conversation.replace_from_api(&state.message_page(ACTIVE_ID, None).messages, None);
-        assert!(conversation.has_user_message(&message_id));
+        let last = page.messages.last().unwrap().clone();
+        let protocol::SessionMessage::Assistant(reply) = last else {
+            panic!("unexpected {last:?}");
+        };
+        let mut reloaded = Conversation::default();
+        reloaded.replace_from_api(&page.messages, None);
+        assert!(reloaded.has_user_message(&message_id));
+
+        // The canned v2 events stream the same transcript a reload shows.
+        let mut live = Conversation::default();
+        live.replace_from_api(&active_messages(), None);
+        let events = state.take_server_events();
+        assert_eq!(events.len(), 9);
+        let mut statuses = Vec::new();
+        for event in events {
+            let UiEvent::ServerEvent(envelope) = event else {
+                panic!("unexpected {event:?}");
+            };
+            live.apply_event(&envelope.payload);
+            statuses.extend(crate::model::event_run_status(&envelope.payload));
+        }
+        assert!(live.transcript_rows() == reloaded.transcript_rows());
+        assert!(live.messages.iter().any(|message| message.id == reply.id));
+        assert_eq!(
+            statuses.last().map(|(_, status)| status),
+            Some(&RunStatus::Idle)
+        );
+        assert!(state.take_server_events().is_empty());
     }
 
     #[test]

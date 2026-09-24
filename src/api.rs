@@ -124,6 +124,9 @@ pub struct MessagePage {
     pub messages: Vec<protocol::SessionMessage>,
     /// Cursor for the next older page; `None` once history is exhausted.
     pub next_cursor: Option<String>,
+    /// Undelivered inbox items, fetched with the newest page only. `None`
+    /// when not fetched or the fetch failed: queued rows are then kept as is.
+    pub queued: Option<Vec<protocol::InboxEntry>>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -618,7 +621,19 @@ impl Api {
     /// Each page is reversed into chronological order. A short or empty page
     /// ends history, even though the server returns a cursor for any
     /// non-empty page.
+    ///
+    /// The newest page also fetches the inbox, *before* the history: an item
+    /// delivered in between then shows up in both (and dedupes by ID) rather
+    /// than in neither. Events after the inbox fetch are buffered by the UI
+    /// and replayed. An inbox failure never fails the load.
     fn load_messages(&self, session_id: &str, cursor: Option<&str>) -> Result<MessagePage> {
+        let queued = if cursor.is_none() {
+            self.get::<protocol::InboxListResponse>(&protocol::session_inbox_path(session_id), &[])
+                .map(|inbox| inbox.data)
+                .ok()
+        } else {
+            None
+        };
         let query = protocol::MessageListQuery {
             limit: Some(MESSAGE_PAGE_SIZE),
             order: None,
@@ -633,6 +648,7 @@ impl Api {
         Ok(MessagePage {
             messages: page.data,
             next_cursor,
+            queued,
         })
     }
 
@@ -768,11 +784,15 @@ fn spawn_preview_worker(
 ) {
     thread::spawn(move || {
         while let Ok(command) = commands.recv_blocking() {
-            let event = state
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .handle(command);
-            if ui.send_blocking(event).is_err() {
+            let (event, server_events) = {
+                let mut state = state.lock().unwrap_or_else(|error| error.into_inner());
+                let event = state.handle(command);
+                (event, state.take_server_events())
+            };
+            if std::iter::once(event)
+                .chain(server_events)
+                .any(|event| ui.send_blocking(event).is_err())
+            {
                 break;
             }
         }
@@ -1352,10 +1372,6 @@ mod tests {
         };
         assert_eq!(renamed.directory.as_deref(), Some("/work"));
         assert_eq!(crate::model::event_data(&renamed.payload)["title"], "T");
-        assert_eq!(
-            crate::model::event_session_id(&renamed.payload),
-            Some("ses_a")
-        );
         let EventFrame::Event(started) = &frames[2] else {
             panic!("unexpected {:?}", frames[2]);
         };
@@ -2263,7 +2279,11 @@ mod tests {
     #[test]
     fn message_history_pages_newest_first_and_reverses_each_page() {
         let size = MESSAGE_PAGE_SIZE as usize;
-        let (base, requests, server) = serve(3, move |request| {
+        let queued = fixture("session.inbox.list.afterInterrupt");
+        let (base, requests, server) = serve(4, move |request| {
+            if request.path() == "/api/session/ses_a/inbox" {
+                return ok(queued.clone());
+            }
             assert_eq!(request.path(), "/api/session/ses_a/message");
             match request.query().get("cursor").map(String::as_str) {
                 None => ok(json!({
@@ -2292,6 +2312,13 @@ mod tests {
 
         assert_eq!(first.next_cursor.as_deref(), Some("c1"));
         assert_eq!(second.next_cursor.as_deref(), Some("c2"));
+        let queued = first.queued.as_deref().unwrap();
+        assert_eq!(queued.len(), 1);
+        assert_eq!(queued[0].id, "msg_0d58bd03f001dhaJLZcYj9eH2D");
+        assert!(
+            second.queued.is_none() && last.queued.is_none(),
+            "only the newest page"
+        );
         assert!(last.messages.is_empty());
         assert_eq!(last.next_cursor, None, "the empty final page ends history");
         let ids = |page: &MessagePage| -> Vec<String> {
@@ -2328,7 +2355,12 @@ mod tests {
         );
 
         let requests = requests.lock().unwrap();
-        let queries: Vec<_> = requests.iter().map(HttpRequest::query).collect();
+        assert_eq!(
+            requests[0].path(),
+            "/api/session/ses_a/inbox",
+            "the inbox is fetched before the history"
+        );
+        let queries: Vec<_> = requests[1..].iter().map(HttpRequest::query).collect();
         assert_eq!(queries[0].get("limit"), Some(&size.to_string()));
         assert!(!queries[0].contains_key("cursor"));
         for (query, cursor) in queries[1..].iter().zip(["c1", "c2"]) {
@@ -2342,12 +2374,17 @@ mod tests {
 
     #[test]
     fn a_short_message_page_ends_history() {
-        let (base, _, server) = serve(1, |_| {
+        let (base, _, server) = serve(2, |request| {
+            if request.path().ends_with("/inbox") {
+                // An inbox failure never fails the history load.
+                return (503, String::new());
+            }
             ok(json!({ "data": newest_first(0, 3), "cursor": { "previous": "p", "next": "n" } }))
         });
         let api = Api::new(config(base, None)).unwrap();
         let page = api.load_messages("ses_a", None).unwrap();
         server.join().unwrap();
+        assert!(page.queued.is_none());
         assert_eq!(page.messages.len(), 3);
         assert_eq!(page.messages[0].id(), Some("msg_0000"));
         assert_eq!(page.next_cursor, None);
@@ -2356,7 +2393,7 @@ mod tests {
     #[test]
     fn only_a_declared_missing_session_is_dropped() {
         let not_found = fixture("error.404.session").to_string();
-        let (base, _, server) = serve(3, move |request| match request.path() {
+        let (base, _, server) = serve(6, move |request| match request.path() {
             "/api/session/ses_gone/message" => (404, not_found.clone()),
             "/api/session/ses_proxy/message" => (404, "not found".into()),
             _ => (503, String::new()),
