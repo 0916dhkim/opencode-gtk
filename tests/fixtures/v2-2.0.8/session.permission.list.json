@@ -1,0 +1,37 @@
+{
+  "name": "session.permission.list",
+  "request": {
+    "method": "GET",
+    "path": "/api/session/ses_f2a743e02ffe9b0pzkusFTSsVL/permission",
+    "pathTemplate": "/api/session/{sessionID}/permission",
+    "query": null,
+    "body": null
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json",
+      "content-length": "261"
+    },
+    "body": {
+      "data": [
+        {
+          "id": "per_0d58bc2390010ZP9KJ7TGqU5vT",
+          "sessionID": "ses_f2a743e02ffe9b0pzkusFTSsVL",
+          "action": "shell",
+          "resources": [
+            "echo permission-probe"
+          ],
+          "save": [
+            "echo *"
+          ],
+          "source": {
+            "type": "tool",
+            "messageID": "msg_0d58bc21200105PpTkPVlTATAI",
+            "id": "call_mock_shell"
+          }
+        }
+      ]
+    }
+  }
+}

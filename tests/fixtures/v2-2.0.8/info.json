@@ -1,0 +1,27 @@
+{
+  "name": "info",
+  "request": {
+    "method": "GET",
+    "path": "/api/info",
+    "pathTemplate": "/api/info",
+    "query": null,
+    "body": null
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json",
+      "content-length": "99"
+    },
+    "body": {
+      "version": "2.0.8",
+      "pid": 1,
+      "urls": [
+        "http://172.24.0.3:4096"
+      ],
+      "paths": {
+        "tmp": "/state/tmp/opencode"
+      }
+    }
+  }
+}

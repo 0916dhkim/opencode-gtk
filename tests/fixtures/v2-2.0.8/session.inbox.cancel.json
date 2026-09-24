@@ -1,0 +1,15 @@
+{
+  "name": "session.inbox.cancel",
+  "request": {
+    "method": "DELETE",
+    "path": "/api/session/ses_f2a743079ffeWUJ6G8gT1na5M3/inbox/msg_0d58bd03f001dhaJLZcYj9eH2D",
+    "pathTemplate": "/api/session/{sessionID}/inbox/{inboxID}",
+    "query": null,
+    "body": null
+  },
+  "response": {
+    "status": 204,
+    "headers": {},
+    "body": null
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "name": "session.model.switch",
+  "request": {
+    "method": "POST",
+    "path": "/api/session/ses_f2a747fb3ffeqHy7NW2TISzm9M/model",
+    "pathTemplate": "/api/session/{sessionID}/model",
+    "query": null,
+    "body": {
+      "model": {
+        "providerID": "mock",
+        "id": "mock-model-alt",
+        "variant": "high"
+      }
+    }
+  },
+  "response": {
+    "status": 204,
+    "headers": {},
+    "body": null
+  }
+}

@@ -1,0 +1,134 @@
+{
+  "name": "session.messages.permission",
+  "request": {
+    "method": "GET",
+    "path": "/api/session/ses_f2a743e02ffe9b0pzkusFTSsVL/message",
+    "pathTemplate": "/api/session/{sessionID}/message",
+    "query": "limit=50",
+    "body": null
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json",
+      "content-length": "1686"
+    },
+    "body": {
+      "data": [
+        {
+          "id": "msg_0d58bc26100279SDr1wCH6lpAf",
+          "time": {
+            "created": 1790289101409
+          },
+          "type": "idle",
+          "outcome": "succeeded"
+        },
+        {
+          "id": "msg_0d58bc258001EvSjBFjAXepBeH",
+          "time": {
+            "created": 1790289101403,
+            "streamed": 1790289101408,
+            "completed": 1790289101408
+          },
+          "type": "assistant",
+          "agent": "build",
+          "model": {
+            "id": "mock-model",
+            "providerID": "mock"
+          },
+          "content": [
+            {
+              "type": "text",
+              "text": "The shell command completed."
+            }
+          ],
+          "finish": "stop",
+          "rawFinish": "stop",
+          "cost": 4.6e-05,
+          "tokens": {
+            "input": 42,
+            "output": 2,
+            "reasoning": 0,
+            "cache": {
+              "read": 0,
+              "write": 0
+            }
+          }
+        },
+        {
+          "id": "msg_0d58bc21200105PpTkPVlTATAI",
+          "time": {
+            "created": 1790289101333,
+            "streamed": 1790289101340,
+            "completed": 1790289101396
+          },
+          "type": "assistant",
+          "agent": "build",
+          "model": {
+            "id": "mock-model",
+            "providerID": "mock"
+          },
+          "content": [
+            {
+              "type": "tool",
+              "id": "call_mock_shell",
+              "name": "shell",
+              "executed": false,
+              "state": {
+                "status": "completed",
+                "input": {
+                  "command": "echo permission-probe",
+                  "description": "Echo a probe string"
+                },
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "permission-probe\n"
+                  },
+                  {
+                    "type": "text",
+                    "text": "Command exited with code 0."
+                  }
+                ],
+                "metadata": {
+                  "status": "completed",
+                  "truncated": false,
+                  "exit": 0
+                }
+              },
+              "time": {
+                "created": 1790289101337,
+                "ran": 1790289101339,
+                "completed": 1790289101395
+              }
+            }
+          ],
+          "finish": "tool-calls",
+          "rawFinish": "tool_calls",
+          "cost": 6.6e-05,
+          "tokens": {
+            "input": 42,
+            "output": 12,
+            "reasoning": 0,
+            "cache": {
+              "read": 0,
+              "write": 0
+            }
+          }
+        },
+        {
+          "id": "msg_0d58bc206001b5YF54Bc4T32pr",
+          "time": {
+            "created": 1790289101325
+          },
+          "text": "Run a shell command. [[scenario:permission]]",
+          "type": "user"
+        }
+      ],
+      "cursor": {
+        "previous": "eyJpZCI6Im1zZ18wZDU4YmMyNjEwMDI3OVNEcjF3Q0g2bHBBZiIsIm9yZGVyIjoiZGVzYyIsImRpcmVjdGlvbiI6InByZXZpb3VzIn0",
+        "next": "eyJpZCI6Im1zZ18wZDU4YmMyMDYwMDFiNVlGNTRCYzRUMzJwciIsIm9yZGVyIjoiZGVzYyIsImRpcmVjdGlvbiI6Im5leHQifQ"
+      }
+    }
+  }
+}

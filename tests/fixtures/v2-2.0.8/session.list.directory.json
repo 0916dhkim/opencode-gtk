@@ -1,0 +1,99 @@
+{
+  "name": "session.list.directory",
+  "request": {
+    "method": "GET",
+    "path": "/api/session",
+    "pathTemplate": "/api/session",
+    "query": "limit=3&directory=%2Fstate%2Fworkspace",
+    "body": null
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json",
+      "content-length": "1537"
+    },
+    "body": {
+      "data": [
+        {
+          "id": "ses_f2a741b9affej7hZZ8NEOJ4Mig",
+          "projectID": "10c6f3c89ca2144cfa0eea9125831644e3bddbed",
+          "cost": 0.00024,
+          "tokens": {
+            "input": 210,
+            "output": 15,
+            "reasoning": 0,
+            "cache": {
+              "read": 0,
+              "write": 0
+            }
+          },
+          "outcome": "succeeded",
+          "time": {
+            "created": 1790289110126,
+            "updated": 1790289111884,
+            "idle": 1790289111903
+          },
+          "title": "Mock session title",
+          "location": {
+            "directory": "/state/workspace"
+          }
+        },
+        {
+          "id": "ses_f2a743079ffeWUJ6G8gT1na5M3",
+          "projectID": "10c6f3c89ca2144cfa0eea9125831644e3bddbed",
+          "cost": 4.8e-05,
+          "tokens": {
+            "input": 42,
+            "output": 3,
+            "reasoning": 0,
+            "cache": {
+              "read": 0,
+              "write": 0
+            }
+          },
+          "outcome": "interrupted",
+          "time": {
+            "created": 1790289104781,
+            "updated": 1790289104960,
+            "idle": 1790289105989
+          },
+          "title": "Mock session title",
+          "location": {
+            "directory": "/state/workspace"
+          }
+        },
+        {
+          "id": "ses_f2a743737ffe9Gxk6NjdQqWkMW",
+          "parentID": "ses_f2a743750ffev3c11LrAwbuAQk",
+          "projectID": "10c6f3c89ca2144cfa0eea9125831644e3bddbed",
+          "agent": "general",
+          "cost": 0.00011200000000000001,
+          "tokens": {
+            "input": 84,
+            "output": 14,
+            "reasoning": 0,
+            "cache": {
+              "read": 0,
+              "write": 0
+            }
+          },
+          "outcome": "succeeded",
+          "time": {
+            "created": 1790289103052,
+            "updated": 1790289103054,
+            "idle": 1790289103107
+          },
+          "title": "Mock child shell task",
+          "location": {
+            "directory": "/state/workspace"
+          }
+        }
+      ],
+      "cursor": {
+        "previous": "eyJkaXJlY3RvcnkiOiIvc3RhdGUvd29ya3NwYWNlIiwiYW5jaG9yIjp7ImlkIjoic2VzX2YyYTc0MWI5YWZmZWo3aFpaOE5FT0o0TWlnIiwidGltZSI6MTc5MDI4OTExMTg4NCwiZGlyZWN0aW9uIjoicHJldmlvdXMifX0",
+        "next": "eyJkaXJlY3RvcnkiOiIvc3RhdGUvd29ya3NwYWNlIiwiYW5jaG9yIjp7ImlkIjoic2VzX2YyYTc0MzczN2ZmZTlHeGs2TmpkUXFXa01XIiwidGltZSI6MTc5MDI4OTEwMzA1NCwiZGlyZWN0aW9uIjoibmV4dCJ9fQ"
+      }
+    }
+  }
+}

@@ -1,0 +1,84 @@
+{
+  "name": "session.messages.reasoning",
+  "request": {
+    "method": "GET",
+    "path": "/api/session/ses_f2a7474d2ffeLvqAnI8YX7xxi2/message",
+    "pathTemplate": "/api/session/{sessionID}/message",
+    "query": "limit=50",
+    "body": null
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json",
+      "content-length": "1063"
+    },
+    "body": {
+      "data": [
+        {
+          "id": "msg_0d58b8b540019eDIUgOH1ch4WD",
+          "time": {
+            "created": 1790289087316
+          },
+          "type": "idle",
+          "outcome": "succeeded"
+        },
+        {
+          "id": "msg_0d58b8b45001OAXEfh4xCBuDPX",
+          "time": {
+            "created": 1790289087304,
+            "streamed": 1790289087314,
+            "completed": 1790289087314
+          },
+          "type": "assistant",
+          "agent": "build",
+          "model": {
+            "id": "mock-model",
+            "providerID": "mock"
+          },
+          "content": [
+            {
+              "type": "reasoning",
+              "text": "Let me think about this carefully.",
+              "state": {
+                "reasoningField": "reasoning_content"
+              },
+              "time": {
+                "created": 1790289087309,
+                "completed": 1790289087312
+              }
+            },
+            {
+              "type": "text",
+              "text": "After thinking, the answer is 42."
+            }
+          ],
+          "finish": "stop",
+          "rawFinish": "stop",
+          "cost": 5.2e-05,
+          "tokens": {
+            "input": 42,
+            "output": 5,
+            "reasoning": 0,
+            "cache": {
+              "read": 0,
+              "write": 0
+            }
+          }
+        },
+        {
+          "id": "msg_0d58b8b39001SW3uqhwhEWvhRs",
+          "time": {
+            "created": 1790289087296
+          },
+          "text": "Think first. [[scenario:reasoning]]",
+          "type": "user"
+        }
+      ],
+      "cursor": {
+        "previous": "eyJpZCI6Im1zZ18wZDU4YjhiNTQwMDE5ZURJVWdPSDFjaDRXRCIsIm9yZGVyIjoiZGVzYyIsImRpcmVjdGlvbiI6InByZXZpb3VzIn0",
+        "next": "eyJpZCI6Im1zZ18wZDU4YjhiMzkwMDFTVzN1cWh3aEVXdmhScyIsIm9yZGVyIjoiZGVzYyIsImRpcmVjdGlvbiI6Im5leHQifQ"
+      }
+    }
+  }
+}

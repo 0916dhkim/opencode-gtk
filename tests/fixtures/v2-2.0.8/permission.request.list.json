@@ -1,0 +1,40 @@
+{
+  "name": "permission.request.list",
+  "request": {
+    "method": "GET",
+    "path": "/api/permission/request",
+    "pathTemplate": "/api/permission/request",
+    "query": "location%5Bdirectory%5D=%2Fstate%2Fworkspace",
+    "body": null
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json",
+      "content-length": "305"
+    },
+    "body": {
+      "location": {
+        "directory": "/state/workspace"
+      },
+      "data": [
+        {
+          "id": "per_0d58bc2390010ZP9KJ7TGqU5vT",
+          "sessionID": "ses_f2a743e02ffe9b0pzkusFTSsVL",
+          "action": "shell",
+          "resources": [
+            "echo permission-probe"
+          ],
+          "save": [
+            "echo *"
+          ],
+          "source": {
+            "type": "tool",
+            "messageID": "msg_0d58bc21200105PpTkPVlTATAI",
+            "id": "call_mock_shell"
+          }
+        }
+      ]
+    }
+  }
+}

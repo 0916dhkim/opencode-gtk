@@ -1,0 +1,33 @@
+{
+  "name": "session.inbox.list",
+  "request": {
+    "method": "GET",
+    "path": "/api/session/ses_f2a743079ffeWUJ6G8gT1na5M3/inbox",
+    "pathTemplate": "/api/session/{sessionID}/inbox",
+    "query": null,
+    "body": null
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json",
+      "content-length": "227"
+    },
+    "body": {
+      "data": [
+        {
+          "id": "msg_0d58bd03f001dhaJLZcYj9eH2D",
+          "sessionID": "ses_f2a743079ffeWUJ6G8gT1na5M3",
+          "time": {
+            "created": 1790289104960
+          },
+          "type": "user",
+          "payload": {
+            "text": "Follow-up sent while busy. [[scenario:text]]"
+          },
+          "delivery": "steer"
+        }
+      ]
+    }
+  }
+}

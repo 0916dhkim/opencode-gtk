@@ -1,0 +1,33 @@
+# HTTP/1.1 200 OK
+# cache-control: no-cache, no-transform
+# connection: keep-alive
+# content-type: text/event-stream
+# transfer-encoding: chunked
+# vary: Origin
+# x-accel-buffering: no
+# x-content-type-options: nosniff
+# First 12 frames of the de-chunked body, verbatim (frames end with a blank line).
+data: {"id":"evt_0d58be463001Xq7Ecqc3YVbSxR","type":"server.connected","data":{}}
+
+: heartbeat
+
+data: {"id":"evt_0d58be46e001alPs4ttzvYWq7R","created":1790289110126,"type":"session.created","location":{"directory":"/state/workspace"},"data":{"sessionID":"ses_f2a741b9affej7hZZ8NEOJ4Mig","slug":"sunny-comet","version":"2.0.8","projectID":"10c6f3c89ca2144cfa0eea9125831644e3bddbed","location":{"directory":"/state/workspace"},"subpath":""},"durable":{"aggregateID":"ses_f2a741b9affej7hZZ8NEOJ4Mig","seq":0,"version":1}}
+
+data: {"id":"evt_0d58be472001PfCL14Y2hjgsvS","created":1790289110130,"type":"session.inbox.enqueued","location":{"directory":"/state/workspace"},"data":{"inboxID":"msg_0d58be471001BRYg57oVJn2fI4","sessionID":"ses_f2a741b9affej7hZZ8NEOJ4Mig","item":{"type":"user","payload":{"text":"History turn 1. [[scenario:text]]"},"delivery":"steer"}},"durable":{"aggregateID":"ses_f2a741b9affej7hZZ8NEOJ4Mig","seq":1,"version":1}}
+
+data: {"id":"evt_0d58be473001oBuHa8MDZqjCVX","created":1790289110131,"type":"session.execution.started","data":{"sessionID":"ses_f2a741b9affej7hZZ8NEOJ4Mig"},"durable":{"aggregateID":"ses_f2a741b9affej7hZZ8NEOJ4Mig","seq":2,"version":1}}
+
+data: {"id":"evt_0d58be476001ev4bZKsX9w1DCc","created":1790289110134,"metadata":{"instructions":{"initial":true}},"type":"session.instructions.updated","location":{"directory":"/state/workspace"},"data":{"sessionID":"ses_f2a741b9affej7hZZ8NEOJ4Mig","delta":{"core/environment":"c9c5225d1d3dfa9a9b6c2a9737bde7891ac4f6d408fd01b52c8e3861c8b90ca3","core/date":"ade00e1aa759b4d8ec62b951b7f4a0980802006f34bb8b5db1fab6b639c8d61c","core/codemode":"c7de9837cd8baab59ebffdcd43edf45df4b996b9db543faa45fef33f7180b16c","core/skill-guidance":"8394362d28c82fa4d13c7a9f5568c05680f6687e07db8f426a0e3c92f3027dc9"}},"durable":{"aggregateID":"ses_f2a741b9affej7hZZ8NEOJ4Mig","seq":3,"version":2}}
+
+data: {"id":"evt_0d58be477001J2yDMpyNHB60s8","created":1790289110135,"type":"session.inbox.delivered","location":{"directory":"/state/workspace"},"data":{"sessionID":"ses_f2a741b9affej7hZZ8NEOJ4Mig","inboxID":"msg_0d58be471001BRYg57oVJn2fI4"},"durable":{"aggregateID":"ses_f2a741b9affej7hZZ8NEOJ4Mig","seq":4,"version":1}}
+
+data: {"id":"evt_0d58be4820015MtUmsIbAtPafo","created":1790289110146,"type":"session.usage.updated","data":{"sessionID":"ses_f2a741b9affej7hZZ8NEOJ4Mig","cost":0.000048,"tokens":{"input":42,"output":3,"reasoning":0,"cache":{"read":0,"write":0}}}}
+
+data: {"id":"evt_0d58be482002Mi4SX4RyszV0BF","created":1790289110146,"type":"session.renamed","location":{"directory":"/state/workspace"},"data":{"sessionID":"ses_f2a741b9affej7hZZ8NEOJ4Mig","title":"Mock session title"},"durable":{"aggregateID":"ses_f2a741b9affej7hZZ8NEOJ4Mig","seq":6,"version":1}}
+
+data: {"id":"evt_0d58be483001zuT3Ox86JkhzoP","created":1790289110147,"type":"session.step.started","location":{"directory":"/state/workspace"},"data":{"sessionID":"ses_f2a741b9affej7hZZ8NEOJ4Mig","agent":"build","model":{"id":"mock-model","providerID":"mock"},"assistantMessageID":"msg_0d58be47c001Xn8RoyHp7Ll5G0","started":1790289110143},"durable":{"aggregateID":"ses_f2a741b9affej7hZZ8NEOJ4Mig","seq":7,"version":1}}
+
+data: {"id":"evt_0d58be483002fsBG2qyjK9WsuC","created":1790289110147,"type":"session.text.started","location":{"directory":"/state/workspace"},"data":{"sessionID":"ses_f2a741b9affej7hZZ8NEOJ4Mig","assistantMessageID":"msg_0d58be47c001Xn8RoyHp7Ll5G0","ordinal":0},"durable":{"aggregateID":"ses_f2a741b9affej7hZZ8NEOJ4Mig","seq":8,"version":1}}
+
+data: {"id":"evt_0d58be484001eSXdMSHkl76jv2","created":1790289110148,"type":"session.text.delta","location":{"directory":"/state/workspace"},"data":{"sessionID":"ses_f2a741b9affej7hZZ8NEOJ4Mig","assistantMessageID":"msg_0d58be47c001Xn8RoyHp7Ll5G0","ordinal":0,"delta":"Hello from the mock provider."}}
+

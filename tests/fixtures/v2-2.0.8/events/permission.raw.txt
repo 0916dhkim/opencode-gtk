@@ -1,0 +1,33 @@
+# HTTP/1.1 200 OK
+# cache-control: no-cache, no-transform
+# connection: keep-alive
+# content-type: text/event-stream
+# transfer-encoding: chunked
+# vary: Origin
+# x-accel-buffering: no
+# x-content-type-options: nosniff
+# First 12 frames of the de-chunked body, verbatim (frames end with a blank line).
+data: {"id":"evt_0d58bc1fb001Coih6Jui1qAfST","type":"server.connected","data":{}}
+
+: heartbeat
+
+data: {"id":"evt_0d58bc203001lIXX4Zhd5Lrzs4","created":1790289101315,"type":"session.created","location":{"directory":"/state/workspace"},"data":{"sessionID":"ses_f2a743e02ffe9b0pzkusFTSsVL","slug":"eager-wolf","version":"2.0.8","projectID":"10c6f3c89ca2144cfa0eea9125831644e3bddbed","location":{"directory":"/state/workspace"},"subpath":""},"durable":{"aggregateID":"ses_f2a743e02ffe9b0pzkusFTSsVL","seq":0,"version":1}}
+
+data: {"id":"evt_0d58bc207001lg4TkfiU6879sC","created":1790289101319,"type":"session.inbox.enqueued","location":{"directory":"/state/workspace"},"data":{"inboxID":"msg_0d58bc206001b5YF54Bc4T32pr","sessionID":"ses_f2a743e02ffe9b0pzkusFTSsVL","item":{"type":"user","payload":{"text":"Run a shell command. [[scenario:permission]]"},"delivery":"steer"}},"durable":{"aggregateID":"ses_f2a743e02ffe9b0pzkusFTSsVL","seq":1,"version":1}}
+
+data: {"id":"evt_0d58bc209001ibsjf5tMQ17wmJ","created":1790289101321,"type":"session.execution.started","data":{"sessionID":"ses_f2a743e02ffe9b0pzkusFTSsVL"},"durable":{"aggregateID":"ses_f2a743e02ffe9b0pzkusFTSsVL","seq":2,"version":1}}
+
+data: {"id":"evt_0d58bc20c001g89jLyjMDrAni3","created":1790289101324,"metadata":{"instructions":{"initial":true}},"type":"session.instructions.updated","location":{"directory":"/state/workspace"},"data":{"sessionID":"ses_f2a743e02ffe9b0pzkusFTSsVL","delta":{"core/environment":"f697af0ba8f7579579729b9bebb6bdfd72eae1c4860ce1778a5f260a6106b912","core/date":"ade00e1aa759b4d8ec62b951b7f4a0980802006f34bb8b5db1fab6b639c8d61c","core/codemode":"c7de9837cd8baab59ebffdcd43edf45df4b996b9db543faa45fef33f7180b16c","core/skill-guidance":"8394362d28c82fa4d13c7a9f5568c05680f6687e07db8f426a0e3c92f3027dc9"}},"durable":{"aggregateID":"ses_f2a743e02ffe9b0pzkusFTSsVL","seq":3,"version":2}}
+
+data: {"id":"evt_0d58bc20d0015jt5vkC7NpV3Sn","created":1790289101325,"type":"session.inbox.delivered","location":{"directory":"/state/workspace"},"data":{"sessionID":"ses_f2a743e02ffe9b0pzkusFTSsVL","inboxID":"msg_0d58bc206001b5YF54Bc4T32pr"},"durable":{"aggregateID":"ses_f2a743e02ffe9b0pzkusFTSsVL","seq":4,"version":1}}
+
+data: {"id":"evt_0d58bc218001ukpyZdHzF29J6s","created":1790289101336,"type":"session.usage.updated","data":{"sessionID":"ses_f2a743e02ffe9b0pzkusFTSsVL","cost":0.000048,"tokens":{"input":42,"output":3,"reasoning":0,"cache":{"read":0,"write":0}}}}
+
+data: {"id":"evt_0d58bc2180028fjhvCygYPc6Hc","created":1790289101336,"type":"session.renamed","location":{"directory":"/state/workspace"},"data":{"sessionID":"ses_f2a743e02ffe9b0pzkusFTSsVL","title":"Mock session title"},"durable":{"aggregateID":"ses_f2a743e02ffe9b0pzkusFTSsVL","seq":6,"version":1}}
+
+data: {"id":"evt_0d58bc219001ou6zJ0DDjnSSxW","created":1790289101337,"type":"session.step.started","location":{"directory":"/state/workspace"},"data":{"sessionID":"ses_f2a743e02ffe9b0pzkusFTSsVL","agent":"build","model":{"id":"mock-model","providerID":"mock"},"assistantMessageID":"msg_0d58bc21200105PpTkPVlTATAI","started":1790289101333},"durable":{"aggregateID":"ses_f2a743e02ffe9b0pzkusFTSsVL","seq":7,"version":1}}
+
+data: {"id":"evt_0d58bc219002WJM1TKfFdbX24r","created":1790289101337,"type":"session.tool.input.started","location":{"directory":"/state/workspace"},"data":{"sessionID":"ses_f2a743e02ffe9b0pzkusFTSsVL","assistantMessageID":"msg_0d58bc21200105PpTkPVlTATAI","id":"call_mock_shell","name":"shell"},"durable":{"aggregateID":"ses_f2a743e02ffe9b0pzkusFTSsVL","seq":8,"version":1}}
+
+data: {"id":"evt_0d58bc21a00144zEXs7BHn9512","created":1790289101338,"type":"session.tool.input.ended","location":{"directory":"/state/workspace"},"data":{"sessionID":"ses_f2a743e02ffe9b0pzkusFTSsVL","assistantMessageID":"msg_0d58bc21200105PpTkPVlTATAI","id":"call_mock_shell","text":"{\"command\": \"echo permission-probe\", \"description\": \"Echo a probe string\"}"},"durable":{"aggregateID":"ses_f2a743e02ffe9b0pzkusFTSsVL","seq":9,"version":1}}
+

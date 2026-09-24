@@ -1,0 +1,187 @@
+{
+  "name": "session.messages.subagent",
+  "request": {
+    "method": "GET",
+    "path": "/api/session/ses_f2a7444ccffe7yJDIJFaA9PlRV/message",
+    "pathTemplate": "/api/session/{sessionID}/message",
+    "query": "limit=50",
+    "body": null
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json",
+      "content-length": "3009"
+    },
+    "body": {
+      "data": [
+        {
+          "id": "msg_0d58bbb90003oSC78zUVpnM6Ax",
+          "time": {
+            "created": 1790289099664
+          },
+          "type": "idle",
+          "outcome": "succeeded"
+        },
+        {
+          "id": "msg_0d58bbb86001dfTVH3G5sGU0oh",
+          "time": {
+            "created": 1790289099659,
+            "streamed": 1790289099663,
+            "completed": 1790289099664
+          },
+          "type": "assistant",
+          "agent": "build",
+          "model": {
+            "id": "mock-model",
+            "providerID": "mock"
+          },
+          "content": [
+            {
+              "type": "text",
+              "text": "Hello from the mock provider."
+            }
+          ],
+          "finish": "stop",
+          "rawFinish": "stop",
+          "cost": 4.8e-05,
+          "tokens": {
+            "input": 42,
+            "output": 3,
+            "reasoning": 0,
+            "cache": {
+              "read": 0,
+              "write": 0
+            }
+          }
+        },
+        {
+          "id": "msg_0d58bbb5c001ux5THfRK12A1fC",
+          "metadata": {
+            "source": "subagent",
+            "childID": "ses_f2a7444aaffemNHKVCr3zoKjZZ",
+            "agent": "General",
+            "state": "completed"
+          },
+          "time": {
+            "created": 1790289099652
+          },
+          "text": "<subagent sessionID=\"ses_f2a7444aaffemNHKVCr3zoKjZZ\" state=\"completed\" description=\"Mock child task\">\nHello from the child subagent.\n</subagent>",
+          "description": "Mock child task",
+          "type": "synthetic"
+        },
+        {
+          "id": "msg_0d58bbb7a0027SYSytv4y0n1yI",
+          "time": {
+            "created": 1790289099642
+          },
+          "type": "idle",
+          "outcome": "succeeded"
+        },
+        {
+          "id": "msg_0d58bbb620013GZaU0pofyssSv",
+          "time": {
+            "created": 1790289099623,
+            "streamed": 1790289099640,
+            "completed": 1790289099641
+          },
+          "type": "assistant",
+          "agent": "build",
+          "model": {
+            "id": "mock-model",
+            "providerID": "mock"
+          },
+          "content": [
+            {
+              "type": "text",
+              "text": "Launched a background subagent."
+            }
+          ],
+          "finish": "stop",
+          "rawFinish": "stop",
+          "cost": 4.6e-05,
+          "tokens": {
+            "input": 42,
+            "output": 2,
+            "reasoning": 0,
+            "cache": {
+              "read": 0,
+              "write": 0
+            }
+          }
+        },
+        {
+          "id": "msg_0d58bbb49001Lkta28nen7IgnX",
+          "time": {
+            "created": 1790289099597,
+            "streamed": 1790289099603,
+            "completed": 1790289099613
+          },
+          "type": "assistant",
+          "agent": "build",
+          "model": {
+            "id": "mock-model",
+            "providerID": "mock"
+          },
+          "content": [
+            {
+              "type": "tool",
+              "id": "call_mock_subagent",
+              "name": "subagent",
+              "executed": false,
+              "state": {
+                "status": "completed",
+                "input": {
+                  "agent": "general",
+                  "description": "Mock child task",
+                  "prompt": "[[scenario:child]] Reply with a short greeting.",
+                  "background": true
+                },
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "The subagent is working in the background (sessionID: ses_f2a7444aaffemNHKVCr3zoKjZZ). You will be notified automatically when it finishes.\nDO NOT sleep, poll for progress, ask the subagent for status, or duplicate this subagent's work; avoid working with the same files or topics it is using.\nWork on non-overlapping tasks, or briefly tell the user what you launched and end your response."
+                  }
+                ],
+                "metadata": {
+                  "sessionID": "ses_f2a7444aaffemNHKVCr3zoKjZZ",
+                  "status": "running",
+                  "truncated": false
+                }
+              },
+              "time": {
+                "created": 1790289099601,
+                "ran": 1790289099603,
+                "completed": 1790289099613
+              }
+            }
+          ],
+          "finish": "tool-calls",
+          "rawFinish": "tool_calls",
+          "cost": 6.6e-05,
+          "tokens": {
+            "input": 42,
+            "output": 12,
+            "reasoning": 0,
+            "cache": {
+              "read": 0,
+              "write": 0
+            }
+          }
+        },
+        {
+          "id": "msg_0d58bbb3e001VATyhG5RTAjMeo",
+          "time": {
+            "created": 1790289099588
+          },
+          "text": "Delegate this. [[scenario:subagent]]",
+          "type": "user"
+        }
+      ],
+      "cursor": {
+        "previous": "eyJpZCI6Im1zZ18wZDU4YmJiOTAwMDNvU0M3OHpVVnBuTTZBeCIsIm9yZGVyIjoiZGVzYyIsImRpcmVjdGlvbiI6InByZXZpb3VzIn0",
+        "next": "eyJpZCI6Im1zZ18wZDU4YmJiM2UwMDFWQVR5aEc1UlRBak1lbyIsIm9yZGVyIjoiZGVzYyIsImRpcmVjdGlvbiI6Im5leHQifQ"
+      }
+    }
+  }
+}

@@ -1,0 +1,73 @@
+{
+  "name": "session.messages.retry",
+  "request": {
+    "method": "GET",
+    "path": "/api/session/ses_f2a7459f9ffeDVU9Iv1bINqJPw/message",
+    "pathTemplate": "/api/session/{sessionID}/message",
+    "query": "limit=50",
+    "body": null
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json",
+      "content-length": "890"
+    },
+    "body": {
+      "data": [
+        {
+          "id": "msg_0d58badfe002pEWZ7d0JSMzrr2",
+          "time": {
+            "created": 1790289096190
+          },
+          "type": "idle",
+          "outcome": "succeeded"
+        },
+        {
+          "id": "msg_0d58ba619001BDGvmssMHZztB9",
+          "time": {
+            "created": 1790289096183,
+            "streamed": 1790289096188,
+            "completed": 1790289096189
+          },
+          "type": "assistant",
+          "agent": "build",
+          "model": {
+            "id": "mock-model",
+            "providerID": "mock"
+          },
+          "content": [
+            {
+              "type": "text",
+              "text": "Recovered after a retry."
+            }
+          ],
+          "finish": "stop",
+          "rawFinish": "stop",
+          "cost": 4.6e-05,
+          "tokens": {
+            "input": 42,
+            "output": 2,
+            "reasoning": 0,
+            "cache": {
+              "read": 0,
+              "write": 0
+            }
+          }
+        },
+        {
+          "id": "msg_0d58ba60f001Eja78rJKcCmD40",
+          "time": {
+            "created": 1790289094165
+          },
+          "text": "Fail once then recover. [[scenario:retry]]",
+          "type": "user"
+        }
+      ],
+      "cursor": {
+        "previous": "eyJpZCI6Im1zZ18wZDU4YmFkZmUwMDJwRVdaN2QwSlNNenJyMiIsIm9yZGVyIjoiZGVzYyIsImRpcmVjdGlvbiI6InByZXZpb3VzIn0",
+        "next": "eyJpZCI6Im1zZ18wZDU4YmE2MGYwMDFFamE3OHJKS2NDbUQ0MCIsIm9yZGVyIjoiZGVzYyIsImRpcmVjdGlvbiI6Im5leHQifQ"
+      }
+    }
+  }
+}

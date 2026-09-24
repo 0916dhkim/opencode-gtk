@@ -1,0 +1,33 @@
+# HTTP/1.1 200 OK
+# cache-control: no-cache, no-transform
+# connection: keep-alive
+# content-type: text/event-stream
+# transfer-encoding: chunked
+# vary: Origin
+# x-accel-buffering: no
+# x-content-type-options: nosniff
+# First 12 frames of the de-chunked body, verbatim (frames end with a blank line).
+data: {"id":"evt_0d58b9f61001r0uAnZKLItpqAx","type":"server.connected","data":{}}
+
+: heartbeat
+
+data: {"id":"evt_0d58b9f6d001QK7kFshXN94usr","created":1790289092461,"type":"session.created","location":{"directory":"/state/workspace"},"data":{"sessionID":"ses_f2a74609cffeSanNHuYtO27yse","slug":"jolly-tiger","version":"2.0.8","projectID":"10c6f3c89ca2144cfa0eea9125831644e3bddbed","location":{"directory":"/state/workspace"},"subpath":""},"durable":{"aggregateID":"ses_f2a74609cffeSanNHuYtO27yse","seq":0,"version":1}}
+
+data: {"id":"evt_0d58b9f720017iz4UmjrHyVCFA","created":1790289092466,"type":"session.inbox.enqueued","location":{"directory":"/state/workspace"},"data":{"inboxID":"msg_0d58b9f71001RXlZbeRY5coDo3","sessionID":"ses_f2a74609cffeSanNHuYtO27yse","item":{"type":"user","payload":{"text":"Fail please. [[scenario:error]]"},"delivery":"steer"}},"durable":{"aggregateID":"ses_f2a74609cffeSanNHuYtO27yse","seq":1,"version":1}}
+
+data: {"id":"evt_0d58b9f73001NAjdeUmwIEzDVK","created":1790289092467,"type":"session.execution.started","data":{"sessionID":"ses_f2a74609cffeSanNHuYtO27yse"},"durable":{"aggregateID":"ses_f2a74609cffeSanNHuYtO27yse","seq":2,"version":1}}
+
+data: {"id":"evt_0d58b9f79001VmlAWl8RC2n0A3","created":1790289092473,"metadata":{"instructions":{"initial":true}},"type":"session.instructions.updated","location":{"directory":"/state/workspace"},"data":{"sessionID":"ses_f2a74609cffeSanNHuYtO27yse","delta":{"core/environment":"76c8f2527e02c73fef1bae3c63b6c4f2ad20eb67d5911d050ad5e72b2ffd0a2a","core/date":"ade00e1aa759b4d8ec62b951b7f4a0980802006f34bb8b5db1fab6b639c8d61c","core/codemode":"c7de9837cd8baab59ebffdcd43edf45df4b996b9db543faa45fef33f7180b16c","core/skill-guidance":"8394362d28c82fa4d13c7a9f5568c05680f6687e07db8f426a0e3c92f3027dc9"}},"durable":{"aggregateID":"ses_f2a74609cffeSanNHuYtO27yse","seq":3,"version":2}}
+
+data: {"id":"evt_0d58b9f7b001fqeuHE7YMd0V4A","created":1790289092475,"type":"session.inbox.delivered","location":{"directory":"/state/workspace"},"data":{"sessionID":"ses_f2a74609cffeSanNHuYtO27yse","inboxID":"msg_0d58b9f71001RXlZbeRY5coDo3"},"durable":{"aggregateID":"ses_f2a74609cffeSanNHuYtO27yse","seq":4,"version":1}}
+
+data: {"id":"evt_0d58b9f8c0013a3ThhdeAl4eGW","created":1790289092492,"type":"session.usage.updated","data":{"sessionID":"ses_f2a74609cffeSanNHuYtO27yse","cost":0.000048,"tokens":{"input":42,"output":3,"reasoning":0,"cache":{"read":0,"write":0}}}}
+
+data: {"id":"evt_0d58b9f8d001OnY94wZ7wCOWpn","created":1790289092493,"type":"session.renamed","location":{"directory":"/state/workspace"},"data":{"sessionID":"ses_f2a74609cffeSanNHuYtO27yse","title":"Mock session title"},"durable":{"aggregateID":"ses_f2a74609cffeSanNHuYtO27yse","seq":6,"version":1}}
+
+data: {"id":"evt_0d58b9f8f001NnmFCWfU2TaGl4","created":1790289092495,"type":"session.step.started","location":{"directory":"/state/workspace"},"data":{"sessionID":"ses_f2a74609cffeSanNHuYtO27yse","agent":"build","model":{"id":"mock-model","providerID":"mock"},"assistantMessageID":"msg_0d58b9f82001eBbEjKjbjbTBCn","started":1790289092489},"durable":{"aggregateID":"ses_f2a74609cffeSanNHuYtO27yse","seq":7,"version":1}}
+
+data: {"id":"evt_0d58b9f90001d7dS3SawSJnUhK","created":1790289092496,"type":"session.step.failed","location":{"directory":"/state/workspace"},"data":{"sessionID":"ses_f2a74609cffeSanNHuYtO27yse","assistantMessageID":"msg_0d58b9f82001eBbEjKjbjbTBCn","error":{"type":"provider.internal","message":"Mock provider exploded","status":500}},"durable":{"aggregateID":"ses_f2a74609cffeSanNHuYtO27yse","seq":8,"version":1}}
+
+data: {"id":"evt_0d58b9f920011cvBWfj8agdSFt","created":1790289092498,"type":"session.execution.failed","data":{"sessionID":"ses_f2a74609cffeSanNHuYtO27yse","error":{"type":"provider.internal","message":"Mock provider exploded","status":500}},"durable":{"aggregateID":"ses_f2a74609cffeSanNHuYtO27yse","seq":9,"version":1}}
+

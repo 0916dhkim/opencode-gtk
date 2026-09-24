@@ -1,0 +1,73 @@
+{
+  "name": "session.messages.page1",
+  "request": {
+    "method": "GET",
+    "path": "/api/session/ses_f2a741b9affej7hZZ8NEOJ4Mig/message",
+    "pathTemplate": "/api/session/{sessionID}/message",
+    "query": "limit=3",
+    "body": null
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json",
+      "content-length": "886"
+    },
+    "body": {
+      "data": [
+        {
+          "id": "msg_0d58beb5f002veYFLZXwMbzm1s",
+          "time": {
+            "created": 1790289111903
+          },
+          "type": "idle",
+          "outcome": "succeeded"
+        },
+        {
+          "id": "msg_0d58beb560017f7xuTxd6U3ttN",
+          "time": {
+            "created": 1790289111897,
+            "streamed": 1790289111902,
+            "completed": 1790289111902
+          },
+          "type": "assistant",
+          "agent": "build",
+          "model": {
+            "id": "mock-model",
+            "providerID": "mock"
+          },
+          "content": [
+            {
+              "type": "text",
+              "text": "Hello from the mock provider."
+            }
+          ],
+          "finish": "stop",
+          "rawFinish": "stop",
+          "cost": 4.8e-05,
+          "tokens": {
+            "input": 42,
+            "output": 3,
+            "reasoning": 0,
+            "cache": {
+              "read": 0,
+              "write": 0
+            }
+          }
+        },
+        {
+          "id": "msg_0d58beb4b001UIA9QKFKIjkRsv",
+          "time": {
+            "created": 1790289111891
+          },
+          "text": "History turn 4. [[scenario:text]]",
+          "type": "user"
+        }
+      ],
+      "cursor": {
+        "previous": "eyJpZCI6Im1zZ18wZDU4YmViNWYwMDJ2ZVlGTFpYd01iem0xcyIsIm9yZGVyIjoiZGVzYyIsImRpcmVjdGlvbiI6InByZXZpb3VzIn0",
+        "next": "eyJpZCI6Im1zZ18wZDU4YmViNGIwMDFVSUE5UUtGS0lqa1JzdiIsIm9yZGVyIjoiZGVzYyIsImRpcmVjdGlvbiI6Im5leHQifQ"
+      }
+    }
+  }
+}

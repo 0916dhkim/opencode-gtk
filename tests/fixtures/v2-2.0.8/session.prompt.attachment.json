@@ -1,0 +1,49 @@
+{
+  "name": "session.prompt.attachment",
+  "request": {
+    "method": "POST",
+    "path": "/api/session/ses_f2a744b85ffeSQUpVO4sc2BUsZ/prompt",
+    "pathTemplate": "/api/session/{sessionID}/prompt",
+    "query": null,
+    "body": {
+      "text": "Describe the attached image. [[scenario:text]]",
+      "files": [
+        {
+          "uri": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==",
+          "name": "pixel.png"
+        }
+      ]
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json",
+      "content-length": "410"
+    },
+    "body": {
+      "data": {
+        "id": "msg_0d58bb487001PoGdqRpkQHvqx2",
+        "sessionID": "ses_f2a744b85ffeSQUpVO4sc2BUsZ",
+        "time": {
+          "created": 1790289097876
+        },
+        "type": "user",
+        "payload": {
+          "text": "Describe the attached image. [[scenario:text]]",
+          "files": [
+            {
+              "data": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==",
+              "mime": "image/png",
+              "source": {
+                "type": "inline"
+              },
+              "name": "pixel.png"
+            }
+          ]
+        },
+        "delivery": "steer"
+      }
+    }
+  }
+}

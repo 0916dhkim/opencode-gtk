@@ -1,0 +1,44 @@
+{
+  "name": "session.create",
+  "request": {
+    "method": "POST",
+    "path": "/api/session",
+    "pathTemplate": "/api/session",
+    "query": null,
+    "body": {
+      "location": {
+        "directory": "/state/workspace"
+      }
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json",
+      "content-length": "288"
+    },
+    "body": {
+      "data": {
+        "id": "ses_f2a747fb3ffeqHy7NW2TISzm9M",
+        "projectID": "10c6f3c89ca2144cfa0eea9125831644e3bddbed",
+        "cost": 0,
+        "tokens": {
+          "input": 0,
+          "output": 0,
+          "reasoning": 0,
+          "cache": {
+            "read": 0,
+            "write": 0
+          }
+        },
+        "time": {
+          "created": 1790289084499,
+          "updated": 1790289084499
+        },
+        "location": {
+          "directory": "/state/workspace"
+        }
+      }
+    }
+  }
+}

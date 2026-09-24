@@ -1,0 +1,61 @@
+{
+  "name": "session.messages.error",
+  "request": {
+    "method": "GET",
+    "path": "/api/session/ses_f2a74609cffeSanNHuYtO27yse/message",
+    "pathTemplate": "/api/session/{sessionID}/message",
+    "query": "limit=50",
+    "body": null
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json",
+      "content-length": "777"
+    },
+    "body": {
+      "data": [
+        {
+          "id": "msg_0d58b9f920011cvBWfj8agdSFt",
+          "time": {
+            "created": 1790289092498
+          },
+          "type": "idle",
+          "outcome": "failed"
+        },
+        {
+          "id": "msg_0d58b9f82001eBbEjKjbjbTBCn",
+          "time": {
+            "created": 1790289092489,
+            "completed": 1790289092496
+          },
+          "type": "assistant",
+          "agent": "build",
+          "model": {
+            "id": "mock-model",
+            "providerID": "mock"
+          },
+          "content": [],
+          "finish": "error",
+          "error": {
+            "type": "provider.internal",
+            "message": "Mock provider exploded",
+            "status": 500
+          }
+        },
+        {
+          "id": "msg_0d58b9f71001RXlZbeRY5coDo3",
+          "time": {
+            "created": 1790289092475
+          },
+          "text": "Fail please. [[scenario:error]]",
+          "type": "user"
+        }
+      ],
+      "cursor": {
+        "previous": "eyJpZCI6Im1zZ18wZDU4YjlmOTIwMDExY3ZCV2ZqOGFnZFNGdCIsIm9yZGVyIjoiZGVzYyIsImRpcmVjdGlvbiI6InByZXZpb3VzIn0",
+        "next": "eyJpZCI6Im1zZ18wZDU4YjlmNzEwMDFSWGxaYmVSWTVjb0RvMyIsIm9yZGVyIjoiZGVzYyIsImRpcmVjdGlvbiI6Im5leHQifQ"
+      }
+    }
+  }
+}

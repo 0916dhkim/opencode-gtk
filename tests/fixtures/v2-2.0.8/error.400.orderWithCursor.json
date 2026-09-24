@@ -1,0 +1,21 @@
+{
+  "name": "error.400.orderWithCursor",
+  "request": {
+    "method": "GET",
+    "path": "/api/session/ses_f2a741b9affej7hZZ8NEOJ4Mig/message",
+    "pathTemplate": "/api/session/{sessionID}/message",
+    "query": "limit=3&order=asc&cursor=eyJpZCI6Im1zZ18wZDU4YmViNGIwMDFVSUE5UUtGS0lqa1JzdiIsIm9yZGVyIjoiZGVzYyIsImRpcmVjdGlvbiI6Im5leHQifQ",
+    "body": null
+  },
+  "response": {
+    "status": 400,
+    "headers": {
+      "content-type": "application/json",
+      "content-length": "78"
+    },
+    "body": {
+      "_tag": "InvalidCursorError",
+      "message": "Cursor cannot be combined with order"
+    }
+  }
+}

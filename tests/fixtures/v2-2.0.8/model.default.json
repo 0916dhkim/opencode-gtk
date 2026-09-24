@@ -1,0 +1,82 @@
+{
+  "name": "model.default",
+  "request": {
+    "method": "GET",
+    "path": "/api/model/default",
+    "pathTemplate": "/api/model/default",
+    "query": "location%5Bdirectory%5D=%2Fstate%2Fworkspace",
+    "body": null
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json",
+      "content-length": "674"
+    },
+    "body": {
+      "location": {
+        "directory": "/state/workspace"
+      },
+      "data": {
+        "id": "mock-model",
+        "modelID": "mock-model",
+        "providerID": "mock",
+        "name": "Mock Model",
+        "package": "@opencode/ai/providers/openai-compatible",
+        "settings": {
+          "apiKey": "dummy-not-a-secret",
+          "baseURL": "http://ocgtk-v2h-mock:4100/v1"
+        },
+        "capabilities": {
+          "tools": true,
+          "input": [
+            "text",
+            "image"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "variants": [
+          {
+            "id": "low",
+            "settings": {
+              "reasoningEffort": "low"
+            }
+          },
+          {
+            "id": "medium",
+            "settings": {
+              "reasoningEffort": "medium"
+            }
+          },
+          {
+            "id": "high",
+            "settings": {
+              "reasoningEffort": "high"
+            }
+          }
+        ],
+        "time": {
+          "released": 0
+        },
+        "cost": [
+          {
+            "input": 1,
+            "output": 2,
+            "cache": {
+              "read": 0,
+              "write": 0
+            }
+          }
+        ],
+        "status": "active",
+        "enabled": true,
+        "limit": {
+          "context": 128000,
+          "output": 4096
+        }
+      }
+    }
+  }
+}

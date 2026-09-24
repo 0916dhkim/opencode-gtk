@@ -1,0 +1,21 @@
+# HTTP/1.1 200 OK
+# cache-control: no-cache, no-transform
+# connection: keep-alive
+# content-type: text/event-stream
+# transfer-encoding: chunked
+# vary: Origin
+# x-accel-buffering: no
+# x-content-type-options: nosniff
+# First 12 frames of the de-chunked body, verbatim (frames end with a blank line).
+data: {"id":"evt_0d58b804a001G4ttXXmihPhxYR","type":"server.connected","data":{}}
+
+: heartbeat
+
+data: {"id":"evt_0d58b8053001nON4VUI6OL61er","created":1790289084499,"type":"session.created","location":{"directory":"/state/workspace"},"data":{"sessionID":"ses_f2a747fb3ffeqHy7NW2TISzm9M","slug":"misty-garden","version":"2.0.8","projectID":"10c6f3c89ca2144cfa0eea9125831644e3bddbed","location":{"directory":"/state/workspace"},"subpath":""},"durable":{"aggregateID":"ses_f2a747fb3ffeqHy7NW2TISzm9M","seq":0,"version":1}}
+
+data: {"id":"evt_0d58b805c0012Ndq0jDElsXSA8","created":1790289084508,"type":"session.created","location":{"directory":"/state/workspace"},"data":{"sessionID":"ses_f2a747fa8ffek1NynLUHA5YLNq","slug":"tidy-eagle","version":"2.0.8","projectID":"10c6f3c89ca2144cfa0eea9125831644e3bddbed","location":{"directory":"/state/workspace"},"subpath":"","title":"Titled harness session"},"durable":{"aggregateID":"ses_f2a747fa8ffek1NynLUHA5YLNq","seq":0,"version":1}}
+
+data: {"id":"evt_0d58b8061001McW05zFtafnfEs","created":1790289084513,"type":"session.renamed","location":{"directory":"/state/workspace"},"data":{"sessionID":"ses_f2a747fb3ffeqHy7NW2TISzm9M","title":"Renamed by harness"},"durable":{"aggregateID":"ses_f2a747fb3ffeqHy7NW2TISzm9M","seq":1,"version":1}}
+
+data: {"id":"evt_0d58b8065001GxgeVRWrcJOft1","created":1790289084517,"type":"session.model.selected","location":{"directory":"/state/workspace"},"data":{"sessionID":"ses_f2a747fb3ffeqHy7NW2TISzm9M","model":{"id":"mock-model-alt","providerID":"mock","variant":"high"}},"durable":{"aggregateID":"ses_f2a747fb3ffeqHy7NW2TISzm9M","seq":2,"version":1}}
+

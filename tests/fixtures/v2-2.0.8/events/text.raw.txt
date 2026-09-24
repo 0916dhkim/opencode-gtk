@@ -1,0 +1,33 @@
+# HTTP/1.1 200 OK
+# cache-control: no-cache, no-transform
+# connection: keep-alive
+# content-type: text/event-stream
+# transfer-encoding: chunked
+# vary: Origin
+# x-accel-buffering: no
+# x-content-type-options: nosniff
+# First 12 frames of the de-chunked body, verbatim (frames end with a blank line).
+data: {"id":"evt_0d58b8471001ebBiY4f027x4uW","type":"server.connected","data":{}}
+
+: heartbeat
+
+data: {"id":"evt_0d58b847d001GjtOQJ88Xmbqcq","created":1790289085565,"type":"session.created","location":{"directory":"/state/workspace"},"data":{"sessionID":"ses_f2a747b8bffemvmAMGBnAAe5EL","slug":"gentle-rocket","version":"2.0.8","projectID":"10c6f3c89ca2144cfa0eea9125831644e3bddbed","location":{"directory":"/state/workspace"},"subpath":""},"durable":{"aggregateID":"ses_f2a747b8bffemvmAMGBnAAe5EL","seq":0,"version":1}}
+
+data: {"id":"evt_0d58b8482001L1WmItI7LvULnL","created":1790289085570,"type":"session.inbox.enqueued","location":{"directory":"/state/workspace"},"data":{"inboxID":"msg_0d58b846f00123EB3tzqlo6tYt","sessionID":"ses_f2a747b8bffemvmAMGBnAAe5EL","item":{"type":"user","payload":{"text":"Say hello. [[scenario:text]]"},"delivery":"steer"}},"durable":{"aggregateID":"ses_f2a747b8bffemvmAMGBnAAe5EL","seq":1,"version":1}}
+
+data: {"id":"evt_0d58b8484001pQZkTArPaMGMHW","created":1790289085572,"type":"session.execution.started","data":{"sessionID":"ses_f2a747b8bffemvmAMGBnAAe5EL"},"durable":{"aggregateID":"ses_f2a747b8bffemvmAMGBnAAe5EL","seq":2,"version":1}}
+
+data: {"id":"evt_0d58b8491001C9fBVgXarPp1sD","created":1790289085585,"metadata":{"instructions":{"initial":true}},"type":"session.instructions.updated","location":{"directory":"/state/workspace"},"data":{"sessionID":"ses_f2a747b8bffemvmAMGBnAAe5EL","delta":{"core/environment":"0173018e01bb0c88fdec4940a44937689bac62ffd88970ae0cbde37da2b6042b","core/date":"ade00e1aa759b4d8ec62b951b7f4a0980802006f34bb8b5db1fab6b639c8d61c","core/codemode":"c7de9837cd8baab59ebffdcd43edf45df4b996b9db543faa45fef33f7180b16c","core/skill-guidance":"8394362d28c82fa4d13c7a9f5568c05680f6687e07db8f426a0e3c92f3027dc9"}},"durable":{"aggregateID":"ses_f2a747b8bffemvmAMGBnAAe5EL","seq":3,"version":2}}
+
+data: {"id":"evt_0d58b8492001L59rzgJrBAs3Pk","created":1790289085586,"type":"session.inbox.delivered","location":{"directory":"/state/workspace"},"data":{"sessionID":"ses_f2a747b8bffemvmAMGBnAAe5EL","inboxID":"msg_0d58b846f00123EB3tzqlo6tYt"},"durable":{"aggregateID":"ses_f2a747b8bffemvmAMGBnAAe5EL","seq":4,"version":1}}
+
+data: {"id":"evt_0d58b84a2002XgtBOE4gfHwDCv","created":1790289085602,"type":"session.usage.updated","data":{"sessionID":"ses_f2a747b8bffemvmAMGBnAAe5EL","cost":0.000048,"tokens":{"input":42,"output":3,"reasoning":0,"cache":{"read":0,"write":0}}}}
+
+data: {"id":"evt_0d58b84a3001b9hAEMEEAFA2sL","created":1790289085603,"type":"session.renamed","location":{"directory":"/state/workspace"},"data":{"sessionID":"ses_f2a747b8bffemvmAMGBnAAe5EL","title":"Mock session title"},"durable":{"aggregateID":"ses_f2a747b8bffemvmAMGBnAAe5EL","seq":6,"version":1}}
+
+data: {"id":"evt_0d58b84a4001QCov7nlVZpxO0P","created":1790289085604,"type":"session.step.started","location":{"directory":"/state/workspace"},"data":{"sessionID":"ses_f2a747b8bffemvmAMGBnAAe5EL","agent":"build","model":{"id":"mock-model","providerID":"mock"},"assistantMessageID":"msg_0d58b849a001jqMy5uivPwjBnG","started":1790289085598},"durable":{"aggregateID":"ses_f2a747b8bffemvmAMGBnAAe5EL","seq":7,"version":1}}
+
+data: {"id":"evt_0d58b84a5001YWfPTzGIjN23x5","created":1790289085605,"type":"session.text.started","location":{"directory":"/state/workspace"},"data":{"sessionID":"ses_f2a747b8bffemvmAMGBnAAe5EL","assistantMessageID":"msg_0d58b849a001jqMy5uivPwjBnG","ordinal":0},"durable":{"aggregateID":"ses_f2a747b8bffemvmAMGBnAAe5EL","seq":8,"version":1}}
+
+data: {"id":"evt_0d58b84a6001WC5dxMihmLJRnm","created":1790289085606,"type":"session.text.delta","location":{"directory":"/state/workspace"},"data":{"sessionID":"ses_f2a747b8bffemvmAMGBnAAe5EL","assistantMessageID":"msg_0d58b849a001jqMy5uivPwjBnG","ordinal":0,"delta":"Hello from the mock provider."}}
+

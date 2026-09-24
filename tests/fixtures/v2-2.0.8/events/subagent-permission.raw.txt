@@ -1,0 +1,33 @@
+# HTTP/1.1 200 OK
+# cache-control: no-cache, no-transform
+# connection: keep-alive
+# content-type: text/event-stream
+# transfer-encoding: chunked
+# vary: Origin
+# x-accel-buffering: no
+# x-content-type-options: nosniff
+# First 12 frames of the de-chunked body, verbatim (frames end with a blank line).
+data: {"id":"evt_0d58bc8ae001BtrRTO2AT73gkU","type":"server.connected","data":{}}
+
+: heartbeat
+
+data: {"id":"evt_0d58bc8b3001vtqD2c7Ktv1llC","created":1790289103027,"type":"session.created","location":{"directory":"/state/workspace"},"data":{"sessionID":"ses_f2a743750ffev3c11LrAwbuAQk","slug":"quick-island","version":"2.0.8","projectID":"10c6f3c89ca2144cfa0eea9125831644e3bddbed","location":{"directory":"/state/workspace"},"subpath":""},"durable":{"aggregateID":"ses_f2a743750ffev3c11LrAwbuAQk","seq":0,"version":1}}
+
+data: {"id":"evt_0d58bc8b6002F1NHKXr56MNx23","created":1790289103030,"type":"session.inbox.enqueued","location":{"directory":"/state/workspace"},"data":{"inboxID":"msg_0d58bc8b6001kmGaYGfxKbuQ4p","sessionID":"ses_f2a743750ffev3c11LrAwbuAQk","item":{"type":"user","payload":{"text":"Delegate a shell command. [[scenario:subagent-permission]]"},"delivery":"steer"}},"durable":{"aggregateID":"ses_f2a743750ffev3c11LrAwbuAQk","seq":1,"version":1}}
+
+data: {"id":"evt_0d58bc8b7001lSvRczzrcmuVtI","created":1790289103031,"type":"session.execution.started","data":{"sessionID":"ses_f2a743750ffev3c11LrAwbuAQk"},"durable":{"aggregateID":"ses_f2a743750ffev3c11LrAwbuAQk","seq":2,"version":1}}
+
+data: {"id":"evt_0d58bc8ba001ZW7gXuqUc88uTG","created":1790289103034,"metadata":{"instructions":{"initial":true}},"type":"session.instructions.updated","location":{"directory":"/state/workspace"},"data":{"sessionID":"ses_f2a743750ffev3c11LrAwbuAQk","delta":{"core/environment":"22e153f6095a69e031310b0b5f6c783570e00d661a2a5b3aabcf54816bc8ef70","core/date":"ade00e1aa759b4d8ec62b951b7f4a0980802006f34bb8b5db1fab6b639c8d61c","core/codemode":"c7de9837cd8baab59ebffdcd43edf45df4b996b9db543faa45fef33f7180b16c","core/skill-guidance":"8394362d28c82fa4d13c7a9f5568c05680f6687e07db8f426a0e3c92f3027dc9"}},"durable":{"aggregateID":"ses_f2a743750ffev3c11LrAwbuAQk","seq":3,"version":2}}
+
+data: {"id":"evt_0d58bc8bb001zgdeckLw4sBfkz","created":1790289103035,"type":"session.inbox.delivered","location":{"directory":"/state/workspace"},"data":{"sessionID":"ses_f2a743750ffev3c11LrAwbuAQk","inboxID":"msg_0d58bc8b6001kmGaYGfxKbuQ4p"},"durable":{"aggregateID":"ses_f2a743750ffev3c11LrAwbuAQk","seq":4,"version":1}}
+
+data: {"id":"evt_0d58bc8c400169AHgpW9nmzSlS","created":1790289103044,"type":"session.usage.updated","data":{"sessionID":"ses_f2a743750ffev3c11LrAwbuAQk","cost":0.000048,"tokens":{"input":42,"output":3,"reasoning":0,"cache":{"read":0,"write":0}}}}
+
+data: {"id":"evt_0d58bc8c4002cTzI6iQyw6Mcbj","created":1790289103044,"type":"session.renamed","location":{"directory":"/state/workspace"},"data":{"sessionID":"ses_f2a743750ffev3c11LrAwbuAQk","title":"Mock session title"},"durable":{"aggregateID":"ses_f2a743750ffev3c11LrAwbuAQk","seq":6,"version":1}}
+
+data: {"id":"evt_0d58bc8c5001SGLWO3iFcEKfkz","created":1790289103045,"type":"session.step.started","location":{"directory":"/state/workspace"},"data":{"sessionID":"ses_f2a743750ffev3c11LrAwbuAQk","agent":"build","model":{"id":"mock-model","providerID":"mock"},"assistantMessageID":"msg_0d58bc8bf001p8umXVmorXLkeJ","started":1790289103042},"durable":{"aggregateID":"ses_f2a743750ffev3c11LrAwbuAQk","seq":7,"version":1}}
+
+data: {"id":"evt_0d58bc8c5002o5sZG3Y6ht8pTv","created":1790289103045,"type":"session.tool.input.started","location":{"directory":"/state/workspace"},"data":{"sessionID":"ses_f2a743750ffev3c11LrAwbuAQk","assistantMessageID":"msg_0d58bc8bf001p8umXVmorXLkeJ","id":"call_mock_subagent_fg","name":"subagent"},"durable":{"aggregateID":"ses_f2a743750ffev3c11LrAwbuAQk","seq":8,"version":1}}
+
+data: {"id":"evt_0d58bc8c60011oCgeupm7ePuy0","created":1790289103046,"type":"session.tool.input.ended","location":{"directory":"/state/workspace"},"data":{"sessionID":"ses_f2a743750ffev3c11LrAwbuAQk","assistantMessageID":"msg_0d58bc8bf001p8umXVmorXLkeJ","id":"call_mock_subagent_fg","text":"{\"agent\": \"general\", \"description\": \"Mock child shell task\", \"prompt\": \"[[scenario:permission]] Run the probe command.\"}"},"durable":{"aggregateID":"ses_f2a743750ffev3c11LrAwbuAQk","seq":9,"version":1}}
+

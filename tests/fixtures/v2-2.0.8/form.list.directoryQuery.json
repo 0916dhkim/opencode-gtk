@@ -1,0 +1,23 @@
+{
+  "name": "form.list.directoryQuery",
+  "request": {
+    "method": "GET",
+    "path": "/api/form",
+    "pathTemplate": "/api/form",
+    "query": "directory=%2Fstate%2Fworkspace",
+    "body": null
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json",
+      "content-length": "50"
+    },
+    "body": {
+      "location": {
+        "directory": "/state/home"
+      },
+      "data": []
+    }
+  }
+}

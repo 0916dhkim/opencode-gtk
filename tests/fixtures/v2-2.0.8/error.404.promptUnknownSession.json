@@ -1,0 +1,24 @@
+{
+  "name": "error.404.promptUnknownSession",
+  "request": {
+    "method": "POST",
+    "path": "/api/session/ses_doesnotexist000000000000000/prompt",
+    "pathTemplate": "/api/session/{sessionID}/prompt",
+    "query": null,
+    "body": {
+      "text": "hello"
+    }
+  },
+  "response": {
+    "status": 404,
+    "headers": {
+      "content-type": "application/json",
+      "content-length": "140"
+    },
+    "body": {
+      "_tag": "SessionNotFoundError",
+      "sessionID": "ses_doesnotexist000000000000000",
+      "message": "Session not found: ses_doesnotexist000000000000000"
+    }
+  }
+}

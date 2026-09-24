@@ -1,0 +1,22 @@
+{
+  "name": "error.404.session",
+  "request": {
+    "method": "GET",
+    "path": "/api/session/ses_doesnotexist000000000000000",
+    "pathTemplate": "/api/session/{sessionID}",
+    "query": null,
+    "body": null
+  },
+  "response": {
+    "status": 404,
+    "headers": {
+      "content-type": "application/json",
+      "content-length": "140"
+    },
+    "body": {
+      "_tag": "SessionNotFoundError",
+      "sessionID": "ses_doesnotexist000000000000000",
+      "message": "Session not found: ses_doesnotexist000000000000000"
+    }
+  }
+}

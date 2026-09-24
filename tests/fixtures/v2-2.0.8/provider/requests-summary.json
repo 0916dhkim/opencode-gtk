@@ -1,0 +1,797 @@
+[
+  {
+    "seq": 1,
+    "path": "/v1/chat/completions",
+    "scenario": "text",
+    "decision": "auxiliary",
+    "tools": [],
+    "authorization_scheme": "Bearer",
+    "model": "mock-model",
+    "stream": true,
+    "messageRoles": [
+      "system",
+      "user"
+    ]
+  },
+  {
+    "seq": 2,
+    "path": "/v1/chat/completions",
+    "scenario": "text",
+    "decision": "text",
+    "tools": [
+      "edit",
+      "glob",
+      "grep",
+      "read",
+      "shell",
+      "skill",
+      "subagent",
+      "webfetch",
+      "write",
+      "execute"
+    ],
+    "authorization_scheme": "Bearer",
+    "model": "mock-model",
+    "stream": true,
+    "messageRoles": [
+      "system",
+      "user"
+    ]
+  },
+  {
+    "seq": 3,
+    "path": "/v1/chat/completions",
+    "scenario": "reasoning",
+    "decision": "auxiliary",
+    "tools": [],
+    "authorization_scheme": "Bearer",
+    "model": "mock-model",
+    "stream": true,
+    "messageRoles": [
+      "system",
+      "user"
+    ]
+  },
+  {
+    "seq": 4,
+    "path": "/v1/chat/completions",
+    "scenario": "reasoning",
+    "decision": "reasoning",
+    "tools": [
+      "edit",
+      "glob",
+      "grep",
+      "read",
+      "shell",
+      "skill",
+      "subagent",
+      "webfetch",
+      "write",
+      "execute"
+    ],
+    "authorization_scheme": "Bearer",
+    "model": "mock-model",
+    "stream": true,
+    "messageRoles": [
+      "system",
+      "user"
+    ]
+  },
+  {
+    "seq": 5,
+    "path": "/v1/chat/completions",
+    "scenario": "tools",
+    "decision": "auxiliary",
+    "tools": [],
+    "authorization_scheme": "Bearer",
+    "model": "mock-model",
+    "stream": true,
+    "messageRoles": [
+      "system",
+      "user"
+    ]
+  },
+  {
+    "seq": 6,
+    "path": "/v1/chat/completions",
+    "scenario": "tools",
+    "decision": "tools",
+    "tools": [
+      "edit",
+      "glob",
+      "grep",
+      "read",
+      "shell",
+      "skill",
+      "subagent",
+      "webfetch",
+      "write",
+      "execute"
+    ],
+    "authorization_scheme": "Bearer",
+    "model": "mock-model",
+    "stream": true,
+    "messageRoles": [
+      "system",
+      "user"
+    ]
+  },
+  {
+    "seq": 7,
+    "path": "/v1/chat/completions",
+    "scenario": "tools",
+    "decision": "tools:final",
+    "tools": [
+      "edit",
+      "glob",
+      "grep",
+      "read",
+      "shell",
+      "skill",
+      "subagent",
+      "webfetch",
+      "write",
+      "execute"
+    ],
+    "authorization_scheme": "Bearer",
+    "model": "mock-model",
+    "stream": true,
+    "messageRoles": [
+      "system",
+      "user",
+      "assistant",
+      "tool",
+      "tool"
+    ]
+  },
+  {
+    "seq": 8,
+    "path": "/v1/chat/completions",
+    "scenario": "long",
+    "decision": "auxiliary",
+    "tools": [],
+    "authorization_scheme": "Bearer",
+    "model": "mock-model",
+    "stream": true,
+    "messageRoles": [
+      "system",
+      "user"
+    ]
+  },
+  {
+    "seq": 9,
+    "path": "/v1/chat/completions",
+    "scenario": "long",
+    "decision": "long",
+    "tools": [
+      "edit",
+      "glob",
+      "grep",
+      "read",
+      "shell",
+      "skill",
+      "subagent",
+      "webfetch",
+      "write",
+      "execute"
+    ],
+    "authorization_scheme": "Bearer",
+    "model": "mock-model",
+    "stream": true,
+    "messageRoles": [
+      "system",
+      "user"
+    ]
+  },
+  {
+    "seq": 10,
+    "path": "/v1/chat/completions",
+    "scenario": "error",
+    "decision": "auxiliary",
+    "tools": [],
+    "authorization_scheme": "Bearer",
+    "model": "mock-model",
+    "stream": true,
+    "messageRoles": [
+      "system",
+      "user"
+    ]
+  },
+  {
+    "seq": 11,
+    "path": "/v1/chat/completions",
+    "scenario": "error",
+    "decision": "error",
+    "tools": [
+      "edit",
+      "glob",
+      "grep",
+      "read",
+      "shell",
+      "skill",
+      "subagent",
+      "webfetch",
+      "write",
+      "execute"
+    ],
+    "authorization_scheme": "Bearer",
+    "model": "mock-model",
+    "stream": true,
+    "messageRoles": [
+      "system",
+      "user"
+    ]
+  },
+  {
+    "seq": 12,
+    "path": "/v1/chat/completions",
+    "scenario": "retry",
+    "decision": "auxiliary",
+    "tools": [],
+    "authorization_scheme": "Bearer",
+    "model": "mock-model",
+    "stream": true,
+    "messageRoles": [
+      "system",
+      "user"
+    ]
+  },
+  {
+    "seq": 13,
+    "path": "/v1/chat/completions",
+    "scenario": "retry",
+    "decision": "retry",
+    "tools": [
+      "edit",
+      "glob",
+      "grep",
+      "read",
+      "shell",
+      "skill",
+      "subagent",
+      "webfetch",
+      "write",
+      "execute"
+    ],
+    "authorization_scheme": "Bearer",
+    "model": "mock-model",
+    "stream": true,
+    "messageRoles": [
+      "system",
+      "user"
+    ]
+  },
+  {
+    "seq": 14,
+    "path": "/v1/chat/completions",
+    "scenario": "retry",
+    "decision": "retry",
+    "tools": [
+      "edit",
+      "glob",
+      "grep",
+      "read",
+      "shell",
+      "skill",
+      "subagent",
+      "webfetch",
+      "write",
+      "execute"
+    ],
+    "authorization_scheme": "Bearer",
+    "model": "mock-model",
+    "stream": true,
+    "messageRoles": [
+      "system",
+      "user"
+    ]
+  },
+  {
+    "seq": 15,
+    "path": "/v1/chat/completions",
+    "scenario": "text",
+    "decision": "auxiliary",
+    "tools": [],
+    "authorization_scheme": "Bearer",
+    "model": "mock-model",
+    "stream": true,
+    "messageRoles": [
+      "system",
+      "user"
+    ]
+  },
+  {
+    "seq": 16,
+    "path": "/v1/chat/completions",
+    "scenario": "text",
+    "decision": "text",
+    "tools": [
+      "edit",
+      "glob",
+      "grep",
+      "read",
+      "shell",
+      "skill",
+      "subagent",
+      "webfetch",
+      "write",
+      "execute"
+    ],
+    "authorization_scheme": "Bearer",
+    "model": "mock-model",
+    "stream": true,
+    "messageRoles": [
+      "system",
+      "user"
+    ]
+  },
+  {
+    "seq": 17,
+    "path": "/v1/chat/completions",
+    "scenario": "subagent",
+    "decision": "auxiliary",
+    "tools": [],
+    "authorization_scheme": "Bearer",
+    "model": "mock-model",
+    "stream": true,
+    "messageRoles": [
+      "system",
+      "user"
+    ]
+  },
+  {
+    "seq": 18,
+    "path": "/v1/chat/completions",
+    "scenario": "subagent",
+    "decision": "subagent",
+    "tools": [
+      "edit",
+      "glob",
+      "grep",
+      "read",
+      "shell",
+      "skill",
+      "subagent",
+      "webfetch",
+      "write",
+      "execute"
+    ],
+    "authorization_scheme": "Bearer",
+    "model": "mock-model",
+    "stream": true,
+    "messageRoles": [
+      "system",
+      "user"
+    ]
+  },
+  {
+    "seq": 19,
+    "path": "/v1/chat/completions",
+    "scenario": "subagent",
+    "decision": "subagent:final",
+    "tools": [
+      "edit",
+      "glob",
+      "grep",
+      "read",
+      "shell",
+      "skill",
+      "subagent",
+      "webfetch",
+      "write",
+      "execute"
+    ],
+    "authorization_scheme": "Bearer",
+    "model": "mock-model",
+    "stream": true,
+    "messageRoles": [
+      "system",
+      "user",
+      "assistant",
+      "tool"
+    ]
+  },
+  {
+    "seq": 20,
+    "path": "/v1/chat/completions",
+    "scenario": "child",
+    "decision": "child",
+    "tools": [
+      "edit",
+      "glob",
+      "grep",
+      "read",
+      "shell",
+      "skill",
+      "subagent",
+      "webfetch",
+      "write",
+      "execute"
+    ],
+    "authorization_scheme": "Bearer",
+    "model": "mock-model",
+    "stream": true,
+    "messageRoles": [
+      "system",
+      "user"
+    ]
+  },
+  {
+    "seq": 21,
+    "path": "/v1/chat/completions",
+    "scenario": "default",
+    "decision": "default",
+    "tools": [
+      "edit",
+      "glob",
+      "grep",
+      "read",
+      "shell",
+      "skill",
+      "subagent",
+      "webfetch",
+      "write",
+      "execute"
+    ],
+    "authorization_scheme": "Bearer",
+    "model": "mock-model",
+    "stream": true,
+    "messageRoles": [
+      "system",
+      "user",
+      "assistant",
+      "tool",
+      "assistant",
+      "user"
+    ]
+  },
+  {
+    "seq": 22,
+    "path": "/v1/chat/completions",
+    "scenario": "permission",
+    "decision": "auxiliary",
+    "tools": [],
+    "authorization_scheme": "Bearer",
+    "model": "mock-model",
+    "stream": true,
+    "messageRoles": [
+      "system",
+      "user"
+    ]
+  },
+  {
+    "seq": 23,
+    "path": "/v1/chat/completions",
+    "scenario": "permission",
+    "decision": "permission",
+    "tools": [
+      "edit",
+      "glob",
+      "grep",
+      "read",
+      "shell",
+      "skill",
+      "subagent",
+      "webfetch",
+      "write",
+      "execute"
+    ],
+    "authorization_scheme": "Bearer",
+    "model": "mock-model",
+    "stream": true,
+    "messageRoles": [
+      "system",
+      "user"
+    ]
+  },
+  {
+    "seq": 24,
+    "path": "/v1/chat/completions",
+    "scenario": "permission",
+    "decision": "permission:final",
+    "tools": [
+      "edit",
+      "glob",
+      "grep",
+      "read",
+      "shell",
+      "skill",
+      "subagent",
+      "webfetch",
+      "write",
+      "execute"
+    ],
+    "authorization_scheme": "Bearer",
+    "model": "mock-model",
+    "stream": true,
+    "messageRoles": [
+      "system",
+      "user",
+      "assistant",
+      "tool"
+    ]
+  },
+  {
+    "seq": 25,
+    "path": "/v1/chat/completions",
+    "scenario": "subagent-permission",
+    "decision": "auxiliary",
+    "tools": [],
+    "authorization_scheme": "Bearer",
+    "model": "mock-model",
+    "stream": true,
+    "messageRoles": [
+      "system",
+      "user"
+    ]
+  },
+  {
+    "seq": 26,
+    "path": "/v1/chat/completions",
+    "scenario": "subagent-permission",
+    "decision": "subagent-permission",
+    "tools": [
+      "edit",
+      "glob",
+      "grep",
+      "read",
+      "shell",
+      "skill",
+      "subagent",
+      "webfetch",
+      "write",
+      "execute"
+    ],
+    "authorization_scheme": "Bearer",
+    "model": "mock-model",
+    "stream": true,
+    "messageRoles": [
+      "system",
+      "user"
+    ]
+  },
+  {
+    "seq": 27,
+    "path": "/v1/chat/completions",
+    "scenario": "permission",
+    "decision": "permission",
+    "tools": [
+      "edit",
+      "glob",
+      "grep",
+      "read",
+      "shell",
+      "skill",
+      "subagent",
+      "webfetch",
+      "write",
+      "execute"
+    ],
+    "authorization_scheme": "Bearer",
+    "model": "mock-model",
+    "stream": true,
+    "messageRoles": [
+      "system",
+      "user"
+    ]
+  },
+  {
+    "seq": 28,
+    "path": "/v1/chat/completions",
+    "scenario": "permission",
+    "decision": "permission:final",
+    "tools": [
+      "edit",
+      "glob",
+      "grep",
+      "read",
+      "shell",
+      "skill",
+      "subagent",
+      "webfetch",
+      "write",
+      "execute"
+    ],
+    "authorization_scheme": "Bearer",
+    "model": "mock-model",
+    "stream": true,
+    "messageRoles": [
+      "system",
+      "user",
+      "assistant",
+      "tool"
+    ]
+  },
+  {
+    "seq": 29,
+    "path": "/v1/chat/completions",
+    "scenario": "subagent-permission",
+    "decision": "subagent-permission:final",
+    "tools": [
+      "edit",
+      "glob",
+      "grep",
+      "read",
+      "shell",
+      "skill",
+      "subagent",
+      "webfetch",
+      "write",
+      "execute"
+    ],
+    "authorization_scheme": "Bearer",
+    "model": "mock-model",
+    "stream": true,
+    "messageRoles": [
+      "system",
+      "user",
+      "assistant",
+      "tool"
+    ]
+  },
+  {
+    "seq": 30,
+    "path": "/v1/chat/completions",
+    "scenario": "slow",
+    "decision": "auxiliary",
+    "tools": [],
+    "authorization_scheme": "Bearer",
+    "model": "mock-model",
+    "stream": true,
+    "messageRoles": [
+      "system",
+      "user"
+    ]
+  },
+  {
+    "seq": 31,
+    "path": "/v1/chat/completions",
+    "scenario": "slow",
+    "decision": "slow",
+    "tools": [
+      "edit",
+      "glob",
+      "grep",
+      "read",
+      "shell",
+      "skill",
+      "subagent",
+      "webfetch",
+      "write",
+      "execute"
+    ],
+    "authorization_scheme": "Bearer",
+    "model": "mock-model",
+    "stream": true,
+    "messageRoles": [
+      "system",
+      "user"
+    ]
+  },
+  {
+    "seq": 32,
+    "path": "/v1/chat/completions",
+    "scenario": "text",
+    "decision": "auxiliary",
+    "tools": [],
+    "authorization_scheme": "Bearer",
+    "model": "mock-model",
+    "stream": true,
+    "messageRoles": [
+      "system",
+      "user"
+    ]
+  },
+  {
+    "seq": 33,
+    "path": "/v1/chat/completions",
+    "scenario": "text",
+    "decision": "text",
+    "tools": [
+      "edit",
+      "glob",
+      "grep",
+      "read",
+      "shell",
+      "skill",
+      "subagent",
+      "webfetch",
+      "write",
+      "execute"
+    ],
+    "authorization_scheme": "Bearer",
+    "model": "mock-model",
+    "stream": true,
+    "messageRoles": [
+      "system",
+      "user"
+    ]
+  },
+  {
+    "seq": 34,
+    "path": "/v1/chat/completions",
+    "scenario": "text",
+    "decision": "text",
+    "tools": [
+      "edit",
+      "glob",
+      "grep",
+      "read",
+      "shell",
+      "skill",
+      "subagent",
+      "webfetch",
+      "write",
+      "execute"
+    ],
+    "authorization_scheme": "Bearer",
+    "model": "mock-model",
+    "stream": true,
+    "messageRoles": [
+      "system",
+      "user",
+      "assistant",
+      "user"
+    ]
+  },
+  {
+    "seq": 35,
+    "path": "/v1/chat/completions",
+    "scenario": "text",
+    "decision": "text",
+    "tools": [
+      "edit",
+      "glob",
+      "grep",
+      "read",
+      "shell",
+      "skill",
+      "subagent",
+      "webfetch",
+      "write",
+      "execute"
+    ],
+    "authorization_scheme": "Bearer",
+    "model": "mock-model",
+    "stream": true,
+    "messageRoles": [
+      "system",
+      "user",
+      "assistant",
+      "user",
+      "assistant",
+      "user"
+    ]
+  },
+  {
+    "seq": 36,
+    "path": "/v1/chat/completions",
+    "scenario": "text",
+    "decision": "text",
+    "tools": [
+      "edit",
+      "glob",
+      "grep",
+      "read",
+      "shell",
+      "skill",
+      "subagent",
+      "webfetch",
+      "write",
+      "execute"
+    ],
+    "authorization_scheme": "Bearer",
+    "model": "mock-model",
+    "stream": true,
+    "messageRoles": [
+      "system",
+      "user",
+      "assistant",
+      "user",
+      "assistant",
+      "user",
+      "assistant",
+      "user"
+    ]
+  }
+]

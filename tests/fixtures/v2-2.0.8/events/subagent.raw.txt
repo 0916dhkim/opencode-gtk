@@ -1,0 +1,33 @@
+# HTTP/1.1 200 OK
+# cache-control: no-cache, no-transform
+# connection: keep-alive
+# content-type: text/event-stream
+# transfer-encoding: chunked
+# vary: Origin
+# x-accel-buffering: no
+# x-content-type-options: nosniff
+# First 12 frames of the de-chunked body, verbatim (frames end with a blank line).
+data: {"id":"evt_0d58bbb31001uEI0m9OUL8pzEY","type":"server.connected","data":{}}
+
+: heartbeat
+
+data: {"id":"evt_0d58bbb3a001usXn6dwtbcIoxC","created":1790289099579,"type":"session.created","location":{"directory":"/state/workspace"},"data":{"sessionID":"ses_f2a7444ccffe7yJDIJFaA9PlRV","slug":"kind-forest","version":"2.0.8","projectID":"10c6f3c89ca2144cfa0eea9125831644e3bddbed","location":{"directory":"/state/workspace"},"subpath":""},"durable":{"aggregateID":"ses_f2a7444ccffe7yJDIJFaA9PlRV","seq":0,"version":1}}
+
+data: {"id":"evt_0d58bbb3e002nYCSiJICkjvYyT","created":1790289099582,"type":"session.inbox.enqueued","location":{"directory":"/state/workspace"},"data":{"inboxID":"msg_0d58bbb3e001VATyhG5RTAjMeo","sessionID":"ses_f2a7444ccffe7yJDIJFaA9PlRV","item":{"type":"user","payload":{"text":"Delegate this. [[scenario:subagent]]"},"delivery":"steer"}},"durable":{"aggregateID":"ses_f2a7444ccffe7yJDIJFaA9PlRV","seq":1,"version":1}}
+
+data: {"id":"evt_0d58bbb3f0012nFAjzt73S9uBw","created":1790289099583,"type":"session.execution.started","data":{"sessionID":"ses_f2a7444ccffe7yJDIJFaA9PlRV"},"durable":{"aggregateID":"ses_f2a7444ccffe7yJDIJFaA9PlRV","seq":2,"version":1}}
+
+data: {"id":"evt_0d58bbb43001euQuvggCEi7Ch8","created":1790289099587,"metadata":{"instructions":{"initial":true}},"type":"session.instructions.updated","location":{"directory":"/state/workspace"},"data":{"sessionID":"ses_f2a7444ccffe7yJDIJFaA9PlRV","delta":{"core/environment":"331345931f908b7c813e03c6a10bbd0745b5c1e3a1a772827949ec1351243367","core/date":"ade00e1aa759b4d8ec62b951b7f4a0980802006f34bb8b5db1fab6b639c8d61c","core/codemode":"c7de9837cd8baab59ebffdcd43edf45df4b996b9db543faa45fef33f7180b16c","core/skill-guidance":"8394362d28c82fa4d13c7a9f5568c05680f6687e07db8f426a0e3c92f3027dc9"}},"durable":{"aggregateID":"ses_f2a7444ccffe7yJDIJFaA9PlRV","seq":3,"version":2}}
+
+data: {"id":"evt_0d58bbb44001DfnLN63vJGwk7T","created":1790289099588,"type":"session.inbox.delivered","location":{"directory":"/state/workspace"},"data":{"sessionID":"ses_f2a7444ccffe7yJDIJFaA9PlRV","inboxID":"msg_0d58bbb3e001VATyhG5RTAjMeo"},"durable":{"aggregateID":"ses_f2a7444ccffe7yJDIJFaA9PlRV","seq":4,"version":1}}
+
+data: {"id":"evt_0d58bbb4f001dOJ1qc5u9XPlvq","created":1790289099599,"type":"session.usage.updated","data":{"sessionID":"ses_f2a7444ccffe7yJDIJFaA9PlRV","cost":0.000048,"tokens":{"input":42,"output":3,"reasoning":0,"cache":{"read":0,"write":0}}}}
+
+data: {"id":"evt_0d58bbb4f002IIYhn3epdPyRb9","created":1790289099599,"type":"session.renamed","location":{"directory":"/state/workspace"},"data":{"sessionID":"ses_f2a7444ccffe7yJDIJFaA9PlRV","title":"Mock session title"},"durable":{"aggregateID":"ses_f2a7444ccffe7yJDIJFaA9PlRV","seq":6,"version":1}}
+
+data: {"id":"evt_0d58bbb50001duWURwsB8LSShG","created":1790289099600,"type":"session.step.started","location":{"directory":"/state/workspace"},"data":{"sessionID":"ses_f2a7444ccffe7yJDIJFaA9PlRV","agent":"build","model":{"id":"mock-model","providerID":"mock"},"assistantMessageID":"msg_0d58bbb49001Lkta28nen7IgnX","started":1790289099597},"durable":{"aggregateID":"ses_f2a7444ccffe7yJDIJFaA9PlRV","seq":7,"version":1}}
+
+data: {"id":"evt_0d58bbb51001xTHXZjmBPVM4YV","created":1790289099601,"type":"session.tool.input.started","location":{"directory":"/state/workspace"},"data":{"sessionID":"ses_f2a7444ccffe7yJDIJFaA9PlRV","assistantMessageID":"msg_0d58bbb49001Lkta28nen7IgnX","id":"call_mock_subagent","name":"subagent"},"durable":{"aggregateID":"ses_f2a7444ccffe7yJDIJFaA9PlRV","seq":8,"version":1}}
+
+data: {"id":"evt_0d58bbb52001Uqbdu3GAYOFeA9","created":1790289099602,"type":"session.tool.input.ended","location":{"directory":"/state/workspace"},"data":{"sessionID":"ses_f2a7444ccffe7yJDIJFaA9PlRV","assistantMessageID":"msg_0d58bbb49001Lkta28nen7IgnX","id":"call_mock_subagent","text":"{\"agent\": \"general\", \"description\": \"Mock child task\", \"prompt\": \"[[scenario:child]] Reply with a short greeting.\", \"background\": true}"},"durable":{"aggregateID":"ses_f2a7444ccffe7yJDIJFaA9PlRV","seq":9,"version":1}}
+

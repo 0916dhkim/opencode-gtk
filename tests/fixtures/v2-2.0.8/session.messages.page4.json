@@ -1,0 +1,73 @@
+{
+  "name": "session.messages.page4",
+  "request": {
+    "method": "GET",
+    "path": "/api/session/ses_f2a741b9affej7hZZ8NEOJ4Mig/message",
+    "pathTemplate": "/api/session/{sessionID}/message",
+    "query": "limit=3&cursor=eyJpZCI6Im1zZ18wZDU4YmU2YjgwMDFCcUJCMVVtUGVQSXdwbCIsIm9yZGVyIjoiZGVzYyIsImRpcmVjdGlvbiI6Im5leHQifQ",
+    "body": null
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json",
+      "content-length": "886"
+    },
+    "body": {
+      "data": [
+        {
+          "id": "msg_0d58be487001iGNVQdaea4wTMr",
+          "time": {
+            "created": 1790289110151
+          },
+          "type": "idle",
+          "outcome": "succeeded"
+        },
+        {
+          "id": "msg_0d58be47c001Xn8RoyHp7Ll5G0",
+          "time": {
+            "created": 1790289110143,
+            "streamed": 1790289110149,
+            "completed": 1790289110150
+          },
+          "type": "assistant",
+          "agent": "build",
+          "model": {
+            "id": "mock-model",
+            "providerID": "mock"
+          },
+          "content": [
+            {
+              "type": "text",
+              "text": "Hello from the mock provider."
+            }
+          ],
+          "finish": "stop",
+          "rawFinish": "stop",
+          "cost": 4.8e-05,
+          "tokens": {
+            "input": 42,
+            "output": 3,
+            "reasoning": 0,
+            "cache": {
+              "read": 0,
+              "write": 0
+            }
+          }
+        },
+        {
+          "id": "msg_0d58be471001BRYg57oVJn2fI4",
+          "time": {
+            "created": 1790289110135
+          },
+          "text": "History turn 1. [[scenario:text]]",
+          "type": "user"
+        }
+      ],
+      "cursor": {
+        "previous": "eyJpZCI6Im1zZ18wZDU4YmU0ODcwMDFpR05WUWRhZWE0d1RNciIsIm9yZGVyIjoiZGVzYyIsImRpcmVjdGlvbiI6InByZXZpb3VzIn0",
+        "next": "eyJpZCI6Im1zZ18wZDU4YmU0NzEwMDFCUllnNTdvVkpuMmZJNCIsIm9yZGVyIjoiZGVzYyIsImRpcmVjdGlvbiI6Im5leHQifQ"
+      }
+    }
+  }
+}

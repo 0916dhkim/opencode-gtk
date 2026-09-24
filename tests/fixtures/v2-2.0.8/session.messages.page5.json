@@ -1,0 +1,24 @@
+{
+  "name": "session.messages.page5",
+  "request": {
+    "method": "GET",
+    "path": "/api/session/ses_f2a741b9affej7hZZ8NEOJ4Mig/message",
+    "pathTemplate": "/api/session/{sessionID}/message",
+    "query": "limit=3&cursor=eyJpZCI6Im1zZ18wZDU4YmU0NzEwMDFCUllnNTdvVkpuMmZJNCIsIm9yZGVyIjoiZGVzYyIsImRpcmVjdGlvbiI6Im5leHQifQ",
+    "body": null
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json",
+      "content-length": "50"
+    },
+    "body": {
+      "data": [],
+      "cursor": {
+        "previous": null,
+        "next": null
+      }
+    }
+  }
+}

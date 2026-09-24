@@ -1,0 +1,22 @@
+{
+  "name": "error.400.invalidSessionID",
+  "request": {
+    "method": "GET",
+    "path": "/api/session/not-a-session-id",
+    "pathTemplate": "/api/session/{sessionID}",
+    "query": null,
+    "body": null
+  },
+  "response": {
+    "status": 400,
+    "headers": {
+      "content-type": "application/json",
+      "content-length": "120"
+    },
+    "body": {
+      "_tag": "InvalidRequestError",
+      "message": "Expected a string starting with \"ses\"\n  at [\"sessionID\"]",
+      "kind": "Params"
+    }
+  }
+}

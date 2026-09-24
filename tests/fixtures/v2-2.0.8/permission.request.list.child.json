@@ -1,0 +1,41 @@
+{
+  "name": "permission.request.list.child",
+  "request": {
+    "method": "GET",
+    "path": "/api/permission/request",
+    "pathTemplate": "/api/permission/request",
+    "query": "location%5Bdirectory%5D=%2Fstate%2Fworkspace",
+    "body": null
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json",
+      "content-length": "305"
+    },
+    "body": {
+      "location": {
+        "directory": "/state/workspace"
+      },
+      "data": [
+        {
+          "id": "per_0d58bc8dd001QchLXJK02UCCAr",
+          "sessionID": "ses_f2a743737ffe9Gxk6NjdQqWkMW",
+          "action": "shell",
+          "resources": [
+            "echo permission-probe"
+          ],
+          "save": [
+            "echo *"
+          ],
+          "source": {
+            "type": "tool",
+            "messageID": "msg_0d58bc8d3001q4Q0li0erPcg7h",
+            "id": "call_mock_shell"
+          }
+        }
+      ]
+    }
+  },
+  "note": "The pending request belongs to the child session, not the root session."
+}

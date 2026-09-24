@@ -1,0 +1,18 @@
+{
+  "name": "error.401.unauthenticated",
+  "request": {
+    "method": "GET",
+    "path": "/api/info",
+    "pathTemplate": "/api/info",
+    "query": null,
+    "body": null
+  },
+  "response": {
+    "status": 401,
+    "headers": {
+      "www-authenticate": "Basic realm=\"Secure Area\""
+    },
+    "body": null
+  },
+  "note": "No Authorization header."
+}

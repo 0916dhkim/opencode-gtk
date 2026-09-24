@@ -1,0 +1,34 @@
+{
+  "name": "session.prompt",
+  "request": {
+    "method": "POST",
+    "path": "/api/session/ses_f2a747b8bffemvmAMGBnAAe5EL/prompt",
+    "pathTemplate": "/api/session/{sessionID}/prompt",
+    "query": null,
+    "body": {
+      "text": "Say hello. [[scenario:text]]",
+      "id": "msg_0d58b846f00123EB3tzqlo6tYt"
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json",
+      "content-length": "209"
+    },
+    "body": {
+      "data": {
+        "id": "msg_0d58b846f00123EB3tzqlo6tYt",
+        "sessionID": "ses_f2a747b8bffemvmAMGBnAAe5EL",
+        "time": {
+          "created": 1790289085570
+        },
+        "type": "user",
+        "payload": {
+          "text": "Say hello. [[scenario:text]]"
+        },
+        "delivery": "steer"
+      }
+    }
+  }
+}

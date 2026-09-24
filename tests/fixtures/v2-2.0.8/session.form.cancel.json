@@ -1,0 +1,15 @@
+{
+  "name": "session.form.cancel",
+  "request": {
+    "method": "DELETE",
+    "path": "/api/session/ses_f2a747fb3ffeqHy7NW2TISzm9M/form/frm_0d58bede7001Oe4MviTBLpPVWZ",
+    "pathTemplate": "/api/session/{sessionID}/form/{formID}",
+    "query": null,
+    "body": null
+  },
+  "response": {
+    "status": 204,
+    "headers": {},
+    "body": null
+  }
+}

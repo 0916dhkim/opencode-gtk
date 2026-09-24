@@ -1,0 +1,145 @@
+{
+  "name": "session.list.root.page1",
+  "request": {
+    "method": "GET",
+    "path": "/api/session",
+    "pathTemplate": "/api/session",
+    "query": "parentID=null&limit=5",
+    "body": null
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json",
+      "content-length": "2160"
+    },
+    "body": {
+      "data": [
+        {
+          "id": "ses_f2a741b9affej7hZZ8NEOJ4Mig",
+          "projectID": "10c6f3c89ca2144cfa0eea9125831644e3bddbed",
+          "cost": 0.00024,
+          "tokens": {
+            "input": 210,
+            "output": 15,
+            "reasoning": 0,
+            "cache": {
+              "read": 0,
+              "write": 0
+            }
+          },
+          "outcome": "succeeded",
+          "time": {
+            "created": 1790289110126,
+            "updated": 1790289111884,
+            "idle": 1790289111903
+          },
+          "title": "Mock session title",
+          "location": {
+            "directory": "/state/workspace"
+          }
+        },
+        {
+          "id": "ses_f2a743079ffeWUJ6G8gT1na5M3",
+          "projectID": "10c6f3c89ca2144cfa0eea9125831644e3bddbed",
+          "cost": 4.8e-05,
+          "tokens": {
+            "input": 42,
+            "output": 3,
+            "reasoning": 0,
+            "cache": {
+              "read": 0,
+              "write": 0
+            }
+          },
+          "outcome": "interrupted",
+          "time": {
+            "created": 1790289104781,
+            "updated": 1790289104960,
+            "idle": 1790289105989
+          },
+          "title": "Mock session title",
+          "location": {
+            "directory": "/state/workspace"
+          }
+        },
+        {
+          "id": "ses_f2a743750ffev3c11LrAwbuAQk",
+          "projectID": "10c6f3c89ca2144cfa0eea9125831644e3bddbed",
+          "cost": 0.00016,
+          "tokens": {
+            "input": 126,
+            "output": 17,
+            "reasoning": 0,
+            "cache": {
+              "read": 0,
+              "write": 0
+            }
+          },
+          "outcome": "succeeded",
+          "time": {
+            "created": 1790289103027,
+            "updated": 1790289103044,
+            "idle": 1790289103122
+          },
+          "title": "Mock session title",
+          "location": {
+            "directory": "/state/workspace"
+          }
+        },
+        {
+          "id": "ses_f2a743e02ffe9b0pzkusFTSsVL",
+          "projectID": "10c6f3c89ca2144cfa0eea9125831644e3bddbed",
+          "cost": 0.00016,
+          "tokens": {
+            "input": 126,
+            "output": 17,
+            "reasoning": 0,
+            "cache": {
+              "read": 0,
+              "write": 0
+            }
+          },
+          "outcome": "succeeded",
+          "time": {
+            "created": 1790289101315,
+            "updated": 1790289101336,
+            "idle": 1790289101409
+          },
+          "title": "Mock session title",
+          "location": {
+            "directory": "/state/workspace"
+          }
+        },
+        {
+          "id": "ses_f2a7444ccffe7yJDIJFaA9PlRV",
+          "projectID": "10c6f3c89ca2144cfa0eea9125831644e3bddbed",
+          "cost": 0.00020800000000000001,
+          "tokens": {
+            "input": 168,
+            "output": 20,
+            "reasoning": 0,
+            "cache": {
+              "read": 0,
+              "write": 0
+            }
+          },
+          "outcome": "succeeded",
+          "time": {
+            "created": 1790289099579,
+            "updated": 1790289099648,
+            "idle": 1790289099664
+          },
+          "title": "Mock session title",
+          "location": {
+            "directory": "/state/workspace"
+          }
+        }
+      ],
+      "cursor": {
+        "previous": "eyJwYXJlbnRJRCI6Im51bGwiLCJhbmNob3IiOnsiaWQiOiJzZXNfZjJhNzQxYjlhZmZlajdoWlo4TkVPSjRNaWciLCJ0aW1lIjoxNzkwMjg5MTExODg0LCJkaXJlY3Rpb24iOiJwcmV2aW91cyJ9fQ",
+        "next": "eyJwYXJlbnRJRCI6Im51bGwiLCJhbmNob3IiOnsiaWQiOiJzZXNfZjJhNzQ0NGNjZmZlN3lKRElKRmFBOVBsUlYiLCJ0aW1lIjoxNzkwMjg5MDk5NjQ4LCJkaXJlY3Rpb24iOiJuZXh0In19"
+      }
+    }
+  }
+}

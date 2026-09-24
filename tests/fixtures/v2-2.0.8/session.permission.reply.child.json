@@ -1,0 +1,17 @@
+{
+  "name": "session.permission.reply.child",
+  "request": {
+    "method": "POST",
+    "path": "/api/session/ses_f2a743737ffe9Gxk6NjdQqWkMW/permission/per_0d58bc8dd001QchLXJK02UCCAr/reply",
+    "pathTemplate": "/api/session/{sessionID}/permission/{requestID}/reply",
+    "query": null,
+    "body": {
+      "decision": "once"
+    }
+  },
+  "response": {
+    "status": 204,
+    "headers": {},
+    "body": null
+  }
+}

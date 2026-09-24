@@ -1,0 +1,146 @@
+{
+  "name": "session.list.root.orderWithCursor",
+  "request": {
+    "method": "GET",
+    "path": "/api/session",
+    "pathTemplate": "/api/session",
+    "query": "parentID=null&limit=5&order=asc&cursor=eyJwYXJlbnRJRCI6Im51bGwiLCJhbmNob3IiOnsiaWQiOiJzZXNfZjJhNzQ0NGNjZmZlN3lKRElKRmFBOVBsUlYiLCJ0aW1lIjoxNzkwMjg5MDk5NjQ4LCJkaXJlY3Rpb24iOiJuZXh0In19",
+    "body": null
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json",
+      "content-length": "2152"
+    },
+    "body": {
+      "data": [
+        {
+          "id": "ses_f2a744b85ffeSQUpVO4sc2BUsZ",
+          "projectID": "10c6f3c89ca2144cfa0eea9125831644e3bddbed",
+          "cost": 9.6e-05,
+          "tokens": {
+            "input": 84,
+            "output": 6,
+            "reasoning": 0,
+            "cache": {
+              "read": 0,
+              "write": 0
+            }
+          },
+          "outcome": "succeeded",
+          "time": {
+            "created": 1790289097859,
+            "updated": 1790289097896,
+            "idle": 1790289097901
+          },
+          "title": "Mock session title",
+          "location": {
+            "directory": "/state/workspace"
+          }
+        },
+        {
+          "id": "ses_f2a7459f9ffeDVU9Iv1bINqJPw",
+          "projectID": "10c6f3c89ca2144cfa0eea9125831644e3bddbed",
+          "cost": 9.400000000000001e-05,
+          "tokens": {
+            "input": 84,
+            "output": 5,
+            "reasoning": 0,
+            "cache": {
+              "read": 0,
+              "write": 0
+            }
+          },
+          "outcome": "succeeded",
+          "time": {
+            "created": 1790289094156,
+            "updated": 1790289094175,
+            "idle": 1790289096190
+          },
+          "title": "Mock session title",
+          "location": {
+            "directory": "/state/workspace"
+          }
+        },
+        {
+          "id": "ses_f2a74609cffeSanNHuYtO27yse",
+          "projectID": "10c6f3c89ca2144cfa0eea9125831644e3bddbed",
+          "cost": 4.8e-05,
+          "tokens": {
+            "input": 42,
+            "output": 3,
+            "reasoning": 0,
+            "cache": {
+              "read": 0,
+              "write": 0
+            }
+          },
+          "outcome": "failed",
+          "time": {
+            "created": 1790289092461,
+            "updated": 1790289092493,
+            "idle": 1790289092498
+          },
+          "title": "Mock session title",
+          "location": {
+            "directory": "/state/workspace"
+          }
+        },
+        {
+          "id": "ses_f2a74676affeNtASvC427lwNUg",
+          "projectID": "10c6f3c89ca2144cfa0eea9125831644e3bddbed",
+          "cost": 0.00069,
+          "tokens": {
+            "input": 84,
+            "output": 303,
+            "reasoning": 0,
+            "cache": {
+              "read": 0,
+              "write": 0
+            }
+          },
+          "outcome": "succeeded",
+          "time": {
+            "created": 1790289090715,
+            "updated": 1790289090735,
+            "idle": 1790289090772
+          },
+          "title": "Mock session title",
+          "location": {
+            "directory": "/state/workspace"
+          }
+        },
+        {
+          "id": "ses_f2a746e36ffe9vt3boExpUcnYI",
+          "projectID": "10c6f3c89ca2144cfa0eea9125831644e3bddbed",
+          "cost": 0.00016,
+          "tokens": {
+            "input": 126,
+            "output": 17,
+            "reasoning": 0,
+            "cache": {
+              "read": 0,
+              "write": 0
+            }
+          },
+          "outcome": "succeeded",
+          "time": {
+            "created": 1790289088976,
+            "updated": 1790289089006,
+            "idle": 1790289089052
+          },
+          "title": "Mock session title",
+          "location": {
+            "directory": "/state/workspace"
+          }
+        }
+      ],
+      "cursor": {
+        "previous": "eyJwYXJlbnRJRCI6Im51bGwiLCJhbmNob3IiOnsiaWQiOiJzZXNfZjJhNzQ0Yjg1ZmZlU1FVcFZPNHNjMkJVc1oiLCJ0aW1lIjoxNzkwMjg5MDk3ODk2LCJkaXJlY3Rpb24iOiJwcmV2aW91cyJ9fQ",
+        "next": "eyJwYXJlbnRJRCI6Im51bGwiLCJhbmNob3IiOnsiaWQiOiJzZXNfZjJhNzQ2ZTM2ZmZlOXZ0M2JvRXhwVWNuWUkiLCJ0aW1lIjoxNzkwMjg5MDg5MDA2LCJkaXJlY3Rpb24iOiJuZXh0In19"
+      }
+    }
+  },
+  "note": "Unlike the message list, the session list does not reject order+cursor."
+}

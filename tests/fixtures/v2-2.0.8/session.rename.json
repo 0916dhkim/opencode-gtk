@@ -1,0 +1,17 @@
+{
+  "name": "session.rename",
+  "request": {
+    "method": "PATCH",
+    "path": "/api/session/ses_f2a747fb3ffeqHy7NW2TISzm9M",
+    "pathTemplate": "/api/session/{sessionID}",
+    "query": null,
+    "body": {
+      "title": "Renamed by harness"
+    }
+  },
+  "response": {
+    "status": 204,
+    "headers": {},
+    "body": null
+  }
+}

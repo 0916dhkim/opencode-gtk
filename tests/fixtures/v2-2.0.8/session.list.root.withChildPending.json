@@ -1,0 +1,95 @@
+{
+  "name": "session.list.root.withChildPending",
+  "request": {
+    "method": "GET",
+    "path": "/api/session",
+    "pathTemplate": "/api/session",
+    "query": "parentID=null&limit=3",
+    "body": null
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json",
+      "content-length": "1393"
+    },
+    "body": {
+      "data": [
+        {
+          "id": "ses_f2a743750ffev3c11LrAwbuAQk",
+          "projectID": "10c6f3c89ca2144cfa0eea9125831644e3bddbed",
+          "cost": 4.8e-05,
+          "tokens": {
+            "input": 42,
+            "output": 3,
+            "reasoning": 0,
+            "cache": {
+              "read": 0,
+              "write": 0
+            }
+          },
+          "time": {
+            "created": 1790289103027,
+            "updated": 1790289103044
+          },
+          "title": "Mock session title",
+          "location": {
+            "directory": "/state/workspace"
+          }
+        },
+        {
+          "id": "ses_f2a743e02ffe9b0pzkusFTSsVL",
+          "projectID": "10c6f3c89ca2144cfa0eea9125831644e3bddbed",
+          "cost": 0.00016,
+          "tokens": {
+            "input": 126,
+            "output": 17,
+            "reasoning": 0,
+            "cache": {
+              "read": 0,
+              "write": 0
+            }
+          },
+          "outcome": "succeeded",
+          "time": {
+            "created": 1790289101315,
+            "updated": 1790289101336,
+            "idle": 1790289101409
+          },
+          "title": "Mock session title",
+          "location": {
+            "directory": "/state/workspace"
+          }
+        },
+        {
+          "id": "ses_f2a7444ccffe7yJDIJFaA9PlRV",
+          "projectID": "10c6f3c89ca2144cfa0eea9125831644e3bddbed",
+          "cost": 0.00020800000000000001,
+          "tokens": {
+            "input": 168,
+            "output": 20,
+            "reasoning": 0,
+            "cache": {
+              "read": 0,
+              "write": 0
+            }
+          },
+          "outcome": "succeeded",
+          "time": {
+            "created": 1790289099579,
+            "updated": 1790289099648,
+            "idle": 1790289099664
+          },
+          "title": "Mock session title",
+          "location": {
+            "directory": "/state/workspace"
+          }
+        }
+      ],
+      "cursor": {
+        "previous": "eyJwYXJlbnRJRCI6Im51bGwiLCJhbmNob3IiOnsiaWQiOiJzZXNfZjJhNzQzNzUwZmZldjNjMTFMckF3YnVBUWsiLCJ0aW1lIjoxNzkwMjg5MTAzMDQ0LCJkaXJlY3Rpb24iOiJwcmV2aW91cyJ9fQ",
+        "next": "eyJwYXJlbnRJRCI6Im51bGwiLCJhbmNob3IiOnsiaWQiOiJzZXNfZjJhNzQ0NGNjZmZlN3lKRElKRmFBOVBsUlYiLCJ0aW1lIjoxNzkwMjg5MDk5NjQ4LCJkaXJlY3Rpb24iOiJuZXh0In19"
+      }
+    }
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "name": "session.active.running",
+  "request": {
+    "method": "GET",
+    "path": "/api/session/active",
+    "pathTemplate": "/api/session/active",
+    "query": null,
+    "body": null
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json",
+      "content-length": "62"
+    },
+    "body": {
+      "data": {
+        "ses_f2a743e02ffe9b0pzkusFTSsVL": {
+          "type": "running"
+        }
+      }
+    }
+  },
+  "note": "Captured while the permission scenario is blocked on a permission request."
+}

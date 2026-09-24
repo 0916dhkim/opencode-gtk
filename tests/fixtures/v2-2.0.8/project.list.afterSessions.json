@@ -1,0 +1,38 @@
+{
+  "name": "project.list.afterSessions",
+  "request": {
+    "method": "GET",
+    "path": "/api/project",
+    "pathTemplate": "/api/project",
+    "query": null,
+    "body": null
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json",
+      "content-length": "314"
+    },
+    "body": [
+      {
+        "id": "10c6f3c89ca2144cfa0eea9125831644e3bddbed",
+        "canonical": "/state/workspace",
+        "vcs": "git",
+        "time": {
+          "created": 1790289083945,
+          "updated": 1790289083945
+        },
+        "sandboxes": []
+      },
+      {
+        "id": "c9913940ad5709f3f0962374ec73cebfd27aa424",
+        "canonical": "/state/home",
+        "time": {
+          "created": 1790289083823,
+          "updated": 1790289083823
+        },
+        "sandboxes": []
+      }
+    ]
+  }
+}

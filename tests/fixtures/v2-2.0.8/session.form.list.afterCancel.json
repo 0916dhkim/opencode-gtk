@@ -1,0 +1,20 @@
+{
+  "name": "session.form.list.afterCancel",
+  "request": {
+    "method": "GET",
+    "path": "/api/session/ses_f2a747fb3ffeqHy7NW2TISzm9M/form",
+    "pathTemplate": "/api/session/{sessionID}/form",
+    "query": null,
+    "body": null
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json",
+      "content-length": "11"
+    },
+    "body": {
+      "data": []
+    }
+  }
+}

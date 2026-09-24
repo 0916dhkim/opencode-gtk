@@ -1,0 +1,28 @@
+{
+  "name": "project.list",
+  "request": {
+    "method": "GET",
+    "path": "/api/project",
+    "pathTemplate": "/api/project",
+    "query": null,
+    "body": null
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json",
+      "content-length": "149"
+    },
+    "body": [
+      {
+        "id": "c9913940ad5709f3f0962374ec73cebfd27aa424",
+        "canonical": "/state/home",
+        "time": {
+          "created": 1790289083823,
+          "updated": 1790289083823
+        },
+        "sandboxes": []
+      }
+    ]
+  }
+}

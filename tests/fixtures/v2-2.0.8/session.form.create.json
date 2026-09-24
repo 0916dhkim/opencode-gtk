@@ -1,0 +1,120 @@
+{
+  "name": "session.form.create",
+  "request": {
+    "method": "POST",
+    "path": "/api/session/ses_f2a747fb3ffeqHy7NW2TISzm9M/form",
+    "pathTemplate": "/api/session/{sessionID}/form",
+    "query": null,
+    "body": {
+      "title": "Harness form",
+      "metadata": {
+        "source": "harness"
+      },
+      "fields": [
+        {
+          "key": "name",
+          "type": "string",
+          "title": "Name",
+          "required": true,
+          "placeholder": "Ada"
+        },
+        {
+          "key": "count",
+          "type": "integer",
+          "title": "Count",
+          "minimum": 1,
+          "maximum": 5,
+          "default": 2
+        },
+        {
+          "key": "ok",
+          "type": "boolean",
+          "title": "Proceed?",
+          "default": false
+        },
+        {
+          "key": "tags",
+          "type": "multiselect",
+          "title": "Tags",
+          "options": [
+            {
+              "value": "a",
+              "label": "Alpha"
+            },
+            {
+              "value": "b",
+              "label": "Beta"
+            }
+          ]
+        },
+        {
+          "key": "docs",
+          "type": "external",
+          "url": "https://example.invalid/docs",
+          "title": "Docs"
+        }
+      ]
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json",
+      "content-length": "598"
+    },
+    "body": {
+      "data": {
+        "id": "frm_0d58bede7001Oe4MviTBLpPVWZ",
+        "sessionID": "ses_f2a747fb3ffeqHy7NW2TISzm9M",
+        "title": "Harness form",
+        "metadata": {
+          "source": "harness"
+        },
+        "fields": [
+          {
+            "key": "name",
+            "title": "Name",
+            "required": true,
+            "type": "string",
+            "placeholder": "Ada"
+          },
+          {
+            "key": "count",
+            "title": "Count",
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 5,
+            "default": 2
+          },
+          {
+            "key": "ok",
+            "title": "Proceed?",
+            "type": "boolean",
+            "default": false
+          },
+          {
+            "key": "tags",
+            "title": "Tags",
+            "type": "multiselect",
+            "options": [
+              {
+                "value": "a",
+                "label": "Alpha"
+              },
+              {
+                "value": "b",
+                "label": "Beta"
+              }
+            ]
+          },
+          {
+            "key": "docs",
+            "type": "external",
+            "url": "https://example.invalid/docs",
+            "title": "Docs"
+          }
+        ]
+      }
+    }
+  }
+}

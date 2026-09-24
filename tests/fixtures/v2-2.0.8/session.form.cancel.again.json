@@ -1,0 +1,23 @@
+{
+  "name": "session.form.cancel.again",
+  "request": {
+    "method": "DELETE",
+    "path": "/api/session/ses_f2a747fb3ffeqHy7NW2TISzm9M/form/frm_0d58bede7001Oe4MviTBLpPVWZ",
+    "pathTemplate": "/api/session/{sessionID}/form/{formID}",
+    "query": null,
+    "body": null
+  },
+  "response": {
+    "status": 409,
+    "headers": {
+      "content-type": "application/json",
+      "content-length": "137"
+    },
+    "body": {
+      "_tag": "FormAlreadySettledError",
+      "id": "frm_0d58bede7001Oe4MviTBLpPVWZ",
+      "message": "Form already settled: frm_0d58bede7001Oe4MviTBLpPVWZ"
+    }
+  },
+  "note": "Cancelling an already-cancelled form."
+}

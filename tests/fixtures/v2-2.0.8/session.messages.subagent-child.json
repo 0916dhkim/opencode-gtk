@@ -1,0 +1,73 @@
+{
+  "name": "session.messages.subagent-child",
+  "request": {
+    "method": "GET",
+    "path": "/api/session/ses_f2a7444aaffemNHKVCr3zoKjZZ/message",
+    "pathTemplate": "/api/session/{sessionID}/message",
+    "query": "limit=50",
+    "body": null
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json",
+      "content-length": "951"
+    },
+    "body": {
+      "data": [
+        {
+          "id": "msg_0d58bbb7e002h7dZ40kEdW7Q1c",
+          "time": {
+            "created": 1790289099646
+          },
+          "type": "idle",
+          "outcome": "succeeded"
+        },
+        {
+          "id": "msg_0d58bbb6f001TTV68ruoNftmBe",
+          "time": {
+            "created": 1790289099636,
+            "streamed": 1790289099645,
+            "completed": 1790289099645
+          },
+          "type": "assistant",
+          "agent": "general",
+          "model": {
+            "id": "mock-model",
+            "providerID": "mock"
+          },
+          "content": [
+            {
+              "type": "text",
+              "text": "Hello from the child subagent."
+            }
+          ],
+          "finish": "stop",
+          "rawFinish": "stop",
+          "cost": 4.8e-05,
+          "tokens": {
+            "input": 42,
+            "output": 3,
+            "reasoning": 0,
+            "cache": {
+              "read": 0,
+              "write": 0
+            }
+          }
+        },
+        {
+          "id": "msg_0d58bbb5b001z0XOR6v48w0OjA",
+          "time": {
+            "created": 1790289099629
+          },
+          "text": "You are a subagent spawned by another session.\n[[scenario:child]] Reply with a short greeting.",
+          "type": "user"
+        }
+      ],
+      "cursor": {
+        "previous": "eyJpZCI6Im1zZ18wZDU4YmJiN2UwMDJoN2RaNDBrRWRXN1ExYyIsIm9yZGVyIjoiZGVzYyIsImRpcmVjdGlvbiI6InByZXZpb3VzIn0",
+        "next": "eyJpZCI6Im1zZ18wZDU4YmJiNWIwMDF6MFhPUjZ2NDh3ME9qQSIsIm9yZGVyIjoiZGVzYyIsImRpcmVjdGlvbiI6Im5leHQifQ"
+      }
+    }
+  }
+}

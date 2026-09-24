@@ -1,0 +1,94 @@
+{
+  "model": "mock/mock-model",
+  "update": "disable",
+  "share": "disabled",
+  "snapshots": false,
+  "warming": false,
+  "websearch": false,
+  "compaction": {
+    "auto": false
+  },
+  "plugins": [
+    "-opencode.provider.opencode"
+  ],
+  "permissions": [
+    {
+      "action": "*",
+      "resource": "*",
+      "effect": "allow"
+    },
+    {
+      "action": "shell",
+      "resource": "*",
+      "effect": "ask"
+    },
+    {
+      "action": "question",
+      "resource": "*",
+      "effect": "deny"
+    }
+  ],
+  "providers": {
+    "mock": {
+      "name": "Mock Provider",
+      "package": "@opencode/ai/providers/openai-compatible",
+      "settings": {
+        "baseURL": "http://ocgtk-v2h-mock:4100/v1",
+        "apiKey": "dummy-not-a-secret"
+      },
+      "models": {
+        "mock-model": {
+          "name": "Mock Model",
+          "capabilities": {
+            "tools": true,
+            "input": [
+              "text",
+              "image"
+            ],
+            "output": [
+              "text"
+            ]
+          },
+          "limit": {
+            "context": 128000,
+            "output": 4096
+          },
+          "cost": {
+            "input": 1,
+            "output": 2
+          }
+        },
+        "mock-model-alt": {
+          "name": "Mock Model Alt",
+          "capabilities": {
+            "tools": true,
+            "input": [
+              "text"
+            ],
+            "output": [
+              "text"
+            ]
+          },
+          "limit": {
+            "context": 32000,
+            "output": 2048
+          },
+          "variants": [
+            {
+              "id": "low",
+              "body": {
+                "reasoning_effort": "low"
+              }
+            },
+            {
+              "id": "high",
+              "body": {
+                "reasoning_effort": "high"
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}

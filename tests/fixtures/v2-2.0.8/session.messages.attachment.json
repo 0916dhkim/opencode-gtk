@@ -1,0 +1,83 @@
+{
+  "name": "session.messages.attachment",
+  "request": {
+    "method": "GET",
+    "path": "/api/session/ses_f2a744b85ffeSQUpVO4sc2BUsZ/message",
+    "pathTemplate": "/api/session/{sessionID}/message",
+    "query": "limit=50",
+    "body": null
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json",
+      "content-length": "1082"
+    },
+    "body": {
+      "data": [
+        {
+          "id": "msg_0d58bb4ad001vXM25HtbhEVDnX",
+          "time": {
+            "created": 1790289097901
+          },
+          "type": "idle",
+          "outcome": "succeeded"
+        },
+        {
+          "id": "msg_0d58bb4a1001vOUdyXzGDOMesd",
+          "time": {
+            "created": 1790289097893,
+            "streamed": 1790289097899,
+            "completed": 1790289097899
+          },
+          "type": "assistant",
+          "agent": "build",
+          "model": {
+            "id": "mock-model",
+            "providerID": "mock"
+          },
+          "content": [
+            {
+              "type": "text",
+              "text": "Hello from the mock provider."
+            }
+          ],
+          "finish": "stop",
+          "rawFinish": "stop",
+          "cost": 4.8e-05,
+          "tokens": {
+            "input": 42,
+            "output": 3,
+            "reasoning": 0,
+            "cache": {
+              "read": 0,
+              "write": 0
+            }
+          }
+        },
+        {
+          "id": "msg_0d58bb487001PoGdqRpkQHvqx2",
+          "time": {
+            "created": 1790289097883
+          },
+          "text": "Describe the attached image. [[scenario:text]]",
+          "files": [
+            {
+              "data": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==",
+              "mime": "image/png",
+              "source": {
+                "type": "inline"
+              },
+              "name": "pixel.png"
+            }
+          ],
+          "type": "user"
+        }
+      ],
+      "cursor": {
+        "previous": "eyJpZCI6Im1zZ18wZDU4YmI0YWQwMDF2WE0yNUh0YmhFVkRuWCIsIm9yZGVyIjoiZGVzYyIsImRpcmVjdGlvbiI6InByZXZpb3VzIn0",
+        "next": "eyJpZCI6Im1zZ18wZDU4YmI0ODcwMDFQb0dkcVJwa1FIdnF4MiIsIm9yZGVyIjoiZGVzYyIsImRpcmVjdGlvbiI6Im5leHQifQ"
+      }
+    }
+  }
+}

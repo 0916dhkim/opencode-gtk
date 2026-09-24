@@ -1,0 +1,33 @@
+# HTTP/1.1 200 OK
+# cache-control: no-cache, no-transform
+# connection: keep-alive
+# content-type: text/event-stream
+# transfer-encoding: chunked
+# vary: Origin
+# x-accel-buffering: no
+# x-content-type-options: nosniff
+# First 12 frames of the de-chunked body, verbatim (frames end with a blank line).
+data: {"id":"evt_0d58b91c8001FY1Nxi4a3GYEIP","type":"server.connected","data":{}}
+
+: heartbeat
+
+data: {"id":"evt_0d58b91d0001JBWatKVL9Cx0Zn","created":1790289088976,"type":"session.created","location":{"directory":"/state/workspace"},"data":{"sessionID":"ses_f2a746e36ffe9vt3boExpUcnYI","slug":"eager-canyon","version":"2.0.8","projectID":"10c6f3c89ca2144cfa0eea9125831644e3bddbed","location":{"directory":"/state/workspace"},"subpath":""},"durable":{"aggregateID":"ses_f2a746e36ffe9vt3boExpUcnYI","seq":0,"version":1}}
+
+data: {"id":"evt_0d58b91d50016nKYwMXAht7Jnl","created":1790289088981,"type":"session.inbox.enqueued","location":{"directory":"/state/workspace"},"data":{"inboxID":"msg_0d58b91d4001rPP9KHcyJpyKPY","sessionID":"ses_f2a746e36ffe9vt3boExpUcnYI","item":{"type":"user","payload":{"text":"Read two things at once. [[scenario:tools]]"},"delivery":"steer"}},"durable":{"aggregateID":"ses_f2a746e36ffe9vt3boExpUcnYI","seq":1,"version":1}}
+
+data: {"id":"evt_0d58b91d6001VHnwqnuPWU4afG","created":1790289088982,"type":"session.execution.started","data":{"sessionID":"ses_f2a746e36ffe9vt3boExpUcnYI"},"durable":{"aggregateID":"ses_f2a746e36ffe9vt3boExpUcnYI","seq":2,"version":1}}
+
+data: {"id":"evt_0d58b91db001jzMeZUAKJQbW5C","created":1790289088987,"metadata":{"instructions":{"initial":true}},"type":"session.instructions.updated","location":{"directory":"/state/workspace"},"data":{"sessionID":"ses_f2a746e36ffe9vt3boExpUcnYI","delta":{"core/environment":"f42c63289be5b852632fc9d045b84038d5a235998fd17a6065f80545108efcae","core/date":"ade00e1aa759b4d8ec62b951b7f4a0980802006f34bb8b5db1fab6b639c8d61c","core/codemode":"c7de9837cd8baab59ebffdcd43edf45df4b996b9db543faa45fef33f7180b16c","core/skill-guidance":"8394362d28c82fa4d13c7a9f5568c05680f6687e07db8f426a0e3c92f3027dc9"}},"durable":{"aggregateID":"ses_f2a746e36ffe9vt3boExpUcnYI","seq":3,"version":2}}
+
+data: {"id":"evt_0d58b91dc0010Bsu2ysX1ZZnVs","created":1790289088988,"type":"session.inbox.delivered","location":{"directory":"/state/workspace"},"data":{"sessionID":"ses_f2a746e36ffe9vt3boExpUcnYI","inboxID":"msg_0d58b91d4001rPP9KHcyJpyKPY"},"durable":{"aggregateID":"ses_f2a746e36ffe9vt3boExpUcnYI","seq":4,"version":1}}
+
+data: {"id":"evt_0d58b91ed001hpEa8uYt2mpeuh","created":1790289089005,"type":"session.usage.updated","data":{"sessionID":"ses_f2a746e36ffe9vt3boExpUcnYI","cost":0.000048,"tokens":{"input":42,"output":3,"reasoning":0,"cache":{"read":0,"write":0}}}}
+
+data: {"id":"evt_0d58b91ee001B14XBHZv1UzQ47","created":1790289089006,"type":"session.renamed","location":{"directory":"/state/workspace"},"data":{"sessionID":"ses_f2a746e36ffe9vt3boExpUcnYI","title":"Mock session title"},"durable":{"aggregateID":"ses_f2a746e36ffe9vt3boExpUcnYI","seq":6,"version":1}}
+
+data: {"id":"evt_0d58b91ef0016dgHhAupr3mMQC","created":1790289089007,"type":"session.step.started","location":{"directory":"/state/workspace"},"data":{"sessionID":"ses_f2a746e36ffe9vt3boExpUcnYI","agent":"build","model":{"id":"mock-model","providerID":"mock"},"assistantMessageID":"msg_0d58b91e400164kxdaNAq1M5n3","started":1790289089001},"durable":{"aggregateID":"ses_f2a746e36ffe9vt3boExpUcnYI","seq":7,"version":1}}
+
+data: {"id":"evt_0d58b91f0001hmmSFj0cwSMgfn","created":1790289089008,"type":"session.text.started","location":{"directory":"/state/workspace"},"data":{"sessionID":"ses_f2a746e36ffe9vt3boExpUcnYI","assistantMessageID":"msg_0d58b91e400164kxdaNAq1M5n3","ordinal":0},"durable":{"aggregateID":"ses_f2a746e36ffe9vt3boExpUcnYI","seq":8,"version":1}}
+
+data: {"id":"evt_0d58b91f1001HOIr4OC7yRkRkj","created":1790289089009,"type":"session.tool.input.started","location":{"directory":"/state/workspace"},"data":{"sessionID":"ses_f2a746e36ffe9vt3boExpUcnYI","assistantMessageID":"msg_0d58b91e400164kxdaNAq1M5n3","id":"call_mock_read","name":"read"},"durable":{"aggregateID":"ses_f2a746e36ffe9vt3boExpUcnYI","seq":9,"version":1}}
+

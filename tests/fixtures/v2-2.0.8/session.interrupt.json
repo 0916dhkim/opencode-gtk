@@ -1,0 +1,20 @@
+{
+  "name": "session.interrupt",
+  "request": {
+    "method": "POST",
+    "path": "/api/session/ses_f2a743079ffeWUJ6G8gT1na5M3/interrupt",
+    "pathTemplate": "/api/session/{sessionID}/interrupt",
+    "query": null,
+    "body": null
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json",
+      "content-length": "20"
+    },
+    "body": {
+      "interrupted": true
+    }
+  }
+}

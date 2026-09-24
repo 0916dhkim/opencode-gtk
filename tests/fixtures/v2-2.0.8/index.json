@@ -1,0 +1,531 @@
+{
+  "server": "2.0.8",
+  "workspace": "/state/workspace",
+  "sessions": {
+    "lifecycle": "ses_f2a747fb3ffeqHy7NW2TISzm9M",
+    "text": "ses_f2a747b8bffemvmAMGBnAAe5EL",
+    "reasoning": "ses_f2a7474d2ffeLvqAnI8YX7xxi2",
+    "tools": "ses_f2a746e36ffe9vt3boExpUcnYI",
+    "long": "ses_f2a74676affeNtASvC427lwNUg",
+    "error": "ses_f2a74609cffeSanNHuYtO27yse",
+    "retry": "ses_f2a7459f9ffeDVU9Iv1bINqJPw",
+    "attachment": "ses_f2a744b85ffeSQUpVO4sc2BUsZ",
+    "subagent": "ses_f2a7444ccffe7yJDIJFaA9PlRV",
+    "subagent-child": "ses_f2a7444aaffemNHKVCr3zoKjZZ",
+    "permission": "ses_f2a743e02ffe9b0pzkusFTSsVL",
+    "subagent-permission": "ses_f2a743750ffev3c11LrAwbuAQk",
+    "subagent-permission-child": "ses_f2a743737ffe9Gxk6NjdQqWkMW",
+    "interrupt": "ses_f2a743079ffeWUJ6G8gT1na5M3",
+    "history": "ses_f2a741b9affej7hZZ8NEOJ4Mig"
+  },
+  "notes": {
+    "model.list.emptyPollsBeforeReady": 1,
+    "session.messages.pages": 5
+  },
+  "fixtures": [
+    {
+      "name": "info",
+      "method": "GET",
+      "path": "/api/info",
+      "query": null,
+      "status": 200
+    },
+    {
+      "name": "error.401.unauthenticated",
+      "method": "GET",
+      "path": "/api/info",
+      "query": null,
+      "status": 401
+    },
+    {
+      "name": "project.list",
+      "method": "GET",
+      "path": "/api/project",
+      "query": null,
+      "status": 200
+    },
+    {
+      "name": "model.list",
+      "method": "GET",
+      "path": "/api/model",
+      "query": "location%5Bdirectory%5D=%2Fstate%2Fworkspace",
+      "status": 200
+    },
+    {
+      "name": "model.list.noLocation",
+      "method": "GET",
+      "path": "/api/model",
+      "query": null,
+      "status": 200
+    },
+    {
+      "name": "model.default",
+      "method": "GET",
+      "path": "/api/model/default",
+      "query": "location%5Bdirectory%5D=%2Fstate%2Fworkspace",
+      "status": 200
+    },
+    {
+      "name": "session.active.idle",
+      "method": "GET",
+      "path": "/api/session/active",
+      "query": null,
+      "status": 200
+    },
+    {
+      "name": "session.create",
+      "method": "POST",
+      "path": "/api/session",
+      "query": null,
+      "status": 200
+    },
+    {
+      "name": "session.create.titled",
+      "method": "POST",
+      "path": "/api/session",
+      "query": null,
+      "status": 200
+    },
+    {
+      "name": "session.get",
+      "method": "GET",
+      "path": "/api/session/{sessionID}",
+      "query": null,
+      "status": 200
+    },
+    {
+      "name": "session.rename",
+      "method": "PATCH",
+      "path": "/api/session/{sessionID}",
+      "query": null,
+      "status": 204
+    },
+    {
+      "name": "session.get.renamed",
+      "method": "GET",
+      "path": "/api/session/{sessionID}",
+      "query": null,
+      "status": 200
+    },
+    {
+      "name": "session.model.switch",
+      "method": "POST",
+      "path": "/api/session/{sessionID}/model",
+      "query": null,
+      "status": 204
+    },
+    {
+      "name": "session.get.modelSwitched",
+      "method": "GET",
+      "path": "/api/session/{sessionID}",
+      "query": null,
+      "status": 200
+    },
+    {
+      "name": "session.prompt",
+      "method": "POST",
+      "path": "/api/session/{sessionID}/prompt",
+      "query": null,
+      "status": 200
+    },
+    {
+      "name": "session.messages.text",
+      "method": "GET",
+      "path": "/api/session/{sessionID}/message",
+      "query": "limit=50",
+      "status": 200
+    },
+    {
+      "name": "session.messages.reasoning",
+      "method": "GET",
+      "path": "/api/session/{sessionID}/message",
+      "query": "limit=50",
+      "status": 200
+    },
+    {
+      "name": "session.messages.tools",
+      "method": "GET",
+      "path": "/api/session/{sessionID}/message",
+      "query": "limit=50",
+      "status": 200
+    },
+    {
+      "name": "session.messages.long",
+      "method": "GET",
+      "path": "/api/session/{sessionID}/message",
+      "query": "limit=50",
+      "status": 200
+    },
+    {
+      "name": "session.messages.error",
+      "method": "GET",
+      "path": "/api/session/{sessionID}/message",
+      "query": "limit=50",
+      "status": 200
+    },
+    {
+      "name": "session.messages.retry",
+      "method": "GET",
+      "path": "/api/session/{sessionID}/message",
+      "query": "limit=50",
+      "status": 200
+    },
+    {
+      "name": "session.prompt.attachment",
+      "method": "POST",
+      "path": "/api/session/{sessionID}/prompt",
+      "query": null,
+      "status": 200
+    },
+    {
+      "name": "session.messages.attachment",
+      "method": "GET",
+      "path": "/api/session/{sessionID}/message",
+      "query": "limit=50",
+      "status": 200
+    },
+    {
+      "name": "session.messages.subagent",
+      "method": "GET",
+      "path": "/api/session/{sessionID}/message",
+      "query": "limit=50",
+      "status": 200
+    },
+    {
+      "name": "session.get.child",
+      "method": "GET",
+      "path": "/api/session/{sessionID}",
+      "query": null,
+      "status": 200
+    },
+    {
+      "name": "session.messages.subagent-child",
+      "method": "GET",
+      "path": "/api/session/{sessionID}/message",
+      "query": "limit=50",
+      "status": 200
+    },
+    {
+      "name": "session.active.running",
+      "method": "GET",
+      "path": "/api/session/active",
+      "query": null,
+      "status": 200
+    },
+    {
+      "name": "permission.request.list",
+      "method": "GET",
+      "path": "/api/permission/request",
+      "query": "location%5Bdirectory%5D=%2Fstate%2Fworkspace",
+      "status": 200
+    },
+    {
+      "name": "permission.request.list.noLocation",
+      "method": "GET",
+      "path": "/api/permission/request",
+      "query": null,
+      "status": 200
+    },
+    {
+      "name": "permission.request.list.directoryQuery",
+      "method": "GET",
+      "path": "/api/permission/request",
+      "query": "directory=%2Fstate%2Fworkspace",
+      "status": 200
+    },
+    {
+      "name": "session.permission.list",
+      "method": "GET",
+      "path": "/api/session/{sessionID}/permission",
+      "query": null,
+      "status": 200
+    },
+    {
+      "name": "session.permission.get",
+      "method": "GET",
+      "path": "/api/session/{sessionID}/permission/{requestID}",
+      "query": null,
+      "status": 200
+    },
+    {
+      "name": "session.permission.reply",
+      "method": "POST",
+      "path": "/api/session/{sessionID}/permission/{requestID}/reply",
+      "query": null,
+      "status": 204
+    },
+    {
+      "name": "session.messages.permission",
+      "method": "GET",
+      "path": "/api/session/{sessionID}/message",
+      "query": "limit=50",
+      "status": 200
+    },
+    {
+      "name": "permission.request.list.child",
+      "method": "GET",
+      "path": "/api/permission/request",
+      "query": "location%5Bdirectory%5D=%2Fstate%2Fworkspace",
+      "status": 200
+    },
+    {
+      "name": "session.list.root.withChildPending",
+      "method": "GET",
+      "path": "/api/session",
+      "query": "parentID=null&limit=3",
+      "status": 200
+    },
+    {
+      "name": "session.permission.reply.child",
+      "method": "POST",
+      "path": "/api/session/{sessionID}/permission/{requestID}/reply",
+      "query": null,
+      "status": 204
+    },
+    {
+      "name": "session.messages.subagent-permission",
+      "method": "GET",
+      "path": "/api/session/{sessionID}/message",
+      "query": "limit=50",
+      "status": 200
+    },
+    {
+      "name": "session.messages.subagent-permission-child",
+      "method": "GET",
+      "path": "/api/session/{sessionID}/message",
+      "query": "limit=50",
+      "status": 200
+    },
+    {
+      "name": "session.active.streaming",
+      "method": "GET",
+      "path": "/api/session/active",
+      "query": null,
+      "status": 200
+    },
+    {
+      "name": "session.prompt.whileBusy",
+      "method": "POST",
+      "path": "/api/session/{sessionID}/prompt",
+      "query": null,
+      "status": 200
+    },
+    {
+      "name": "session.inbox.list",
+      "method": "GET",
+      "path": "/api/session/{sessionID}/inbox",
+      "query": null,
+      "status": 200
+    },
+    {
+      "name": "session.interrupt",
+      "method": "POST",
+      "path": "/api/session/{sessionID}/interrupt",
+      "query": null,
+      "status": 200
+    },
+    {
+      "name": "session.interrupt.idle",
+      "method": "POST",
+      "path": "/api/session/{sessionID}/interrupt",
+      "query": null,
+      "status": 200
+    },
+    {
+      "name": "session.inbox.list.afterInterrupt",
+      "method": "GET",
+      "path": "/api/session/{sessionID}/inbox",
+      "query": null,
+      "status": 200
+    },
+    {
+      "name": "session.inbox.cancel",
+      "method": "DELETE",
+      "path": "/api/session/{sessionID}/inbox/{inboxID}",
+      "query": null,
+      "status": 204
+    },
+    {
+      "name": "session.messages.interrupt",
+      "method": "GET",
+      "path": "/api/session/{sessionID}/message",
+      "query": "limit=50",
+      "status": 200
+    },
+    {
+      "name": "session.messages.page1",
+      "method": "GET",
+      "path": "/api/session/{sessionID}/message",
+      "query": "limit=3",
+      "status": 200
+    },
+    {
+      "name": "session.messages.page2",
+      "method": "GET",
+      "path": "/api/session/{sessionID}/message",
+      "query": "limit=3&cursor=eyJpZCI6Im1zZ18wZDU4YmViNGIwMDFVSUE5UUtGS0lqa1JzdiIsIm9yZGVyIjoiZGVzYyIsImRpcmVjdGlvbiI6Im5leHQifQ",
+      "status": 200
+    },
+    {
+      "name": "session.messages.page3",
+      "method": "GET",
+      "path": "/api/session/{sessionID}/message",
+      "query": "limit=3&cursor=eyJpZCI6Im1zZ18wZDU4YmU5MDAwMDFIWUpDaGM1N3ZIOFZUVyIsIm9yZGVyIjoiZGVzYyIsImRpcmVjdGlvbiI6Im5leHQifQ",
+      "status": 200
+    },
+    {
+      "name": "session.messages.page4",
+      "method": "GET",
+      "path": "/api/session/{sessionID}/message",
+      "query": "limit=3&cursor=eyJpZCI6Im1zZ18wZDU4YmU2YjgwMDFCcUJCMVVtUGVQSXdwbCIsIm9yZGVyIjoiZGVzYyIsImRpcmVjdGlvbiI6Im5leHQifQ",
+      "status": 200
+    },
+    {
+      "name": "session.messages.page5",
+      "method": "GET",
+      "path": "/api/session/{sessionID}/message",
+      "query": "limit=3&cursor=eyJpZCI6Im1zZ18wZDU4YmU0NzEwMDFCUllnNTdvVkpuMmZJNCIsIm9yZGVyIjoiZGVzYyIsImRpcmVjdGlvbiI6Im5leHQifQ",
+      "status": 200
+    },
+    {
+      "name": "session.messages.asc",
+      "method": "GET",
+      "path": "/api/session/{sessionID}/message",
+      "query": "limit=3&order=asc",
+      "status": 200
+    },
+    {
+      "name": "error.400.orderWithCursor",
+      "method": "GET",
+      "path": "/api/session/{sessionID}/message",
+      "query": "limit=3&order=asc&cursor=eyJpZCI6Im1zZ18wZDU4YmViNGIwMDFVSUE5UUtGS0lqa1JzdiIsIm9yZGVyIjoiZGVzYyIsImRpcmVjdGlvbiI6Im5leHQifQ",
+      "status": 400
+    },
+    {
+      "name": "session.form.create",
+      "method": "POST",
+      "path": "/api/session/{sessionID}/form",
+      "query": null,
+      "status": 200
+    },
+    {
+      "name": "form.list",
+      "method": "GET",
+      "path": "/api/form",
+      "query": "location%5Bdirectory%5D=%2Fstate%2Fworkspace",
+      "status": 200
+    },
+    {
+      "name": "form.list.directoryQuery",
+      "method": "GET",
+      "path": "/api/form",
+      "query": "directory=%2Fstate%2Fworkspace",
+      "status": 200
+    },
+    {
+      "name": "session.form.list",
+      "method": "GET",
+      "path": "/api/session/{sessionID}/form",
+      "query": null,
+      "status": 200
+    },
+    {
+      "name": "session.form.get",
+      "method": "GET",
+      "path": "/api/session/{sessionID}/form/{formID}",
+      "query": null,
+      "status": 200
+    },
+    {
+      "name": "session.form.cancel",
+      "method": "DELETE",
+      "path": "/api/session/{sessionID}/form/{formID}",
+      "query": null,
+      "status": 204
+    },
+    {
+      "name": "session.form.cancel.again",
+      "method": "DELETE",
+      "path": "/api/session/{sessionID}/form/{formID}",
+      "query": null,
+      "status": 409
+    },
+    {
+      "name": "session.form.list.afterCancel",
+      "method": "GET",
+      "path": "/api/session/{sessionID}/form",
+      "query": null,
+      "status": 200
+    },
+    {
+      "name": "session.list.root.page1",
+      "method": "GET",
+      "path": "/api/session",
+      "query": "parentID=null&limit=5",
+      "status": 200
+    },
+    {
+      "name": "session.list.root.page2",
+      "method": "GET",
+      "path": "/api/session",
+      "query": "parentID=null&limit=5&cursor=eyJwYXJlbnRJRCI6Im51bGwiLCJhbmNob3IiOnsiaWQiOiJzZXNfZjJhNzQ0NGNjZmZlN3lKRElKRmFBOVBsUlYiLCJ0aW1lIjoxNzkwMjg5MDk5NjQ4LCJkaXJlY3Rpb24iOiJuZXh0In19",
+      "status": 200
+    },
+    {
+      "name": "session.list.root.orderWithCursor",
+      "method": "GET",
+      "path": "/api/session",
+      "query": "parentID=null&limit=5&order=asc&cursor=eyJwYXJlbnRJRCI6Im51bGwiLCJhbmNob3IiOnsiaWQiOiJzZXNfZjJhNzQ0NGNjZmZlN3lKRElKRmFBOVBsUlYiLCJ0aW1lIjoxNzkwMjg5MDk5NjQ4LCJkaXJlY3Rpb24iOiJuZXh0In19",
+      "status": 200
+    },
+    {
+      "name": "session.list.all",
+      "method": "GET",
+      "path": "/api/session",
+      "query": "limit=100",
+      "status": 200
+    },
+    {
+      "name": "session.list.directory",
+      "method": "GET",
+      "path": "/api/session",
+      "query": "limit=3&directory=%2Fstate%2Fworkspace",
+      "status": 200
+    },
+    {
+      "name": "error.404.session",
+      "method": "GET",
+      "path": "/api/session/{sessionID}",
+      "query": null,
+      "status": 404
+    },
+    {
+      "name": "error.400.invalidSessionID",
+      "method": "GET",
+      "path": "/api/session/{sessionID}",
+      "query": null,
+      "status": 400
+    },
+    {
+      "name": "error.404.promptUnknownSession",
+      "method": "POST",
+      "path": "/api/session/{sessionID}/prompt",
+      "query": null,
+      "status": 404
+    },
+    {
+      "name": "session.active.afterAll",
+      "method": "GET",
+      "path": "/api/session/active",
+      "query": null,
+      "status": 200
+    },
+    {
+      "name": "project.list.afterSessions",
+      "method": "GET",
+      "path": "/api/project",
+      "query": null,
+      "status": 200
+    }
+  ]
+}

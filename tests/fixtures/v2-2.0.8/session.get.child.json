@@ -1,0 +1,45 @@
+{
+  "name": "session.get.child",
+  "request": {
+    "method": "GET",
+    "path": "/api/session/ses_f2a7444aaffemNHKVCr3zoKjZZ",
+    "pathTemplate": "/api/session/{sessionID}",
+    "query": null,
+    "body": null
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json",
+      "content-length": "427"
+    },
+    "body": {
+      "data": {
+        "id": "ses_f2a7444aaffemNHKVCr3zoKjZZ",
+        "parentID": "ses_f2a7444ccffe7yJDIJFaA9PlRV",
+        "projectID": "10c6f3c89ca2144cfa0eea9125831644e3bddbed",
+        "agent": "general",
+        "cost": 4.8e-05,
+        "tokens": {
+          "input": 42,
+          "output": 3,
+          "reasoning": 0,
+          "cache": {
+            "read": 0,
+            "write": 0
+          }
+        },
+        "outcome": "succeeded",
+        "time": {
+          "created": 1790289099609,
+          "updated": 1790289099611,
+          "idle": 1790289099646
+        },
+        "title": "Mock child task",
+        "location": {
+          "directory": "/state/workspace"
+        }
+      }
+    }
+  }
+}

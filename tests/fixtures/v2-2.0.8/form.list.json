@@ -1,0 +1,76 @@
+{
+  "name": "form.list",
+  "request": {
+    "method": "GET",
+    "path": "/api/form",
+    "pathTemplate": "/api/form",
+    "query": "location%5Bdirectory%5D=%2Fstate%2Fworkspace",
+    "body": null
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json",
+      "content-length": "644"
+    },
+    "body": {
+      "location": {
+        "directory": "/state/workspace"
+      },
+      "data": [
+        {
+          "id": "frm_0d58bede7001Oe4MviTBLpPVWZ",
+          "sessionID": "ses_f2a747fb3ffeqHy7NW2TISzm9M",
+          "title": "Harness form",
+          "metadata": {
+            "source": "harness"
+          },
+          "fields": [
+            {
+              "key": "name",
+              "title": "Name",
+              "required": true,
+              "type": "string",
+              "placeholder": "Ada"
+            },
+            {
+              "key": "count",
+              "title": "Count",
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 5,
+              "default": 2
+            },
+            {
+              "key": "ok",
+              "title": "Proceed?",
+              "type": "boolean",
+              "default": false
+            },
+            {
+              "key": "tags",
+              "title": "Tags",
+              "type": "multiselect",
+              "options": [
+                {
+                  "value": "a",
+                  "label": "Alpha"
+                },
+                {
+                  "value": "b",
+                  "label": "Beta"
+                }
+              ]
+            },
+            {
+              "key": "docs",
+              "type": "external",
+              "url": "https://example.invalid/docs",
+              "title": "Docs"
+            }
+          ]
+        }
+      ]
+    }
+  }
+}
