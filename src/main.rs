@@ -4,6 +4,7 @@ mod markdown;
 mod model;
 mod persist;
 mod preview;
+mod protocol;
 mod ui;
 
 use clap::Parser;
