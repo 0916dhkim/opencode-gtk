@@ -4,11 +4,9 @@ use serde_json::{json, Value};
 
 use crate::{
     api::{Bootstrap, Command, MessagePage, UiEvent},
-    model::{
-        ModelCatalog, ModelOption, ModelSelection, Project, RunStatus, Session, SessionModel,
-        SessionTime,
-    },
+    model::{ModelCatalog, ModelOption, ModelSelection, Project, RunStatus, Session},
     persist::{PersistedTab, ServerState},
+    protocol,
 };
 
 pub const SERVER_KEY: &str = "preview://opencode-gtk";
@@ -131,14 +129,17 @@ impl State {
             version: "preview".into(),
             sessions: self.sessions.clone(),
             sessions_complete: true,
-            projects: vec![Project {
-                worktree: DIRECTORY.into(),
-                name: Some("opencode-gtk".into()),
-            }],
+            projects: vec![Project::from_info(&decode(json!({
+                "id": "prj_preview",
+                "canonical": DIRECTORY,
+                "name": "opencode-gtk",
+                "sandboxes": []
+            })))],
             statuses,
             statuses_complete: true,
             pending: Vec::new(),
-            pending_complete: true,
+            // Matches the real client until pending recovery is ported.
+            pending_complete: false,
             retry_needed: false,
             warnings: Vec::new(),
         }
@@ -160,25 +161,18 @@ impl State {
     fn create_session(&mut self, directory: String, title: Option<String>) -> Session {
         let id = format!("ses_new_{}", self.next_id);
         self.next_id += 1;
-        let session = Session {
-            id: id.clone(),
-            directory,
-            title: title.unwrap_or_else(|| "New session".into()),
-            time: SessionTime {
-                created: CREATED + self.next_id * 1_000,
-                updated: CREATED + self.next_id * 1_000,
-                archived: None,
-            },
-            parent_id: None,
-            agent: None,
-            model: Some(preferred_model()),
-        };
+        let created = CREATED + self.next_id * 1_000;
+        let session = session_info(&id, &directory, title.as_deref(), created, created);
         self.messages.insert(id, Vec::new());
         self.sessions.insert(0, session.clone());
         session
     }
 
     fn rename_session(&mut self, session_id: &str, title: String) -> Result<Session, String> {
+        let title = title.trim().to_owned();
+        if title.is_empty() {
+            return Err("session title cannot be blank".into());
+        }
         let session = self
             .sessions
             .iter_mut()
@@ -234,44 +228,49 @@ fn catalog() -> ModelCatalog {
     }
 }
 
-fn preferred_model() -> SessionModel {
-    SessionModel {
-        id: "gpt-5.6".into(),
-        provider_id: "openai".into(),
-        variant: Some("medium".into()),
-    }
+fn decode<T: serde::de::DeserializeOwned>(value: Value) -> T {
+    serde_json::from_value(value).expect("canned preview data matches the v2 protocol")
+}
+
+/// A canned v2 `SessionInfo`, mapped the same way the real client maps it.
+fn session_info(
+    id: &str,
+    directory: &str,
+    title: Option<&str>,
+    created: u64,
+    updated: u64,
+) -> Session {
+    Session::from_info(&decode::<protocol::SessionInfo>(json!({
+        "id": id,
+        "projectID": "prj_preview",
+        "agent": "build",
+        "model": { "id": "gpt-5.6", "providerID": "openai", "variant": "medium" },
+        "cost": 0,
+        "tokens": { "input": 0, "output": 0, "reasoning": 0, "cache": { "read": 0, "write": 0 } },
+        "time": { "created": created, "updated": updated },
+        "title": title,
+        "location": { "directory": directory }
+    })))
 }
 
 fn active_session() -> Session {
-    Session {
-        id: ACTIVE_ID.into(),
-        directory: DIRECTORY.into(),
-        title: "Fix the attach clip padding".into(),
-        time: SessionTime {
-            created: CREATED,
-            updated: CREATED + 90_000,
-            archived: None,
-        },
-        parent_id: None,
-        agent: None,
-        model: Some(preferred_model()),
-    }
+    session_info(
+        ACTIVE_ID,
+        DIRECTORY,
+        Some("Fix the attach clip padding"),
+        CREATED,
+        CREATED + 90_000,
+    )
 }
 
 fn other_session() -> Session {
-    Session {
-        id: OTHER_ID.into(),
-        directory: DIRECTORY.into(),
-        title: "SSH tunnel notes".into(),
-        time: SessionTime {
-            created: CREATED - 86_400_000,
-            updated: CREATED - 3_600_000,
-            archived: None,
-        },
-        parent_id: None,
-        agent: None,
-        model: Some(preferred_model()),
-    }
+    session_info(
+        OTHER_ID,
+        DIRECTORY,
+        Some("SSH tunnel notes"),
+        CREATED - 86_400_000,
+        CREATED - 3_600_000,
+    )
 }
 
 fn active_messages() -> Vec<Value> {
@@ -422,5 +421,20 @@ mod tests {
             }
             other => panic!("unexpected {other:?}"),
         }
+        let untitled = state.create_session(DIRECTORY.into(), None);
+        assert_eq!(untitled.title, "Untitled session");
+    }
+
+    #[test]
+    fn blank_rename_is_refused() {
+        let mut state = State::new();
+        assert!(state.rename_session(ACTIVE_ID, "  ".into()).is_err());
+        assert_eq!(
+            state
+                .rename_session(ACTIVE_ID, " Renamed ".into())
+                .unwrap()
+                .title,
+            "Renamed"
+        );
     }
 }

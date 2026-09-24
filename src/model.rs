@@ -3,6 +3,8 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+use crate::protocol;
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct Session {
     pub id: String,
@@ -1203,23 +1205,150 @@ pub fn event_run_status(payload: &Value) -> Option<(String, RunStatus)> {
     }
 }
 
-pub fn event_session(payload: &Value) -> Option<Session> {
-    match payload.get("type")?.as_str()? {
-        "session.created" | "session.updated" => {
-            serde_json::from_value(event_data(payload).get("info")?.clone()).ok()
+const UNTITLED_SESSION: &str = "Untitled session";
+
+fn millis(value: protocol::Millis) -> u64 {
+    value.max(0) as u64
+}
+
+fn display_title(title: Option<&str>) -> String {
+    title
+        .map(str::trim)
+        .filter(|title| !title.is_empty())
+        .unwrap_or(UNTITLED_SESSION)
+        .to_owned()
+}
+
+impl Session {
+    /// Never copies `agent`: the client always uses the server's default agent.
+    pub fn from_info(info: &protocol::SessionInfo) -> Self {
+        Self {
+            id: info.id.clone(),
+            directory: info.directory().to_owned(),
+            title: display_title(info.title.as_deref()),
+            time: SessionTime {
+                created: millis(info.time.created),
+                updated: millis(info.time.updated),
+                archived: info.time.archived.map(|archived| archived as f64),
+            },
+            parent_id: info.parent_id.clone(),
+            agent: None,
+            model: info.model.as_ref().map(SessionModel::from_ref),
         }
-        _ => None,
+    }
+
+    /// `session.created` carries creation fields only; its time is the event's `created`.
+    fn from_created(data: &protocol::SessionCreated, created: u64) -> Self {
+        Self {
+            id: data.session_id.clone(),
+            directory: data.location.directory.clone(),
+            title: display_title(data.title.as_deref()),
+            time: SessionTime {
+                created,
+                updated: created,
+                archived: None,
+            },
+            parent_id: data.parent_id.clone(),
+            agent: None,
+            model: data.model.as_ref().map(SessionModel::from_ref),
+        }
     }
 }
 
-pub fn deleted_session_id(payload: &Value) -> Option<&str> {
-    (payload.get("type").and_then(Value::as_str) == Some("session.deleted"))
-        .then(|| {
-            event_data(payload)
-                .pointer("/info/id")
-                .and_then(Value::as_str)
-        })
-        .flatten()
+impl SessionModel {
+    fn from_ref(model: &protocol::ModelRef) -> Self {
+        Self {
+            id: model.id.clone(),
+            provider_id: model.provider_id.clone(),
+            variant: model.variant.clone(),
+        }
+    }
+}
+
+impl Project {
+    pub fn from_info(info: &protocol::ProjectInfo) -> Self {
+        Self {
+            worktree: info.canonical.clone(),
+            name: info
+                .name
+                .as_deref()
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+                .map(str::to_owned),
+        }
+    }
+}
+
+/// A change to the root-session list carried by a v2 `session.*` event.
+#[derive(Clone, Debug, PartialEq)]
+pub enum SessionChange {
+    Created(Session),
+    Renamed { id: String, title: String },
+    Moved { id: String, directory: String },
+    Deleted(String),
+}
+
+impl SessionChange {
+    /// `payload` is the whole `/api/event` event (`{id, created, type, location?, data}`).
+    pub fn from_event(payload: &Value) -> Option<Self> {
+        let event = protocol::Event::deserialize(payload).ok()?;
+        match protocol::decode_event(&event) {
+            protocol::EventKind::SessionCreated(data) => Some(Self::Created(
+                Session::from_created(&data, event.created.map(millis).unwrap_or(0)),
+            )),
+            protocol::EventKind::SessionRenamed(data) => Some(Self::Renamed {
+                id: data.session_id,
+                title: display_title(Some(&data.title)),
+            }),
+            protocol::EventKind::SessionMoved(data) if !data.location.directory.is_empty() => {
+                Some(Self::Moved {
+                    id: data.session_id,
+                    directory: data.location.directory,
+                })
+            }
+            protocol::EventKind::SessionDeleted(data) => Some(Self::Deleted(data.session_id)),
+            _ => None,
+        }
+    }
+
+    pub fn session_id(&self) -> &str {
+        match self {
+            Self::Created(session) => &session.id,
+            Self::Renamed { id, .. } | Self::Moved { id, .. } | Self::Deleted(id) => id,
+        }
+    }
+
+    /// Applies the change to a root-session list and reports whether it changed.
+    /// A creation never replaces a known session, whose data is at least as new;
+    /// child sessions are ignored; renames and moves of unknown sessions are no-ops.
+    pub fn apply(&self, sessions: &mut Vec<Session>) -> bool {
+        match self {
+            Self::Created(session) => {
+                if session.parent_id.is_some()
+                    || sessions.iter().any(|existing| existing.id == session.id)
+                {
+                    return false;
+                }
+                sessions.push(session.clone());
+                true
+            }
+            Self::Renamed { id, title } => sessions
+                .iter_mut()
+                .find(|session| &session.id == id && &session.title != title)
+                .map(|session| session.title.clone_from(title))
+                .is_some(),
+            Self::Moved { id, directory } => sessions
+                .iter_mut()
+                .find(|session| &session.id == id && &session.directory != directory)
+                .map(|session| session.directory.clone_from(directory))
+                .is_some(),
+            Self::Deleted(id) => {
+                let before = sessions.len();
+                sessions.retain(|session| &session.id != id);
+                sessions.len() != before
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1672,5 +1801,237 @@ mod tests {
             segment.text,
             "bash · running — pnpm exec playwright test e2e/tests/desktop/apps20-ad-resizer.spec.ts"
         );
+    }
+
+    fn session_info(value: Value) -> protocol::SessionInfo {
+        serde_json::from_value(value).unwrap()
+    }
+
+    #[test]
+    fn session_info_maps_to_a_session() {
+        let session = Session::from_info(&session_info(json!({
+            "id": "ses_a",
+            "parentID": "ses_parent",
+            "projectID": "prj",
+            "agent": "build",
+            "model": { "id": "gpt-6", "providerID": "openai", "variant": "high" },
+            "time": { "created": 10, "updated": 20, "archived": 30 },
+            "title": "Fix the build",
+            "location": { "directory": "/work/a" }
+        })));
+        assert_eq!(
+            session,
+            Session {
+                id: "ses_a".into(),
+                directory: "/work/a".into(),
+                title: "Fix the build".into(),
+                time: SessionTime {
+                    created: 10,
+                    updated: 20,
+                    archived: Some(30.0),
+                },
+                parent_id: Some("ses_parent".into()),
+                agent: None,
+                model: Some(SessionModel {
+                    id: "gpt-6".into(),
+                    provider_id: "openai".into(),
+                    variant: Some("high".into()),
+                }),
+            }
+        );
+    }
+
+    #[test]
+    fn untitled_session_info_gets_a_stable_title() {
+        for title in [json!(null), json!(""), json!("   ")] {
+            let session = Session::from_info(&session_info(json!({
+                "id": "ses_a",
+                "time": { "created": 1, "updated": 2 },
+                "title": title,
+                "location": { "directory": "/work" }
+            })));
+            assert_eq!(session.title, "Untitled session");
+            assert_eq!(session.parent_id, None);
+            assert_eq!(session.model, None);
+            assert_eq!(session.time.archived, None);
+        }
+    }
+
+    #[test]
+    fn project_info_maps_canonical_to_worktree() {
+        let project: protocol::ProjectInfo = serde_json::from_value(json!({
+            "id": "prj",
+            "canonical": "/work/a",
+            "name": "A",
+            "sandboxes": ["/work/a-sandbox"]
+        }))
+        .unwrap();
+        assert_eq!(
+            Project::from_info(&project),
+            Project {
+                worktree: "/work/a".into(),
+                name: Some("A".into()),
+            }
+        );
+        let unnamed: protocol::ProjectInfo =
+            serde_json::from_value(json!({ "id": "prj", "canonical": "/work/b", "name": "" }))
+                .unwrap();
+        assert_eq!(Project::from_info(&unnamed).name, None);
+    }
+
+    fn session_event(event_type: &str, data: Value) -> Value {
+        json!({
+            "id": "evt_1",
+            "created": 500,
+            "type": event_type,
+            "location": { "directory": "/work" },
+            "data": data
+        })
+    }
+
+    fn listed(id: &str, title: &str) -> Session {
+        Session {
+            id: id.into(),
+            directory: "/work".into(),
+            title: title.into(),
+            time: SessionTime {
+                created: 1,
+                updated: 900,
+                archived: None,
+            },
+            parent_id: None,
+            agent: None,
+            model: None,
+        }
+    }
+
+    #[test]
+    fn session_created_event_builds_a_root_session_from_creation_fields() {
+        let change = SessionChange::from_event(&session_event(
+            "session.created",
+            json!({
+                "sessionID": "ses_new",
+                "slug": "misty-garden",
+                "version": "2.0.8",
+                "projectID": "prj",
+                "location": { "directory": "/work/new" },
+                "subpath": ""
+            }),
+        ))
+        .unwrap();
+        let SessionChange::Created(session) = &change else {
+            panic!("unexpected {change:?}");
+        };
+        assert_eq!(session.id, "ses_new");
+        assert_eq!(session.directory, "/work/new");
+        assert_eq!(session.title, "Untitled session");
+        assert_eq!((session.time.created, session.time.updated), (500, 500));
+
+        let mut sessions = vec![listed("ses_a", "A")];
+        assert!(change.apply(&mut sessions));
+        assert_eq!(sessions.len(), 2);
+        assert!(!change.apply(&mut sessions), "a creation is idempotent");
+
+        let mut known = vec![listed("ses_new", "Server title")];
+        assert!(!change.apply(&mut known), "never replaces a known session");
+        assert_eq!(known[0].title, "Server title");
+
+        let child = SessionChange::from_event(&session_event(
+            "session.created",
+            json!({
+                "sessionID": "ses_child",
+                "parentID": "ses_a",
+                "location": { "directory": "/work" }
+            }),
+        ))
+        .unwrap();
+        let mut sessions = vec![listed("ses_a", "A")];
+        assert!(!child.apply(&mut sessions));
+        assert_eq!(sessions.len(), 1);
+    }
+
+    #[test]
+    fn session_rename_move_and_delete_events_update_the_list() {
+        let mut sessions = vec![listed("ses_a", "A"), listed("ses_b", "B")];
+
+        let renamed = SessionChange::from_event(&session_event(
+            "session.renamed",
+            json!({ "sessionID": "ses_a", "title": "Renamed" }),
+        ))
+        .unwrap();
+        assert_eq!(renamed.session_id(), "ses_a");
+        assert!(renamed.apply(&mut sessions));
+        assert_eq!(sessions[0].title, "Renamed");
+        assert!(!renamed.apply(&mut sessions));
+
+        let moved = SessionChange::from_event(&session_event(
+            "session.moved",
+            json!({
+                "sessionID": "ses_b",
+                "location": { "directory": "/work/elsewhere" },
+                "projectID": "prj"
+            }),
+        ))
+        .unwrap();
+        assert!(moved.apply(&mut sessions));
+        assert_eq!(sessions[1].directory, "/work/elsewhere");
+
+        let unknown = SessionChange::Renamed {
+            id: "ses_missing".into(),
+            title: "X".into(),
+        };
+        assert!(!unknown.apply(&mut sessions));
+
+        let deleted = SessionChange::from_event(&session_event(
+            "session.deleted",
+            json!({ "sessionID": "ses_a" }),
+        ))
+        .unwrap();
+        assert_eq!(deleted, SessionChange::Deleted("ses_a".into()));
+        assert!(deleted.apply(&mut sessions));
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].id, "ses_b");
+
+        for ignored in [
+            session_event("session.model.selected", json!({ "sessionID": "ses_b" })),
+            session_event("session.renamed", json!({})),
+            json!({ "type": "session.deleted", "data": { "sessionID": "ses_b" } }),
+        ] {
+            assert_eq!(SessionChange::from_event(&ignored), None, "{ignored}");
+        }
+    }
+
+    #[test]
+    fn captured_session_lifecycle_events_decode() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/v2-2.0.8/events/session-lifecycle.jsonl"
+        );
+        let text = std::fs::read_to_string(path).expect("captured session-lifecycle events");
+        let mut sessions = Vec::new();
+        let mut created = 0;
+        let mut renamed = 0;
+        for line in text.lines().filter(|line| !line.trim().is_empty()) {
+            let payload: Value = serde_json::from_str(line).unwrap();
+            match SessionChange::from_event(&payload) {
+                Some(change @ SessionChange::Created(_)) => {
+                    created += 1;
+                    assert!(change.apply(&mut sessions));
+                }
+                Some(change @ SessionChange::Renamed { .. }) => {
+                    renamed += 1;
+                    assert!(change.apply(&mut sessions));
+                }
+                Some(other) => panic!("unexpected {other:?}"),
+                None => {}
+            }
+        }
+        assert!(created > 0 && renamed > 0);
+        assert!(sessions
+            .iter()
+            .all(|session| !session.directory.is_empty() && session.time.created > 0));
+        assert!(sessions
+            .iter()
+            .any(|session| session.title != "Untitled session"));
     }
 }

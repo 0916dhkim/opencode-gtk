@@ -18,9 +18,9 @@ use crate::{
     credentials::{self, CloudflareAccessCredentials},
     markdown,
     model::{
-        deleted_session_id, event_data, event_run_status, event_session, event_session_id,
-        format_context_usage, Conversation, ModelCatalog, ModelOption, ModelSelection, Project,
-        RunStatus, Session, SessionTime,
+        event_data, event_run_status, event_session_id, format_context_usage, Conversation,
+        ModelCatalog, ModelOption, ModelSelection, Project, RunStatus, Session, SessionChange,
+        SessionTime,
     },
     persist::{default_path, ConnectionSettings, PersistedState, PersistedTab, ServerState},
 };
@@ -56,6 +56,16 @@ struct TranscriptRow {
     time: u64,
     #[serde(default)]
     kind: String,
+}
+
+/// What one batch of server events requires once it has been applied.
+#[derive(Default)]
+struct FlushEffects {
+    api_commands: Vec<Command>,
+    persist_unread: bool,
+    transcript_changed: bool,
+    tabs_changed: bool,
+    tab_status_changed: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -242,8 +252,9 @@ struct Controller {
     controls_updating: bool,
     pending_events: Vec<ServerEnvelope>,
     event_flush_scheduled: bool,
-    session_events_during_bootstrap: HashMap<String, Option<Session>>,
-    session_removals_during_bootstrap: HashMap<String, u64>,
+    /// Session-list changes seen while a bootstrap is in flight, replayed in
+    /// order onto its snapshot.
+    session_events_during_bootstrap: Vec<SessionChange>,
     status_events_during_bootstrap: HashMap<String, RunStatus>,
     resolved_requests_during_bootstrap: HashSet<String>,
     message_events_during_load: HashMap<String, Vec<serde_json::Value>>,
@@ -709,8 +720,7 @@ pub fn launch(
         controls_updating: false,
         pending_events: Vec::new(),
         event_flush_scheduled: false,
-        session_events_during_bootstrap: HashMap::new(),
-        session_removals_during_bootstrap: HashMap::new(),
+        session_events_during_bootstrap: Vec::new(),
         status_events_during_bootstrap: HashMap::new(),
         resolved_requests_during_bootstrap: HashSet::new(),
         message_events_during_load: HashMap::new(),
@@ -2896,21 +2906,8 @@ impl Controller {
                 this.widgets.status.set_tooltip_text(None);
             }
             let mut sessions = bootstrap.sessions;
-            let mut removals = std::mem::take(&mut this.session_removals_during_bootstrap);
-            for (id, event) in std::mem::take(&mut this.session_events_during_bootstrap) {
-                if let Some(event) = event {
-                    if let Some(session) = sessions.iter_mut().find(|session| session.id == id) {
-                        if event.time.updated >= session.time.updated {
-                            *session = event;
-                        }
-                    } else {
-                        sessions.push(event);
-                    }
-                } else {
-                    let removed_at = removals.remove(&id).unwrap_or(u64::MAX);
-                    sessions
-                        .retain(|session| session.id != id || session.time.updated > removed_at);
-                }
+            for change in std::mem::take(&mut this.session_events_during_bootstrap) {
+                change.apply(&mut sessions);
             }
             if bootstrap.sessions_complete {
                 this.state.sessions = sessions;
@@ -3186,108 +3183,17 @@ impl Controller {
         let mut permission_events = Vec::new();
         let mut question_events = Vec::new();
         let mut resolved_requests = HashSet::new();
-        let mut api_commands = Vec::new();
+        let mut effects = FlushEffects::default();
         let mut this = controller.borrow_mut();
         this.event_flush_scheduled = false;
         let events = std::mem::take(&mut this.pending_events);
         let active = this.state.active.clone();
-        let mut persist_unread = false;
-        let mut transcript_changed = false;
-        let mut tabs_changed = false;
-        let mut tab_status_changed = false;
 
         for envelope in events {
             let payload = envelope.payload;
-            if let Some(session) = event_session(&payload) {
-                let open = this.state.tabs.contains(&session.id);
-                if this.bootstrap_pending {
-                    if session.time.archived.is_some() {
-                        this.session_removals_during_bootstrap
-                            .insert(session.id.clone(), session.time.updated);
-                    } else {
-                        this.session_removals_during_bootstrap.remove(&session.id);
-                    }
-                    this.session_events_during_bootstrap.insert(
-                        session.id.clone(),
-                        (session.time.archived.is_none() && session.parent_id.is_none())
-                            .then(|| session.clone()),
-                    );
-                }
-                this.upsert_session(session);
-                tabs_changed |= open;
-            }
-            if let Some(id) = deleted_session_id(&payload) {
-                let open = this.state.tabs.iter().any(|tab| tab == id);
-                if this.bootstrap_pending {
-                    this.session_events_during_bootstrap
-                        .insert(id.to_owned(), None);
-                    this.session_removals_during_bootstrap
-                        .insert(id.to_owned(), u64::MAX);
-                }
-                this.remove_session(id);
-                tabs_changed |= open;
-            }
-            if let Some((session_id, status)) = event_run_status(&payload) {
-                if active.as_deref() == Some(session_id.as_str()) {
-                    transcript_changed = true;
-                }
-                if this.bootstrap_pending {
-                    this.status_events_during_bootstrap
-                        .insert(session_id.clone(), status.clone());
-                }
-                match &status {
-                    RunStatus::Busy | RunStatus::Retry { .. } => {
-                        this.state.server_busy.insert(session_id.clone());
-                        this.state.pending_prompts.remove(&session_id);
-                        if this.state.abort_requested.remove(&session_id) {
-                            if let Some(session) = this.session(&session_id) {
-                                api_commands.push(Command::Abort {
-                                    session_id: session_id.clone(),
-                                    directory: session.directory.clone(),
-                                });
-                            }
-                        }
-                    }
-                    RunStatus::Idle => {
-                        this.state.server_busy.remove(&session_id);
-                        this.state.abort_requested.remove(&session_id);
-                        this.state.optimistic_prompts.remove(&session_id);
-                        remove_pending_clipboard_attachments(
-                            this.state.pending_prompts.remove(&session_id),
-                        );
-                    }
-                }
-                let previous = this.state.statuses.get(&session_id).cloned();
-                let status_changed = this.update_session_status(&session_id, status.clone());
-                let open = this.state.tabs.iter().any(|id| id == &session_id);
-                if open && session_idle_marks_unread(previous.as_ref()) && status.is_idle() {
-                    persist_unread |= this.state.unread.insert(session_id.clone());
-                    tab_status_changed = true;
-                    this.notify_session_idle(&session_id);
-                }
-                tab_status_changed |= status_changed && open;
-            }
-            if let Some(session_id) = event_session_id(&payload).map(str::to_owned) {
-                if this.replacing_messages.contains(&session_id) {
-                    this.message_events_during_load
-                        .entry(session_id.clone())
-                        .or_default()
-                        .push(payload.clone());
-                }
-                if this.state.tabs.contains(&session_id)
-                    || this.state.conversations.contains_key(&session_id)
-                {
-                    let conversation = this
-                        .state
-                        .conversations
-                        .entry(session_id.clone())
-                        .or_default();
-                    let changed = conversation.apply_event(&payload);
-                    if active.as_deref() == Some(session_id.as_str()) {
-                        transcript_changed |= changed;
-                    }
-                }
-            }
+            this.flush_session_event(&payload, &mut effects);
+            this.flush_run_status_event(&payload, active.as_deref(), &mut effects);
+            this.flush_conversation_event(&payload, active.as_deref(), &mut effects);
             match payload.get("type").and_then(serde_json::Value::as_str) {
                 Some("permission.asked") | Some("permission.updated") => {
                     permission_events.push((envelope.directory, payload));
@@ -3350,6 +3256,13 @@ impl Controller {
                 .and_then(serde_json::Value::as_str)
                 .is_none_or(|id| !resolved_requests.contains(id))
         });
+        let FlushEffects {
+            api_commands,
+            persist_unread,
+            transcript_changed,
+            tabs_changed,
+            tab_status_changed,
+        } = effects;
         if tabs_changed {
             this.persist_state();
             drop(this);
@@ -3384,6 +3297,107 @@ impl Controller {
         }
         for (directory, payload) in question_events {
             Self::show_question(controller, directory, payload);
+        }
+    }
+
+    /// Root-session list changes (`session.created|renamed|moved|deleted`).
+    fn flush_session_event(&mut self, payload: &serde_json::Value, effects: &mut FlushEffects) {
+        let Some(change) = SessionChange::from_event(payload) else {
+            return;
+        };
+        let open = self.state.tabs.iter().any(|tab| tab == change.session_id());
+        if self.bootstrap_pending {
+            self.session_events_during_bootstrap.push(change.clone());
+        }
+        match &change {
+            SessionChange::Deleted(id) => self.remove_session(id),
+            _ => {
+                if change.apply(&mut self.state.sessions) {
+                    self.state
+                        .sessions
+                        .sort_by_key(|session| std::cmp::Reverse(session.time.updated));
+                }
+            }
+        }
+        effects.tabs_changed |= open;
+    }
+
+    fn flush_run_status_event(
+        &mut self,
+        payload: &serde_json::Value,
+        active: Option<&str>,
+        effects: &mut FlushEffects,
+    ) {
+        let Some((session_id, status)) = event_run_status(payload) else {
+            return;
+        };
+        if active == Some(session_id.as_str()) {
+            effects.transcript_changed = true;
+        }
+        if self.bootstrap_pending {
+            self.status_events_during_bootstrap
+                .insert(session_id.clone(), status.clone());
+        }
+        match &status {
+            RunStatus::Busy | RunStatus::Retry { .. } => {
+                self.state.server_busy.insert(session_id.clone());
+                self.state.pending_prompts.remove(&session_id);
+                if self.state.abort_requested.remove(&session_id) {
+                    if let Some(session) = self.session(&session_id) {
+                        effects.api_commands.push(Command::Abort {
+                            session_id: session_id.clone(),
+                            directory: session.directory.clone(),
+                        });
+                    }
+                }
+            }
+            RunStatus::Idle => {
+                self.state.server_busy.remove(&session_id);
+                self.state.abort_requested.remove(&session_id);
+                self.state.optimistic_prompts.remove(&session_id);
+                remove_pending_clipboard_attachments(
+                    self.state.pending_prompts.remove(&session_id),
+                );
+            }
+        }
+        let previous = self.state.statuses.get(&session_id).cloned();
+        let status_changed = self.update_session_status(&session_id, status.clone());
+        let open = self.state.tabs.iter().any(|id| id == &session_id);
+        if open && session_idle_marks_unread(previous.as_ref()) && status.is_idle() {
+            effects.persist_unread |= self.state.unread.insert(session_id.clone());
+            effects.tab_status_changed = true;
+            self.notify_session_idle(&session_id);
+        }
+        effects.tab_status_changed |= status_changed && open;
+    }
+
+    fn flush_conversation_event(
+        &mut self,
+        payload: &serde_json::Value,
+        active: Option<&str>,
+        effects: &mut FlushEffects,
+    ) {
+        let Some(session_id) = event_session_id(payload).map(str::to_owned) else {
+            return;
+        };
+        if self.replacing_messages.contains(&session_id) {
+            self.message_events_during_load
+                .entry(session_id.clone())
+                .or_default()
+                .push(payload.clone());
+        }
+        if self.state.tabs.contains(&session_id)
+            || self.state.conversations.contains_key(&session_id)
+        {
+            let conversation = self
+                .state
+                .conversations
+                .entry(session_id.clone())
+                .or_default();
+            let changed = conversation.apply_event(payload);
+            if active == Some(session_id.as_str()) {
+                effects.transcript_changed |= changed;
+            }
         }
     }
 
@@ -6180,7 +6194,6 @@ impl Controller {
             this.pending_events.clear();
             this.event_flush_scheduled = false;
             this.session_events_during_bootstrap.clear();
-            this.session_removals_during_bootstrap.clear();
             this.status_events_during_bootstrap.clear();
             this.resolved_requests_during_bootstrap.clear();
             this.message_events_during_load.clear();

@@ -19,15 +19,19 @@ use reqwest::{
     header::HeaderValue,
     Method, StatusCode, Url,
 };
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::{
     credentials::CloudflareAccessCredentials,
     model::{ModelCatalog, ModelSelection, Project, RunStatus, Session},
+    protocol::{self, QueryPairs},
 };
 
 const MESSAGE_PAGE_SIZE: usize = 80;
-const SESSION_LIST_LIMIT: usize = 100_000;
+const SESSION_PAGE_SIZE: u32 = 200;
+const MAX_SESSION_PAGES: usize = 1_000;
+const MAX_ERROR_BODY_CHARS: usize = 500;
 const MAX_ATTACHMENT_BYTES: u64 = 25 * 1024 * 1024;
 const MAX_TOTAL_ATTACHMENT_BYTES: u64 = 40 * 1024 * 1024;
 const UI_EVENT_CAPACITY: usize = 4_096;
@@ -281,7 +285,7 @@ impl Api {
         if !base.ends_with('/') {
             base.push('/');
         }
-        let base_url = Url::parse(&base).context("invalid OpenCode server URL")?;
+        let mut base_url = Url::parse(&base).context("invalid OpenCode server URL")?;
         if !matches!(base_url.scheme(), "http" | "https") {
             bail!("OpenCode server URL must use http or https");
         }
@@ -303,6 +307,12 @@ impl Api {
         if config.cloudflare_access.is_some() && base_url.scheme() != "https" {
             bail!("Cloudflare Access credentials require an HTTPS server URL");
         }
+        // The base may carry a reverse-proxy mount prefix; API paths add `/api`
+        // themselves, so a base that already ends in `/api` would double it.
+        let mount = base_url.path().trim_end_matches('/');
+        let mount = mount.strip_suffix(protocol::API_PREFIX).unwrap_or(mount);
+        let mount = format!("{mount}/");
+        base_url.set_path(&mount);
         let cloudflare_access = config
             .cloudflare_access
             .map(|credentials| {
@@ -364,15 +374,48 @@ impl Api {
         }
     }
 
-    fn url(&self, path: &str, directory: Option<&str>) -> Result<Url> {
+    /// `path` is an API path from the `protocol` helpers (`/api/...`). It is
+    /// resolved below the base URL, so a reverse-proxy mount prefix is kept.
+    fn url(&self, path: &str, query: &[(String, String)]) -> Result<Url> {
         let mut url = self
             .base_url
             .join(path.trim_start_matches('/'))
             .with_context(|| format!("invalid API path: {path}"))?;
-        if let Some(directory) = directory {
-            url.query_pairs_mut().append_pair("directory", directory);
+        if !query.is_empty() {
+            url.query_pairs_mut().extend_pairs(query);
         }
         Ok(url)
+    }
+
+    fn get<T: DeserializeOwned>(&self, path: &str, query: &[(String, String)]) -> Result<T> {
+        let response = self
+            .request(Method::GET, self.url(path, query)?)
+            .send()
+            .context("request failed")?;
+        decode_json(response)
+    }
+
+    fn send_json<T: DeserializeOwned>(
+        &self,
+        method: Method,
+        path: &str,
+        body: &impl Serialize,
+    ) -> Result<T> {
+        let response = self
+            .request(method, self.url(path, &[])?)
+            .json(body)
+            .send()
+            .context("request failed")?;
+        decode_json(response)
+    }
+
+    fn send_empty(&self, method: Method, path: &str, body: &impl Serialize) -> Result<()> {
+        let response = self
+            .request(method, self.url(path, &[])?)
+            .json(body)
+            .send()
+            .context("request failed")?;
+        expect_success(response).map(|_| ())
     }
 
     fn json(&self, method: Method, url: Url, body: Option<&Value>) -> Result<Value> {
@@ -408,133 +451,59 @@ impl Api {
         expect_success(response).map(|_| ())
     }
 
+    fn server_info(&self) -> Result<protocol::ServerInfo> {
+        const REQUIRES_V2: &str = "this client requires OpenCode 2.x";
+        let response = self
+            .request(Method::GET, self.url(&protocol::info_path(), &[])?)
+            .send()
+            .context("request failed")?;
+        if response.status() == StatusCode::NOT_FOUND {
+            bail!("Server does not provide /api/info; {REQUIRES_V2}");
+        }
+        let body = expect_success(response)?
+            .bytes()
+            .context("failed to read server info")?;
+        let info: protocol::ServerInfoResponse = protocol::decode(&body)
+            .map_err(|_| anyhow!("Server did not return OpenCode server info; {REQUIRES_V2}"))?;
+        if !info.is_v2() {
+            bail!("Server is OpenCode {}; {REQUIRES_V2}", info.version);
+        }
+        Ok(info)
+    }
+
     fn bootstrap(&self) -> Result<Bootstrap> {
         let mut warnings = Vec::new();
         let mut retry_needed = false;
-        let health = self.json(Method::GET, self.url("global/health", None)?, None)?;
-        let version = health
-            .get("version")
-            .and_then(Value::as_str)
-            .unwrap_or("unknown")
-            .to_owned();
+        let version = self.server_info()?.version;
 
-        let projects_result = self
-            .json(Method::GET, self.url("project", None)?, None)
-            .and_then(|value| {
-                serde_json::from_value(value).context("server returned an invalid project list")
-            });
-        let mut sessions_complete = projects_result.is_ok();
-        let projects: Vec<Project> = match projects_result {
-            Ok(projects) => projects,
+        let projects =
+            match self.get::<protocol::ProjectListResponse>(&protocol::projects_path(), &[]) {
+                Ok(projects) => projects.iter().map(Project::from_info).collect(),
+                Err(error) => {
+                    retry_needed = true;
+                    warnings.push(format!("Could not list every project: {error:#}"));
+                    Vec::new()
+                }
+            };
+
+        let (sessions, incomplete) = self.list_root_sessions()?;
+        let sessions_complete = incomplete.is_none();
+        if let Some(warning) = incomplete {
+            retry_needed = true;
+            warnings.push(warning);
+        }
+
+        let (statuses, statuses_complete) = match self.load_statuses() {
+            Ok(statuses) => (statuses, true),
             Err(error) => {
                 retry_needed = true;
-                warnings.push(format!("Could not list every project: {error}"));
-                Vec::new()
+                warnings.push(format!("Could not refresh session status: {error:#}"));
+                (HashMap::new(), false)
             }
         };
-        let project_directories: HashSet<_> = projects
-            .iter()
-            .map(|project| project.worktree.clone())
-            .collect();
-        let mut sessions_by_id = HashMap::new();
-        let mut first_session_error = None;
 
-        if project_directories.is_empty() {
-            match self.list_sessions(None, false) {
-                Ok((sessions, complete)) => {
-                    sessions_complete &= complete;
-                    if !complete {
-                        warnings.push("The server session list reached its result limit".into());
-                    }
-                    for session in sessions {
-                        sessions_by_id.insert(session.id.clone(), session);
-                    }
-                }
-                Err(error) => first_session_error = Some(error),
-            }
-        } else {
-            for directory in &project_directories {
-                match self.list_sessions(Some(directory), true) {
-                    Ok((sessions, complete)) => {
-                        sessions_complete &= complete;
-                        if !complete {
-                            warnings.push(format!(
-                                "The session list for {directory} reached its result limit"
-                            ));
-                        }
-                        for session in sessions {
-                            let replace =
-                                sessions_by_id
-                                    .get(&session.id)
-                                    .is_none_or(|existing: &Session| {
-                                        session.time.updated >= existing.time.updated
-                                    });
-                            if replace {
-                                sessions_by_id.insert(session.id.clone(), session);
-                            }
-                        }
-                    }
-                    Err(error) => {
-                        retry_needed = true;
-                        sessions_complete = false;
-                        warnings.push(format!(
-                            "Could not refresh sessions for {directory}: {error}"
-                        ));
-                        if first_session_error.is_none() {
-                            first_session_error = Some(error);
-                        }
-                    }
-                }
-            }
-        }
-        if sessions_by_id.is_empty() {
-            if let Some(error) = first_session_error {
-                return Err(error);
-            }
-        }
-        let mut sessions: Vec<_> = sessions_by_id.into_values().collect();
-        sessions.retain(|session| session.time.archived.is_none() && session.parent_id.is_none());
-        sessions.sort_by_key(|session| std::cmp::Reverse(session.time.updated));
-
-        let mut directories = project_directories;
-        directories.extend(sessions.iter().map(|session| session.directory.clone()));
-        let mut statuses = HashMap::new();
-        let mut statuses_complete = true;
-        let mut pending_complete = true;
-        let mut pending = Vec::new();
-        for directory in &directories {
-            match self.load_statuses(directory) {
-                Ok(directory_statuses) => statuses.extend(directory_statuses),
-                Err(error) => {
-                    retry_needed = true;
-                    statuses_complete = false;
-                    warnings.push(format!(
-                        "Could not refresh session status for {directory}: {error}"
-                    ));
-                }
-            }
-            match self.load_pending("permission", "permission.asked", directory) {
-                Ok(requests) => pending.extend(requests),
-                Err(error) => {
-                    retry_needed = true;
-                    pending_complete = false;
-                    warnings.push(format!(
-                        "Could not recover permission requests for {directory}: {error}"
-                    ));
-                }
-            }
-            match self.load_pending("question", "question.asked", directory) {
-                Ok(requests) => pending.extend(requests),
-                Err(error) => {
-                    retry_needed = true;
-                    pending_complete = false;
-                    warnings.push(format!(
-                        "Could not recover questions for {directory}: {error}"
-                    ));
-                }
-            }
-        }
-
+        // Pending permission and form recovery is ported in CP-010/CP-011.
+        // Until then report it incomplete so no open prompt is dismissed.
         Ok(Bootstrap {
             version,
             sessions,
@@ -542,84 +511,88 @@ impl Api {
             projects,
             statuses,
             statuses_complete,
-            pending,
-            pending_complete,
+            pending: Vec::new(),
+            pending_complete: false,
             retry_needed,
             warnings,
         })
     }
 
-    fn list_sessions(
-        &self,
-        directory: Option<&str>,
-        project_scope: bool,
-    ) -> Result<(Vec<Session>, bool)> {
-        let mut url = self.url("session", directory)?;
-        url.query_pairs_mut()
-            .append_pair("roots", "true")
-            .append_pair("limit", &SESSION_LIST_LIMIT.to_string());
-        if project_scope {
-            url.query_pairs_mut().append_pair("scope", "project");
+    /// Every root session across all locations and projects: an unfiltered
+    /// `GET /api/session` spans the whole server. Pages run oldest first so a
+    /// session updated while paging moves ahead of the cursor instead of
+    /// behind it. Returns the sessions and, when the list may be partial, why.
+    fn list_root_sessions(&self) -> Result<(Vec<Session>, Option<String>)> {
+        let first = protocol::SessionListQuery {
+            limit: Some(SESSION_PAGE_SIZE),
+            order: Some(protocol::Order::Asc),
+            ..protocol::SessionListQuery::roots()
+        };
+        let mut query = first.clone();
+        let mut sessions_by_id: HashMap<String, Session> = HashMap::new();
+        let mut seen_cursors = HashSet::new();
+        let mut incomplete = None;
+        for page_index in 0.. {
+            if page_index == MAX_SESSION_PAGES {
+                incomplete = Some("The server session list reached its page limit".to_owned());
+                break;
+            }
+            let page = match self
+                .get::<protocol::SessionListResponse>(&protocol::sessions_path(), &query.pairs())
+            {
+                Ok(page) => page,
+                Err(error) if page_index == 0 => return Err(error),
+                Err(error) => {
+                    incomplete = Some(format!("Could not list every session: {error:#}"));
+                    break;
+                }
+            };
+            for info in page.data.iter().filter(|info| info.is_root()) {
+                let session = Session::from_info(info);
+                let replace = sessions_by_id
+                    .get(&session.id)
+                    .is_none_or(|existing| session.time.updated >= existing.time.updated);
+                if replace {
+                    sessions_by_id.insert(session.id.clone(), session);
+                }
+            }
+            let Some(cursor) = page.next_cursor() else {
+                break;
+            };
+            if !seen_cursors.insert(cursor.to_owned()) {
+                incomplete = Some("The server repeated a session list cursor".to_owned());
+                break;
+            }
+            query = first.with_cursor(cursor);
         }
-        let value = self.json(Method::GET, url, None)?;
-        let sessions: Vec<Session> =
-            serde_json::from_value(value).context("server returned an invalid session list")?;
-        let complete = sessions.len() < SESSION_LIST_LIMIT;
-        Ok((sessions, complete))
+        let mut sessions: Vec<_> = sessions_by_id.into_values().collect();
+        sessions.retain(|session| session.time.archived.is_none());
+        sessions.sort_by_key(|session| std::cmp::Reverse(session.time.updated));
+        Ok((sessions, incomplete))
     }
 
-    fn load_statuses(&self, directory: &str) -> Result<HashMap<String, RunStatus>> {
-        let value = self.json(
-            Method::GET,
-            self.url("session/status", Some(directory))?,
-            None,
-        )?;
-        let values = value
-            .as_object()
-            .context("server returned an invalid session status map")?;
-        Ok(values
-            .iter()
-            .filter_map(|(session_id, value)| {
-                RunStatus::from_value(value).map(|status| (session_id.clone(), status))
-            })
-            .collect())
-    }
-
-    fn load_pending(
-        &self,
-        path: &str,
-        event_type: &str,
-        directory: &str,
-    ) -> Result<Vec<ServerEnvelope>> {
-        let value = self.json(Method::GET, self.url(path, Some(directory))?, None)?;
-        let requests = value
-            .as_array()
-            .context("server returned an invalid pending-request list")?;
-        Ok(requests
-            .iter()
-            .cloned()
-            .map(|properties| ServerEnvelope {
-                directory: Some(directory.to_owned()),
-                payload: json!({
-                    "type": event_type,
-                    "properties": properties,
-                }),
-            })
+    /// `running` (or any future active kind) is busy; absent sessions are idle.
+    fn load_statuses(&self) -> Result<HashMap<String, RunStatus>> {
+        let active: protocol::SessionActiveResponse =
+            self.get(&protocol::sessions_active_path(), &[])?;
+        Ok(active
+            .data
+            .into_keys()
+            .map(|session_id| (session_id, RunStatus::Busy))
             .collect())
     }
 
     fn load_messages(
         &self,
         session_id: &str,
-        directory: &str,
+        _directory: &str,
         before: Option<&str>,
     ) -> Result<MessagePage> {
-        let mut url = self.url(&format!("session/{session_id}/message"), Some(directory))?;
-        url.query_pairs_mut()
-            .append_pair("limit", &MESSAGE_PAGE_SIZE.to_string());
+        let mut query: QueryPairs = vec![("limit".into(), MESSAGE_PAGE_SIZE.to_string())];
         if let Some(before) = before {
-            url.query_pairs_mut().append_pair("before", before);
+            query.push(("before".into(), before.to_owned()));
         }
+        let url = self.url(&protocol::session_messages_path(session_id), &query)?;
         let response = expect_success(
             self.request(Method::GET, url)
                 .send()
@@ -640,43 +613,48 @@ impl Api {
     }
 
     fn load_models(&self, directory: &str) -> Result<ModelCatalog> {
+        let location = [protocol::location_query(directory)];
         let providers = self.json(
             Method::GET,
-            self.url("config/providers", Some(directory))?,
+            self.url(
+                &format!("{}/config/providers", protocol::API_PREFIX),
+                &location,
+            )?,
             None,
         )?;
         let config = self
-            .json(Method::GET, self.url("config", Some(directory))?, None)
+            .json(
+                Method::GET,
+                self.url(&format!("{}/config", protocol::API_PREFIX), &location)?,
+                None,
+            )
             .unwrap_or(Value::Null);
         Ok(ModelCatalog::from_values(&providers, &config))
     }
 
     fn create_session(&self, directory: &str, title: Option<&str>) -> Result<Session> {
-        let body = match title.filter(|title| !title.trim().is_empty()) {
-            Some(title) => json!({ "title": title.trim() }),
-            None => json!({}),
-        };
-        let value = self.json(
-            Method::POST,
-            self.url("session", Some(directory))?,
-            Some(&body),
-        )?;
-        serde_json::from_value(value).context("server returned an invalid session")
+        let body = protocol::CreateSessionBody::new(directory, title.map(|t| t.trim().to_owned()));
+        let created: protocol::SessionResponse =
+            self.send_json(Method::POST, &protocol::sessions_path(), &body)?;
+        Ok(Session::from_info(&created.data))
     }
 
-    fn rename_session(&self, session_id: &str, directory: &str, title: &str) -> Result<Session> {
-        let value = self.json(
-            Method::PATCH,
-            self.url(&format!("session/{session_id}"), Some(directory))?,
-            Some(&json!({ "title": title.trim() })),
-        )?;
-        serde_json::from_value(value).context("server returned an invalid session")
+    /// A blank title would make the server regenerate one, so it is refused.
+    fn rename_session(&self, session_id: &str, _directory: &str, title: &str) -> Result<Session> {
+        let body =
+            protocol::RenameSessionBody::new(title).context("session title cannot be blank")?;
+        let path = protocol::session_path(session_id);
+        self.send_empty(Method::PATCH, &path, &body)?;
+        let renamed: protocol::SessionResponse = self
+            .get(&path, &[])
+            .context("renamed the session but could not reload it")?;
+        Ok(Session::from_info(&renamed.data))
     }
 
     fn send_prompt(
         &self,
         session_id: &str,
-        directory: &str,
+        _directory: &str,
         text: &str,
         selection: Option<&ModelSelection>,
         agent: Option<&str>,
@@ -699,20 +677,21 @@ impl Api {
         if let Some(agent) = agent {
             body["agent"] = Value::String(agent.to_owned());
         }
+        // v1 body on a route 2.0.8 does not serve; replaced in CP-008.
         self.empty(
             Method::POST,
             self.url(
-                &format!("session/{session_id}/prompt_async"),
-                Some(directory),
+                &format!("{}/prompt_async", protocol::session_path(session_id)),
+                &[],
             )?,
             Some(&body),
         )
     }
 
-    fn abort(&self, session_id: &str, directory: &str) -> Result<()> {
+    fn abort(&self, session_id: &str, _directory: &str) -> Result<()> {
         self.empty(
             Method::POST,
-            self.url(&format!("session/{session_id}/abort"), Some(directory))?,
+            self.url(&protocol::session_interrupt_path(session_id), &[])?,
             None,
         )
     }
@@ -720,7 +699,10 @@ impl Api {
     fn reply_permission(&self, request_id: &str, directory: &str, reply: &str) -> Result<()> {
         self.complete_request(
             Method::POST,
-            self.url(&format!("permission/{request_id}/reply"), Some(directory))?,
+            self.url(
+                &format!("{}/permission/{request_id}/reply", protocol::API_PREFIX),
+                &[protocol::location_query(directory)],
+            )?,
             Some(&json!({ "reply": reply })),
         )
     }
@@ -733,7 +715,10 @@ impl Api {
     ) -> Result<()> {
         self.complete_request(
             Method::POST,
-            self.url(&format!("question/{request_id}/reply"), Some(directory))?,
+            self.url(
+                &format!("{}/question/{request_id}/reply", protocol::API_PREFIX),
+                &[protocol::location_query(directory)],
+            )?,
             Some(&json!({ "answers": answers })),
         )
     }
@@ -741,7 +726,10 @@ impl Api {
     fn reject_question(&self, request_id: &str, directory: &str) -> Result<()> {
         self.complete_request(
             Method::POST,
-            self.url(&format!("question/{request_id}/reject"), Some(directory))?,
+            self.url(
+                &format!("{}/question/{request_id}/reject", protocol::API_PREFIX),
+                &[protocol::location_query(directory)],
+            )?,
             None,
         )
     }
@@ -912,7 +900,7 @@ fn spawn_event_worker(api: Api, ui: Sender<UiEvent>, alive: Arc<AtomicBool>) {
 
 fn stream_events(api: &Api, ui: &Sender<UiEvent>, connected: &mut bool) -> Result<()> {
     let response = expect_success(
-        api.event_request(Method::GET, api.url("global/event", None)?)
+        api.event_request(Method::GET, api.url(&protocol::events_path(), &[])?)
             .header("Accept", "text/event-stream")
             .send()
             .context("failed to connect event stream")?,
@@ -939,27 +927,45 @@ fn stream_events(api: &Api, ui: &Sender<UiEvent>, connected: &mut bool) -> Resul
         let Some(data) = decoder.push(&line) else {
             continue;
         };
-        let envelope: Value = serde_json::from_str(&data).context("invalid event payload")?;
-        let directory = envelope
-            .get("directory")
-            .and_then(Value::as_str)
-            .map(str::to_owned);
-        let payload = envelope.get("payload").cloned().unwrap_or(envelope);
-        match payload.get("type").and_then(Value::as_str) {
-            Some("server.connected") => {
+        let payload: Value = serde_json::from_str(&data).context("invalid event payload")?;
+        match event_frame(payload) {
+            EventFrame::Connected => {
                 *connected = true;
                 let _ = ui.send_blocking(UiEvent::Connection {
                     connected: true,
                     error: None,
                 });
             }
-            Some("server.heartbeat") | Some("sync") => {}
-            _ => {
-                ui.send_blocking(UiEvent::ServerEvent(ServerEnvelope { directory, payload }))
+            EventFrame::Event(envelope) => {
+                ui.send_blocking(UiEvent::ServerEvent(envelope))
                     .map_err(|_| anyhow!("UI event receiver closed"))?;
             }
+            EventFrame::Ignored => {}
         }
     }
+}
+
+#[derive(Debug)]
+enum EventFrame {
+    Connected,
+    Event(ServerEnvelope),
+    Ignored,
+}
+
+/// Maps one `/api/event` frame. Consumers get the whole event as the payload
+/// (`model::event_data` reads its `data`) and the directory from `location`.
+fn event_frame(payload: Value) -> EventFrame {
+    let Ok(event) = protocol::Event::deserialize(&payload) else {
+        return EventFrame::Ignored;
+    };
+    if event.type_ == "server.connected" {
+        return EventFrame::Connected;
+    }
+    let directory = event
+        .directory()
+        .filter(|directory| !directory.is_empty())
+        .map(str::to_owned);
+    EventFrame::Event(ServerEnvelope { directory, payload })
 }
 
 #[derive(Default)]
@@ -1029,26 +1035,52 @@ fn encode_attachments(paths: &[PathBuf]) -> Result<Vec<Value>> {
         .collect()
 }
 
+/// A non-success HTTP response. Declared v2 failures carry a typed body.
+#[derive(Debug)]
+pub struct ApiFailure {
+    pub status: StatusCode,
+    pub error: Option<protocol::ApiError>,
+    pub body: String,
+}
+
+impl std::fmt::Display for ApiFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.error {
+            Some(error) => formatter.write_str(error.display_message()),
+            None if self.body.is_empty() => write!(formatter, "server returned {}", self.status),
+            None => write!(formatter, "server returned {}: {}", self.status, self.body),
+        }
+    }
+}
+
+impl std::error::Error for ApiFailure {}
+
 fn expect_success(response: Response) -> Result<Response> {
     if response.status().is_success() {
         return Ok(response);
     }
     let status = response.status();
-    let body = response.text().unwrap_or_default();
-    let detail = serde_json::from_str::<Value>(&body)
-        .ok()
-        .and_then(|value| {
-            value
-                .pointer("/data/message")
-                .or_else(|| value.get("message"))
-                .and_then(Value::as_str)
-                .map(str::to_owned)
-        })
-        .unwrap_or_else(|| body.trim().to_owned());
-    if detail.is_empty() {
-        bail!("server returned {status}");
+    let body = response.bytes().unwrap_or_default();
+    let error = protocol::decode_error_body(&body);
+    let text = String::from_utf8_lossy(&body);
+    let text = text.trim();
+    let body = match text.char_indices().nth(MAX_ERROR_BODY_CHARS) {
+        Some((end, _)) => format!("{}…", &text[..end]),
+        None => text.to_owned(),
+    };
+    Err(ApiFailure {
+        status,
+        error,
+        body,
     }
-    bail!("server returned {status}: {detail}")
+    .into())
+}
+
+fn decode_json<T: DeserializeOwned>(response: Response) -> Result<T> {
+    let body = expect_success(response)?
+        .bytes()
+        .context("failed to read the server response")?;
+    protocol::decode(&body).context("server returned an unexpected response")
 }
 
 fn parse_json(response: Response) -> Result<Value> {
@@ -1057,8 +1089,9 @@ fn parse_json(response: Response) -> Result<Value> {
         .context("server returned invalid JSON")
 }
 
+/// Includes the cause chain, e.g. "request failed: <transport error>".
 fn format_error(error: impl std::fmt::Display) -> String {
-    error.to_string()
+    format!("{error:#}")
 }
 
 #[cfg(test)]
@@ -1121,7 +1154,34 @@ mod tests {
         }
     }
 
-    fn read_http_request(stream: &TcpStream) -> String {
+    struct HttpRequest {
+        line: String,
+        body: String,
+    }
+
+    impl HttpRequest {
+        /// Request target, e.g. `/api/session?limit=200`.
+        fn target(&self) -> &str {
+            self.line.split(' ').nth(1).unwrap_or_default()
+        }
+
+        fn path(&self) -> &str {
+            self.target().split('?').next().unwrap_or_default()
+        }
+
+        fn query(&self) -> HashMap<String, String> {
+            let query = self.target().split_once('?').map_or("", |(_, query)| query);
+            url::form_urlencoded::parse(query.as_bytes())
+                .into_owned()
+                .collect()
+        }
+
+        fn json(&self) -> Value {
+            serde_json::from_str(&self.body).unwrap()
+        }
+    }
+
+    fn read_http_request(stream: &TcpStream) -> HttpRequest {
         let mut reader = BufReader::new(stream.try_clone().unwrap());
         let mut request_line = String::new();
         reader.read_line(&mut request_line).unwrap();
@@ -1132,16 +1192,60 @@ mod tests {
             if line == "\r\n" || line == "\n" {
                 break;
             }
-            if let Some(value) = line
-                .strip_prefix("Content-Length:")
-                .or_else(|| line.strip_prefix("content-length:"))
-            {
-                content_length = value.trim().parse().unwrap();
+            if let Some((name, value)) = line.split_once(':') {
+                if name.eq_ignore_ascii_case("content-length") {
+                    content_length = value.trim().parse().unwrap();
+                }
             }
         }
         let mut body = vec![0; content_length];
         reader.read_exact(&mut body).unwrap();
-        request_line
+        HttpRequest {
+            line: request_line.trim_end().to_owned(),
+            body: String::from_utf8(body).unwrap(),
+        }
+    }
+
+    type Requests = Arc<Mutex<Vec<HttpRequest>>>;
+
+    /// Answers exactly `count` requests with `respond(request) -> (status, body)`.
+    fn serve(
+        count: usize,
+        respond: impl Fn(&HttpRequest) -> (u16, String) + Send + 'static,
+    ) -> (String, Requests, std::thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let requests: Requests = Arc::default();
+        let captured = requests.clone();
+        let server = std::thread::spawn(move || {
+            for _ in 0..count {
+                let (mut stream, _) = listener.accept().unwrap();
+                let request = read_http_request(&stream);
+                let (status, body) = respond(&request);
+                captured.lock().unwrap().push(request);
+                write!(
+                    stream,
+                    "HTTP/1.1 {status} Stub\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                )
+                .unwrap();
+            }
+        });
+        (format!("http://{address}"), requests, server)
+    }
+
+    fn ok(body: Value) -> (u16, String) {
+        (200, body.to_string())
+    }
+
+    fn session_json(id: &str, directory: &str, title: &str, updated: i64) -> Value {
+        json!({
+            "id": id,
+            "projectID": "prj",
+            "time": { "created": 1, "updated": updated },
+            "title": title,
+            "location": { "directory": directory }
+        })
     }
 
     #[test]
@@ -1151,6 +1255,44 @@ mod tests {
         assert_eq!(decoder.push("data: {\"hello\":\n"), None);
         assert_eq!(decoder.push("data: \"world\"}\n"), None);
         assert_eq!(decoder.push("\n"), Some("{\"hello\":\n\"world\"}".into()));
+    }
+
+    #[test]
+    fn v2_frames_map_to_connection_and_located_envelopes() {
+        let mut decoder = SseDecoder::default();
+        let mut frames = Vec::new();
+        for line in [
+            "data: {\"id\":\"evt_0\",\"type\":\"server.connected\",\"data\":{}}\n",
+            "\n",
+            ": heartbeat\n",
+            "\n",
+            "data: {\"id\":\"evt_1\",\"created\":5,\"type\":\"session.renamed\",\"location\":{\"directory\":\"/work\"},\"data\":{\"sessionID\":\"ses_a\",\"title\":\"T\"}}\n",
+            "\n",
+            "data: {\"id\":\"evt_2\",\"created\":6,\"type\":\"session.execution.started\",\"data\":{\"sessionID\":\"ses_a\"}}\n",
+            "\n",
+            "data: {\"unexpected\":true}\n",
+            "\n",
+        ] {
+            if let Some(data) = decoder.push(line) {
+                frames.push(event_frame(serde_json::from_str(&data).unwrap()));
+            }
+        }
+        assert_eq!(frames.len(), 4);
+        assert!(matches!(frames[0], EventFrame::Connected));
+        let EventFrame::Event(renamed) = &frames[1] else {
+            panic!("unexpected {:?}", frames[1]);
+        };
+        assert_eq!(renamed.directory.as_deref(), Some("/work"));
+        assert_eq!(crate::model::event_data(&renamed.payload)["title"], "T");
+        assert_eq!(
+            crate::model::event_session_id(&renamed.payload),
+            Some("ses_a")
+        );
+        let EventFrame::Event(started) = &frames[2] else {
+            panic!("unexpected {:?}", frames[2]);
+        };
+        assert_eq!(started.directory, None);
+        assert!(matches!(frames[3], EventFrame::Ignored));
     }
 
     #[test]
@@ -1185,6 +1327,37 @@ mod tests {
     }
 
     #[test]
+    fn api_urls_keep_the_mount_prefix_without_doubling_api() {
+        for (base, expected) in [
+            ("https://host", "https://host/api/info"),
+            ("https://host/", "https://host/api/info"),
+            ("https://host/prefix", "https://host/prefix/api/info"),
+            ("https://host/prefix/", "https://host/prefix/api/info"),
+            ("https://host/prefix/api", "https://host/prefix/api/info"),
+            ("https://host/api/", "https://host/api/info"),
+            ("https://host/myapi", "https://host/myapi/api/info"),
+        ] {
+            let api = Api::new(config(base.into(), None)).unwrap();
+            assert_eq!(
+                api.url(&protocol::info_path(), &[]).unwrap().as_str(),
+                expected,
+                "{base}"
+            );
+        }
+        let api = Api::new(config("https://host/prefix".into(), None)).unwrap();
+        let url = api
+            .url(
+                &protocol::session_path("ses a/b"),
+                &[("limit".into(), "5".into())],
+            )
+            .unwrap();
+        assert_eq!(
+            url.as_str(),
+            "https://host/prefix/api/session/ses%20a%2Fb?limit=5"
+        );
+    }
+
+    #[test]
     fn cloudflare_access_headers_cover_api_and_event_requests() {
         let mut config = config("https://opencode.example.com".into(), None);
         config.cloudflare_access = Some(
@@ -1192,11 +1365,18 @@ mod tests {
         );
         let api = Api::new(config).unwrap();
 
-        for request in [
-            api.request(Method::GET, api.url("global/health", None).unwrap()),
-            api.event_request(Method::GET, api.url("global/event", None).unwrap()),
+        for (request, path) in [
+            (
+                api.request(Method::GET, api.url(&protocol::info_path(), &[]).unwrap()),
+                "/api/info",
+            ),
+            (
+                api.event_request(Method::GET, api.url(&protocol::events_path(), &[]).unwrap()),
+                "/api/event",
+            ),
         ] {
             let request = request.build().unwrap();
+            assert_eq!(request.url().path(), path);
             assert_eq!(request.headers()["CF-Access-Client-Id"], "client.access");
             assert_eq!(request.headers()["CF-Access-Client-Secret"], "secret");
         }
@@ -1204,19 +1384,8 @@ mod tests {
 
     #[test]
     fn completing_an_already_resolved_request_succeeds() {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let address = listener.local_addr().unwrap();
-        let server = std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            read_http_request(&stream);
-            write!(
-                stream,
-                "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
-            )
-            .unwrap();
-        });
-
-        let api = Api::new(config(format!("http://{address}"), None)).unwrap();
+        let (base, _, server) = serve(1, |_| (404, String::new()));
+        let api = Api::new(config(base, None)).unwrap();
         let result = api.reply_permission("per_resolved", "/repo", "reject");
         assert!(result.is_ok(), "{result:?}");
         server.join().unwrap();
@@ -1264,88 +1433,330 @@ mod tests {
         });
 
         let api = Api::new(config(format!("http://{redirect_address}"), Some("secret"))).unwrap();
-        assert!(api
-            .reply_permission("per_redirect", "/repo", "always")
-            .is_err());
+        assert!(api.server_info().is_err());
         redirect_server.join().unwrap();
         target_server.join().unwrap();
         assert!(!target_seen.load(Ordering::Relaxed));
     }
 
     #[test]
-    fn bootstrap_merges_projects_and_recovers_pending_requests() {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let address = listener.local_addr().unwrap();
-        let requests = Arc::new(Mutex::new(Vec::new()));
-        let captured = requests.clone();
-        let server = std::thread::spawn(move || {
-            for _ in 0..10 {
-                let (mut stream, _) = listener.accept().unwrap();
-                let request_line = read_http_request(&stream);
-                captured.lock().unwrap().push(request_line.clone());
-                let directory = if request_line.contains("directory=%2Fa") {
-                    "a"
-                } else if request_line.contains("directory=%2Fb") {
-                    "b"
-                } else {
-                    ""
-                };
-                let body = if request_line.contains(" /global/health ") {
-                    json!({ "version": "1.18.15" })
-                } else if request_line.contains(" /project ") {
-                    json!([
-                        { "worktree": "/a", "name": "A" },
-                        { "worktree": "/b", "name": "B" }
-                    ])
-                } else if request_line.contains(" /session/status?") {
-                    json!({ format!("ses_{directory}"): { "type": "busy" } })
-                } else if request_line.contains(" /permission?") {
-                    json!([{ "id": format!("per_{directory}"), "sessionID": format!("ses_{directory}") }])
-                } else if request_line.contains(" /question?") {
-                    json!([{ "id": format!("que_{directory}"), "sessionID": format!("ses_{directory}"), "questions": [] }])
-                } else if request_line.contains(" /session?") {
-                    json!([{
-                        "id": format!("ses_{directory}"),
-                        "directory": format!("/{directory}"),
-                        "title": directory.to_uppercase(),
-                        "time": { "created": 1, "updated": 2 }
-                    }])
-                } else {
-                    panic!("unexpected request: {request_line}");
-                };
-                let body = body.to_string();
-                write!(
-                    stream,
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                    body.len(),
-                    body
-                )
-                .unwrap();
+    fn bootstrap_pages_root_sessions_across_locations() {
+        let (base, requests, server) = serve(6, |request| {
+            let query = request.query();
+            match (request.path(), query.get("cursor").map(String::as_str)) {
+                ("/api/info", _) => ok(json!({ "version": "2.0.8", "pid": 1 })),
+                ("/api/project", _) => ok(json!([
+                    { "id": "prj_a", "canonical": "/a", "name": "A", "sandboxes": [] },
+                    { "id": "prj_b", "canonical": "/b" }
+                ])),
+                ("/api/session", None) => ok(json!({
+                    "data": [
+                        session_json("ses_a", "/a", "A", 10),
+                        session_json("ses_b", "/b", "", 20)
+                    ],
+                    "cursor": { "previous": "p1", "next": "c1" }
+                })),
+                ("/api/session", Some("c1")) => ok(json!({
+                    "data": [
+                        session_json("ses_c", "/elsewhere", "C", 30),
+                        session_json("ses_a", "/a", "A renamed", 40),
+                        {
+                            "id": "ses_archived",
+                            "time": { "created": 1, "updated": 50, "archived": 60 },
+                            "location": { "directory": "/a" }
+                        }
+                    ],
+                    "cursor": { "next": "c2" }
+                })),
+                ("/api/session", Some("c2")) => ok(json!({ "data": [], "cursor": {} })),
+                ("/api/session/active", _) => ok(json!({
+                    "data": { "ses_b": { "type": "running" } }
+                })),
+                _ => panic!("unexpected request: {}", request.line),
             }
         });
 
-        let api = Api::new(config(format!("http://{address}"), None)).unwrap();
+        let api = Api::new(config(base, Some("secret"))).unwrap();
         let bootstrap = api.bootstrap().unwrap();
         server.join().unwrap();
 
-        let mut session_ids: Vec<_> = bootstrap
+        assert_eq!(bootstrap.version, "2.0.8");
+        let ids: Vec<_> = bootstrap
             .sessions
             .iter()
             .map(|session| session.id.as_str())
             .collect();
-        session_ids.sort_unstable();
-        assert_eq!(session_ids, ["ses_a", "ses_b"]);
+        assert_eq!(ids, ["ses_a", "ses_c", "ses_b"], "newest first");
+        assert_eq!(bootstrap.sessions[0].title, "A renamed");
+        assert_eq!(bootstrap.sessions[1].directory, "/elsewhere");
+        assert_eq!(bootstrap.sessions[2].title, "Untitled session");
+        assert_eq!(
+            bootstrap.projects,
+            [
+                Project {
+                    worktree: "/a".into(),
+                    name: Some("A".into()),
+                },
+                Project {
+                    worktree: "/b".into(),
+                    name: None,
+                },
+            ]
+        );
+        assert_eq!(
+            bootstrap.statuses,
+            HashMap::from([("ses_b".to_owned(), RunStatus::Busy)])
+        );
         assert!(bootstrap.sessions_complete);
         assert!(bootstrap.statuses_complete);
-        assert!(bootstrap.pending_complete);
+        assert!(bootstrap.pending.is_empty());
+        assert!(
+            !bootstrap.pending_complete,
+            "pending recovery is not ported, so open prompts must survive"
+        );
         assert!(!bootstrap.retry_needed);
-        assert_eq!(bootstrap.statuses.len(), 2);
-        assert_eq!(bootstrap.pending.len(), 4);
+        assert!(bootstrap.warnings.is_empty());
+
+        let requests = requests.lock().unwrap();
+        assert_eq!(requests[0].path(), "/api/info");
+        let pages: Vec<_> = requests
+            .iter()
+            .filter(|request| request.path() == "/api/session")
+            .map(HttpRequest::query)
+            .collect();
+        assert_eq!(pages.len(), 3);
+        assert_eq!(pages[0].get("parentID").map(String::as_str), Some("null"));
+        assert_eq!(pages[0].get("order").map(String::as_str), Some("asc"));
+        assert!(pages
+            .iter()
+            .all(|query| query.get("limit") == Some(&SESSION_PAGE_SIZE.to_string())));
+        assert_eq!(pages[1].get("cursor").map(String::as_str), Some("c1"));
+        assert_eq!(pages[2].get("cursor").map(String::as_str), Some("c2"));
         assert!(requests
-            .lock()
+            .iter()
+            .all(|request| !request.target().contains("directory")
+                && !request.path().contains("/permission")
+                && !request.path().contains("/question")));
+    }
+
+    #[test]
+    fn bootstrap_reports_a_partial_session_list() {
+        let (base, _, server) = serve(5, |request| {
+            match (request.path(), request.query().contains_key("cursor")) {
+                ("/api/info", _) => ok(json!({ "version": "2.0.8" })),
+                ("/api/project", _) => (
+                    500,
+                    "{\"_tag\":\"UnknownError\",\"message\":\"boom\"}".into(),
+                ),
+                ("/api/session", false) => ok(json!({
+                    "data": [session_json("ses_a", "/a", "A", 10)],
+                    "cursor": { "next": "c1" }
+                })),
+                ("/api/session", true) => (503, "unavailable".into()),
+                ("/api/session/active", _) => (503, String::new()),
+                _ => panic!("unexpected request: {}", request.line),
+            }
+        });
+        let api = Api::new(config(base, None)).unwrap();
+        let bootstrap = api.bootstrap().unwrap();
+        server.join().unwrap();
+
+        assert_eq!(bootstrap.sessions.len(), 1);
+        assert!(!bootstrap.sessions_complete);
+        assert!(!bootstrap.statuses_complete);
+        assert!(!bootstrap.pending_complete);
+        assert!(bootstrap.retry_needed);
+        assert!(bootstrap.projects.is_empty());
+        assert_eq!(
+            bootstrap.warnings,
+            [
+                "Could not list every project: boom",
+                "Could not list every session: server returned 503 Service Unavailable: unavailable",
+                "Could not refresh session status: server returned 503 Service Unavailable",
+            ]
+        );
+    }
+
+    #[test]
+    fn bootstrap_rejects_servers_that_are_not_opencode_2() {
+        for (status, body, expected) in [
+            (
+                200,
+                json!({ "version": "1.18.15" }).to_string(),
+                "Server is OpenCode 1.18.15; this client requires OpenCode 2.x",
+            ),
+            (
+                404,
+                String::new(),
+                "Server does not provide /api/info; this client requires OpenCode 2.x",
+            ),
+            (
+                200,
+                "<!doctype html>".to_owned(),
+                "Server did not return OpenCode server info; this client requires OpenCode 2.x",
+            ),
+        ] {
+            let (base, _, server) = serve(1, move |_| (status, body.clone()));
+            let api = Api::new(config(base, None)).unwrap();
+            let error = api.bootstrap().unwrap_err();
+            server.join().unwrap();
+            assert_eq!(format_error(error), expected);
+        }
+
+        let (base, _, server) = serve(1, |_| (401, String::new()));
+        let api = Api::new(config(base, None)).unwrap();
+        let error = api.bootstrap().unwrap_err();
+        server.join().unwrap();
+        assert_eq!(format_error(error), "server returned 401 Unauthorized");
+    }
+
+    #[test]
+    fn create_session_posts_location_and_title_only() {
+        let (base, requests, server) = serve(1, |_| {
+            ok(json!({ "data": session_json("ses_new", "/a", "Scratch", 7) }))
+        });
+        let api = Api::new(config(base, None)).unwrap();
+        let session = api.create_session("/a", Some("  Scratch  ")).unwrap();
+        server.join().unwrap();
+
+        assert_eq!(session.id, "ses_new");
+        assert_eq!(session.directory, "/a");
+        assert_eq!(session.title, "Scratch");
+        let requests = requests.lock().unwrap();
+        assert_eq!(requests[0].line, "POST /api/session HTTP/1.1");
+        assert_eq!(
+            requests[0].json(),
+            json!({ "location": { "directory": "/a" }, "title": "Scratch" })
+        );
+    }
+
+    #[test]
+    fn rename_session_patches_then_reloads() {
+        let (base, requests, server) = serve(2, |request| match request.line.split(' ').next() {
+            Some("PATCH") => (204, String::new()),
+            Some("GET") => ok(json!({ "data": session_json("ses_a", "/a", "New title", 9) })),
+            _ => panic!("unexpected request: {}", request.line),
+        });
+        let api = Api::new(config(base, None)).unwrap();
+        let session = api.rename_session("ses_a", "/a", " New title ").unwrap();
+        server.join().unwrap();
+
+        assert_eq!(session.title, "New title");
+        let requests = requests.lock().unwrap();
+        assert_eq!(requests[0].line, "PATCH /api/session/ses_a HTTP/1.1");
+        assert_eq!(requests[0].json(), json!({ "title": "New title" }));
+        assert_eq!(requests[1].line, "GET /api/session/ses_a HTTP/1.1");
+    }
+
+    #[test]
+    fn blank_rename_is_refused_before_any_request() {
+        let api = Api::new(config("http://127.0.0.1:9".into(), None)).unwrap();
+        let error = api.rename_session("ses_a", "/a", "   ").unwrap_err();
+        assert_eq!(format_error(error), "session title cannot be blank");
+    }
+
+    #[test]
+    fn error_bodies_surface_the_server_message() {
+        let (base, _, server) = serve(2, |request| match request.line.split(' ').next() {
+            Some("PATCH") => (
+                404,
+                json!({
+                    "_tag": "SessionNotFoundError",
+                    "sessionID": "ses_gone",
+                    "message": "Session not found: ses_gone"
+                })
+                .to_string(),
+            ),
+            _ => (502, "bad gateway".into()),
+        });
+        let api = Api::new(config(base, None)).unwrap();
+        let error = api.rename_session("ses_gone", "/a", "Title").unwrap_err();
+        let failure = error.downcast_ref::<ApiFailure>().unwrap();
+        assert_eq!(failure.status, StatusCode::NOT_FOUND);
+        assert_eq!(
+            failure.error.as_ref().map(protocol::ApiError::kind),
+            Some(protocol::ApiErrorKind::SessionNotFound)
+        );
+        assert_eq!(format_error(error), "Session not found: ses_gone");
+
+        let error = api.create_session("/a", None).unwrap_err();
+        server.join().unwrap();
+        assert_eq!(
+            format_error(error),
+            "server returned 502 Bad Gateway: bad gateway"
+        );
+    }
+
+    fn fixture(name: &str) -> Value {
+        let path = format!(
+            "{}/tests/fixtures/v2-2.0.8/{name}.json",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let text = fs::read_to_string(&path).unwrap_or_else(|error| panic!("{path}: {error}"));
+        serde_json::from_str::<Value>(&text).unwrap()["response"]["body"].take()
+    }
+
+    #[test]
+    fn captured_fixtures_bootstrap_through_the_client() {
+        let info = fixture("info");
+        let projects = fixture("project.list");
+        let page1 = fixture("session.list.root.page1");
+        let page2 = fixture("session.list.root.page2");
+        let active = fixture("session.active.running");
+        let page1_next = page1["cursor"]["next"].as_str().unwrap().to_owned();
+        let expected_sessions = page1["data"]
+            .as_array()
             .unwrap()
             .iter()
-            .filter(|request| request.contains(" /session?"))
-            .all(|request| request.contains("scope=project") && request.contains("roots=true")));
+            .chain(page2["data"].as_array().unwrap())
+            .map(|session| session["id"].as_str().unwrap())
+            .collect::<HashSet<_>>()
+            .len();
+        let running = active["data"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .next()
+            .unwrap()
+            .clone();
+
+        let (base, _, server) = serve(6, move |request| {
+            let cursor = request.query().get("cursor").cloned();
+            match (request.path(), cursor) {
+                ("/api/info", _) => ok(info.clone()),
+                ("/api/project", _) => ok(projects.clone()),
+                ("/api/session", None) => ok(page1.clone()),
+                ("/api/session", Some(cursor)) if cursor == page1_next => ok(page2.clone()),
+                ("/api/session", Some(_)) => ok(json!({ "data": [] })),
+                ("/api/session/active", _) => ok(active.clone()),
+                _ => panic!("unexpected request: {}", request.line),
+            }
+        });
+        let api = Api::new(config(base, Some("secret"))).unwrap();
+        let bootstrap = api.bootstrap().unwrap();
+        server.join().unwrap();
+
+        assert_eq!(bootstrap.version, "2.0.8");
+        assert!(bootstrap.sessions_complete && bootstrap.statuses_complete);
+        assert!(bootstrap.warnings.is_empty(), "{:?}", bootstrap.warnings);
+        assert_eq!(bootstrap.sessions.len(), expected_sessions);
+        assert!(bootstrap.sessions.iter().all(|session| {
+            session.directory.starts_with('/')
+                && !session.title.is_empty()
+                && session.parent_id.is_none()
+                && session.time.updated >= session.time.created
+        }));
+        assert!(bootstrap
+            .projects
+            .iter()
+            .all(|project| project.worktree.starts_with('/')));
+        assert_eq!(bootstrap.statuses.get(&running), Some(&RunStatus::Busy));
+
+        for name in ["session.get", "session.create", "session.get.renamed"] {
+            let response: protocol::SessionResponse =
+                serde_json::from_value(fixture(name)).unwrap();
+            let session = Session::from_info(&response.data);
+            assert!(session.directory.starts_with('/'), "{name}");
+        }
     }
 }
