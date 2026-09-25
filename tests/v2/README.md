@@ -28,14 +28,15 @@ tests/v2/e2e.sh --state /path/outside/repo [--shots DIR] [--build] [--skip-gui]
 Brings the harness up, runs the ignored live API test (`src/api/live_tests.rs`, through the
 client's own `Api` and transcript reducer: bootstrap, models, create/rename, the text, reasoning,
 tools, error, retry, attachment, model-switch, permission, subagent, child-permission and
-slow+interrupt scenarios, form pending/cancel, history paging; each checks that the live
-transcript equals a reload) in the builder image, then restarts the harness and runs
+slow+interrupt scenarios, form pending/cancel, history paging, and the background jobs list (a shell from `POST /api/shell`, background and
+foreground subagents); each checks that the live transcript equals a reload) in the builder image, then restarts the harness and runs
 `gui_smoke.sh` (the app under Xvfb sends one `[[scenario:text]]` prompt by keyboard; the server
 must then hold the user prompt and a reply; screenshot in `--shots`). The harness is always taken
 down at the end. Both run on `ocgtk-v2h-net` behind `loopback.py` (listening on
 `127.0.0.1:14096`, never 4096/4097, which are real servers' ports on a developer host; the scripts
 fail if it cannot bind), because the client accepts plain HTTP only on loopback. The live test
-refuses to run unless `OCGTK_V2H_HARNESS=1` is set, which only `e2e.sh` does. `E2E_CARGO_VOLUME`/`E2E_TARGET_VOLUME` pick the builder's cache volumes.
+refuses to run unless `OCGTK_V2H_HARNESS=1` is set, which only `e2e.sh` does. `OCGTK_V2H_PREFIX`
+(default `ocgtk-v2h`) renames the harness containers and network, so two runs can coexist. `E2E_CARGO_VOLUME`/`E2E_TARGET_VOLUME` pick the builder's cache volumes.
 Not part of CI: the harness image downloads the pinned CLI when it is built.
 
 ## Mock provider scenarios

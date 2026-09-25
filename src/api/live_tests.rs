@@ -21,7 +21,10 @@ use std::time::{Duration, Instant};
 use serde_json::{json, Value};
 
 use super::*;
-use crate::model::Conversation;
+use crate::{
+    jobs::{self, JobKind, Jobs},
+    model::Conversation,
+};
 
 const TERMINAL: &[&str] = &[
     "session.execution.succeeded",
@@ -348,6 +351,24 @@ impl Live {
     }
 }
 
+/// The jobs-list changes in these raw events, as the UI derives them.
+fn job_events(log: &[Value]) -> Vec<jobs::JobEvent> {
+    log.iter()
+        .filter_map(|payload| {
+            let event = protocol::Event::deserialize(payload).unwrap();
+            let kind = protocol::decode_event(&event);
+            jobs::job_event(&event, &kind, event.directory())
+        })
+        .collect()
+}
+
+fn job_rows(jobs: &Jobs, roots: &[Session]) -> Vec<(String, JobKind, Option<String>)> {
+    jobs.rows(roots)
+        .into_iter()
+        .map(|row| (row.id, row.kind, row.root))
+        .collect()
+}
+
 fn rows(conversation: &Conversation) -> Vec<Value> {
     conversation
         .transcript_rows()
@@ -622,6 +643,32 @@ fn live_server_end_to_end() {
         .to_owned();
     live.assert_live_matches_history("subagent child", &child);
 
+    step("background subagent job from events");
+    {
+        let roots = [parent.clone()];
+        let context = jobs::Context {
+            roots: &roots,
+            directories: &[],
+        };
+        let mut jobs = Jobs::default();
+        let mut listed = false;
+        for event in job_events(&live.log) {
+            jobs.apply_event(event, &context);
+            listed |= job_rows(&jobs, &roots)
+                == [(child.clone(), JobKind::Subagent, Some(parent.id.clone()))];
+        }
+        assert!(listed, "the running child was a subagent job of its parent");
+        assert!(
+            jobs.take_wanted(&context).is_empty(),
+            "session.created named it"
+        );
+        assert!(
+            job_rows(&jobs, &roots).is_empty(),
+            "and left when it finished"
+        );
+        eprintln!("PASS background subagent listed while running, gone after");
+    }
+
     step("child-session permission");
     let delegating = live.create();
     let since = live.mark();
@@ -635,6 +682,44 @@ fn live_server_end_to_end() {
     });
     let child_id = asked["data"]["sessionID"].as_str().unwrap().to_owned();
     let request_id = asked["data"]["id"].as_str().unwrap().to_owned();
+
+    step("foreground subagent job from the active map");
+    let workspace_dirs = vec![live.workspace.clone()];
+    let active = live.api.load_statuses().expect("active");
+    eprintln!("active map while the child waits: {active:?}");
+    assert!(active.contains_key(&child_id), "{active:?}");
+    let roots = [delegating.clone()];
+    let context = jobs::Context {
+        roots: &roots,
+        directories: &workspace_dirs,
+    };
+    let mut child_jobs = Jobs::default();
+    let running: HashSet<String> = active.keys().cloned().collect();
+    let shells = live.api.load_shells(std::slice::from_ref(&live.workspace));
+    assert!(shells.warnings.is_empty(), "{:?}", shells.warnings);
+    child_jobs.apply_snapshot(Some(&running), shells, &context);
+    let wanted = child_jobs.take_wanted(&context);
+    assert!(wanted.contains(&child_id), "{wanted:?}");
+    let infos = live.api.load_session_info(&wanted);
+    eprintln!(
+        "child info: {:?}",
+        infos.iter().find(|(id, _)| id == &child_id)
+    );
+    child_jobs.apply_session_info(infos);
+    let rows = child_jobs.rows(&roots);
+    let row = rows
+        .iter()
+        .find(|row| row.id == child_id)
+        .expect("the waiting child is a job");
+    assert_eq!(row.kind, JobKind::Subagent);
+    assert_eq!(row.root.as_deref(), Some(delegating.id.as_str()));
+    assert_eq!(row.owner.as_deref(), Some(delegating.title.as_str()));
+    assert!(row.started > 0);
+    let after_snapshot = live.mark();
+    eprintln!(
+        "PASS foreground subagent listed: {}",
+        row.subtitle(row.started)
+    );
     assert!(live.pending().requests.iter().any(|request| matches!(
         request,
         PendingRequest::Permission { request, .. }
@@ -649,6 +734,90 @@ fn live_server_end_to_end() {
     live.wait_done(&delegating.id, 1, 90);
     live.assert_live_matches_history("child permission parent", &delegating.id);
     live.assert_live_matches_history("child permission child", &child_id);
+    for event in job_events(&live.log[after_snapshot..]) {
+        child_jobs.apply_event(event, &context);
+    }
+    assert!(
+        child_jobs.rows(&roots).iter().all(|row| row.id != child_id),
+        "session.execution.succeeded removed the child"
+    );
+    assert!(!live
+        .api
+        .load_statuses()
+        .expect("active")
+        .contains_key(&child_id));
+    eprintln!("PASS foreground subagent gone after its run");
+
+    step("background shell job");
+    let shell_owner = live.create();
+    let since = live.mark();
+    let response = live
+        .api
+        .request(
+            Method::POST,
+            live.api
+                .url(
+                    &protocol::shells_path(),
+                    &[protocol::location_query(&live.workspace)],
+                )
+                .unwrap(),
+        )
+        .json(&json!({
+            "command": "sleep 6",
+            "metadata": { "sessionID": shell_owner.id }
+        }))
+        .send()
+        .expect("create shell");
+    let created: Value = decode_json(response).expect("shell.create");
+    eprintln!("POST /api/shell -> {created}");
+    let shell_id = created["data"]["id"].as_str().unwrap().to_owned();
+    let event = live.wait_for_since(since, "shell.created", 10, |event| {
+        event["type"] == "shell.created" && event["data"]["info"]["id"] == shell_id.as_str()
+    });
+    eprintln!("shell.created: {event}");
+    let shells = live.api.load_shells(std::slice::from_ref(&live.workspace));
+    assert!(shells.covered.contains(&live.workspace), "{shells:?}");
+    let listed = shells
+        .shells
+        .iter()
+        .find(|shell| shell.id == shell_id)
+        .expect("the command is listed as running");
+    assert_eq!(listed.session_id.as_deref(), Some(shell_owner.id.as_str()));
+    assert_eq!(listed.command, "sleep 6");
+    assert!(listed.started > 0);
+    let roots = [shell_owner.clone()];
+    let context = jobs::Context {
+        roots: &roots,
+        directories: &workspace_dirs,
+    };
+    let mut shell_jobs = Jobs::default();
+    shell_jobs.begin_refresh();
+    for event in job_events(&live.log[since..]) {
+        shell_jobs.apply_event(event, &context);
+    }
+    shell_jobs.apply_snapshot(None, shells, &context);
+    assert_eq!(
+        job_rows(&shell_jobs, &roots),
+        [(
+            shell_id.clone(),
+            JobKind::Shell,
+            Some(shell_owner.id.clone())
+        )]
+    );
+    let exited = live.wait_for_since(since, "shell.exited", 30, |event| {
+        event["type"] == "shell.exited" && event["data"]["id"] == shell_id.as_str()
+    });
+    eprintln!("shell.exited: {exited}");
+    for event in job_events(&live.log[since..]) {
+        shell_jobs.apply_event(event, &context);
+    }
+    assert!(
+        job_rows(&shell_jobs, &roots).is_empty(),
+        "shell.exited removed it"
+    );
+    let after = live.api.load_shells(std::slice::from_ref(&live.workspace));
+    assert!(after.shells.iter().all(|shell| shell.id != shell_id));
+    eprintln!("PASS background shell listed while running, gone after shell.exited");
 
     step("slow + queued prompt + interrupt");
     let slow = live.create();

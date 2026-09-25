@@ -11,6 +11,11 @@ mock provider: ``[[scenario:text|reasoning|tools|permission|child-permission|
 subagent|form|error|retry|slow|long]]`` (``subagent-permission`` is an alias of
 ``child-permission``). Without a marker the reply is a short text.
 
+``--background-jobs`` seeds running background work for the sidebar's
+Background section: a running child session of the main session
+(``SES_BG_CHILD``), a shell it started in the workspace, and a shell in the
+other directory started by a root session without a tab (``SES_BG_OWNER``).
+
 Test-only endpoints (no auth, never logged as API traffic):
 - ``POST /__control`` with ``{"action": ...}``; see ``Server.control``.
 - ``GET /__control`` returns a state summary (seed IDs, SSE clients, pending
@@ -50,6 +55,10 @@ MASK48 = (1 << 48) - 1
 SES_MAIN = "ses_f90000000001ffeIntegration"
 SES_OTHER = "ses_f90000000002ffeSecondSessn"
 SES_CHILD = "ses_f90000000003ffeChildOfMain"
+SES_BG_CHILD = "ses_f90000000004ffeBgChildTask"
+SES_BG_OWNER = "ses_f90000000005ffeBgShellOwnr"
+SH_BG_DEV = "sh_f90000000001ffeBgDevServer"
+SH_BG_TEST = "sh_f90000000002ffeBgCargoTest"
 BOOT_PERMISSION = "per_000000000001BootPermissn1"
 BOOT_FORM = "frm_000000000001BootFormHarns1"
 GLOBAL = "global"
@@ -336,6 +345,8 @@ class Server:
         self.permission_waiters = {}
         self.forms = {}
         self.inbox_index = {}
+        # Shell commands by ID: {"info": ShellInfo, "directory": location}.
+        self.shells = {}
         self._seed()
 
     # ------------------------------------------------------------------ log
@@ -489,6 +500,24 @@ class Server:
             }
         if args.boot_form:
             self.forms[BOOT_FORM] = self._new_form(BOOT_FORM, SES_MAIN, args.workspace, "Boot form")
+        if args.background_jobs:
+            now = now_ms()
+            bg_child = Session(
+                SES_BG_CHILD, args.workspace, now - 4 * 60_000, title="Audit v1 call sites", parent_id=SES_MAIN, agent="general"
+            )
+            bg_child.running = True
+            bg_child.instructions_sent = True
+            owner = Session(SES_BG_OWNER, args.other_directory, start - 30_000, title="Reflection projection retries")
+            owner.outcome = "succeeded"
+            owner.instructions_sent = True
+            for session in (bg_child, owner):
+                self.sessions[session.id] = session
+            self.create_shell(
+                args.workspace, "pnpm dev --port 5173", SES_BG_CHILD, started=now - 22 * 60_000, shell_id=SH_BG_DEV, emit=False
+            )
+            self.create_shell(
+                args.other_directory, "cargo test --all-targets", SES_BG_OWNER, started=now - 60_000, shell_id=SH_BG_TEST, emit=False
+            )
 
     def _new_form(self, form_id, session_id, directory, title):
         return {
@@ -988,6 +1017,77 @@ class Server:
         with self.lock:
             return {session.id: {"type": "running"} for session in self.sessions.values() if session.running}
 
+    # --------------------------------------------------------------- shells
+
+    def list_shells(self, directory):
+        """Running commands of one location only, like ``Shell.list``."""
+        with self.lock:
+            return [
+                json.loads(json.dumps(shell["info"]))
+                for shell in self.shells.values()
+                if shell["directory"] == directory and shell["info"]["status"] == "running"
+            ]
+
+    def create_shell(self, directory, command, session_id=None, started=None, shell_id=None, emit=True):
+        shell_id = shell_id or self.ids.ascending("sh")
+        info = {
+            "id": shell_id,
+            "status": "running",
+            "command": command,
+            "cwd": directory,
+            "shell": "/usr/bin/bash",
+            "file": f"/state/data/opencode/shell/{project_id(directory)}/{shell_id}.out",
+            "metadata": {"sessionID": session_id} if session_id else {},
+            "time": {"started": started or now_ms()},
+        }
+        with self.lock:
+            self.shells[shell_id] = {"info": info, "directory": directory}
+        if emit:
+            self.emit("shell.created", {"info": info}, directory=directory)
+        return info
+
+    def shell(self, shell_id):
+        with self.lock:
+            shell = self.shells.get(shell_id)
+        if shell is None:
+            raise ApiError(404, {"_tag": "ShellNotFoundError", "id": shell_id, "message": f"Shell command not found: {shell_id}"})
+        return shell
+
+    def exit_shell(self, shell_id, exit_code=0, status="exited"):
+        shell = self.shell(shell_id)
+        with self.lock:
+            if shell["info"]["status"] != "running":
+                return shell["info"]
+            shell["info"]["status"] = status
+            if exit_code is not None:
+                shell["info"]["exit"] = exit_code
+            shell["info"]["time"]["completed"] = now_ms()
+        data = {"id": shell_id, "status": status}
+        if exit_code is not None:
+            data["exit"] = exit_code
+        self.emit("shell.exited", data, directory=shell["directory"])
+        return shell["info"]
+
+    def delete_shell(self, shell_id):
+        shell = self.shell(shell_id)
+        with self.lock:
+            self.shells.pop(shell_id, None)
+        if shell["info"]["status"] == "running":
+            shell["info"]["status"] = "killed"
+        self.emit("shell.deleted", {"id": shell_id}, directory=shell["directory"])
+
+    def set_running(self, session, running, outcome="succeeded"):
+        """Marks a session running or idle and emits the execution event, without a scripted turn."""
+        with self.lock:
+            changed = session.running != running
+            session.running = running
+        if changed:
+            self.emit(
+                "session.execution.started" if running else f"session.execution.{outcome}",
+                {"sessionID": session.id},
+                session=session,
+            )
+
     # -------------------------------------------------------------- control
 
     def summary(self):
@@ -995,7 +1095,14 @@ class Server:
             return {
                 "address": self.address,
                 "pid": self.pid,
-                "seed": {"main": SES_MAIN, "other": SES_OTHER, "child": SES_CHILD, "bootPermission": BOOT_PERMISSION},
+                "seed": {
+                    "main": SES_MAIN,
+                    "other": SES_OTHER,
+                    "child": SES_CHILD,
+                    "bootPermission": BOOT_PERMISSION,
+                    "bgChild": SES_BG_CHILD,
+                    "bgOwner": SES_BG_OWNER,
+                },
                 "workspace": self.args.workspace,
                 "otherDirectory": self.args.other_directory,
                 "cwd": self.args.cwd,
@@ -1004,6 +1111,7 @@ class Server:
                 "permissions": list(self.permissions),
                 "forms": [form_id for form_id, form in self.forms.items() if form["status"] == "pending"],
                 "running": [session.id for session in self.sessions.values() if session.running],
+                "shells": sorted(shell_id for shell_id, shell in self.shells.items() if shell["info"]["status"] == "running"),
                 "sessions": len(self.sessions),
                 "delays": dict(self.delays),
                 "races": dict(self.races),
@@ -1064,6 +1172,20 @@ class Server:
                 self.session(session_id).directory if session_id != GLOBAL else self.args.workspace
             )
             result["id"] = self.create_form(session_id, directory, body.get("title", "Harness form"))["record"]["id"]
+        elif action == "create_shell":
+            ago = body.get("startedAgoMs")
+            result["id"] = self.create_shell(
+                body.get("directory") or self.args.workspace,
+                body.get("command", "sleep 30"),
+                body.get("sessionID"),
+                started=now_ms() - ago if ago is not None else None,
+            )["id"]
+        elif action == "exit_shell":
+            self.exit_shell(body["id"], body.get("exit", 0), body.get("status", "exited"))
+        elif action == "delete_shell":
+            self.delete_shell(body["id"])
+        elif action == "set_running":
+            self.set_running(self.session(body["sessionID"]), bool(body.get("running", True)), body.get("outcome", "succeeded"))
         elif action == "state":
             pass
         else:
@@ -1111,6 +1233,8 @@ class Server:
                     if session.runner is not None and session.runner.is_alive():
                         session.runner.interrupt(silent=True)
                     session.running = False
+                # Shell commands live in the server process.
+                self.shells.clear()
                 if not keep_pending:
                     self.permissions.clear()
                     for waiter in self.permission_waiters.values():
@@ -2028,6 +2152,10 @@ ROUTES = [
     ("GET", r"/api/session/(?P<sessionID>[^/]+)/form/(?P<formID>[^/]+)", "session.form.get"),
     ("DELETE", r"/api/session/(?P<sessionID>[^/]+)/form/(?P<formID>[^/]+)", "session.form.cancel"),
     ("POST", r"/api/session/(?P<sessionID>[^/]+)/form/(?P<formID>[^/]+)/reply", "session.form.reply"),
+    ("GET", r"/api/shell", "shell.list"),
+    ("POST", r"/api/shell", "shell.create"),
+    ("GET", r"/api/shell/(?P<shellID>[^/]+)", "shell.get"),
+    ("DELETE", r"/api/shell/(?P<shellID>[^/]+)", "shell.remove"),
     ("GET", r"/api/event", "event.subscribe"),
 ]
 COMPILED_ROUTES = [(method, re.compile(pattern + r"\Z"), name) for method, pattern, name in ROUTES]
@@ -2268,6 +2396,25 @@ class Handler(BaseHTTPRequestHandler):
         if route == "form.list":
             directory = app.location_directory(query, self.headers)
             return 200, {"location": {"directory": directory}, "data": app.forms_for(directory=directory)}
+        if route == "shell.list":
+            directory = app.location_directory(query, self.headers)
+            return 200, {"location": {"directory": directory}, "data": app.list_shells(directory)}
+        if route == "shell.create":
+            if not isinstance(body, dict) or not isinstance(body.get("command"), str):
+                raise invalid_request('Expected string\n  at ["command"]')
+            directory = app.location_directory(query, self.headers)
+            metadata = body.get("metadata") if isinstance(body.get("metadata"), dict) else {}
+            info = app.create_shell(body.get("cwd") or directory, body["command"], metadata.get("sessionID"))
+            return 200, {"location": {"directory": directory}, "data": info}
+        if route == "shell.get":
+            directory = app.location_directory(query, self.headers)
+            return 200, {"location": {"directory": directory}, "data": app.shell(params["shellID"])["info"]}
+        if route == "shell.remove":
+            try:
+                app.delete_shell(params["shellID"])
+            except ApiError:
+                pass
+            return 204, None
         raise ApiError(404, {"_tag": "RouteNotFoundError", "message": f"Route not found: {route}"})
 
     def handle_form(self, route, params, query, body):
@@ -2401,6 +2548,8 @@ def parse_args(argv=None):
     parser.add_argument("--extra-sessions", type=int, default=0, help="extra root sessions (to force list paging)")
     parser.add_argument("--boot-permission", action="store_true", help="seed a pending permission on the main session")
     parser.add_argument("--boot-form", action="store_true", help="seed a pending form on the main session")
+    parser.add_argument("--background-jobs", action="store_true",
+                        help="seed a running child session and two running shells (sidebar Background section)")
     parser.add_argument("--heartbeat-s", type=float, default=15.0)
     parser.add_argument("--step-delay-ms", type=int, default=20)
     parser.add_argument("--slow-delay-ms", type=int, default=500)

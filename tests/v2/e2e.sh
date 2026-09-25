@@ -11,7 +11,8 @@
 # 4. Always takes the harness down again.
 #
 # DIR must be outside the repository; it only holds the per-run password.
-# Env knobs: E2E_BUILDER_IMAGE, E2E_UI_IMAGE, E2E_CARGO_VOLUME, E2E_TARGET_VOLUME.
+# Env knobs: E2E_BUILDER_IMAGE, E2E_UI_IMAGE, E2E_CARGO_VOLUME, E2E_TARGET_VOLUME, and
+# OCGTK_V2H_PREFIX (harness container/network names; see harness.sh).
 set -uo pipefail
 
 export PATH="/usr/local/bin:$PATH"
@@ -21,7 +22,9 @@ BUILDER="${E2E_BUILDER_IMAGE:-opencode-gtk-builder-amd64:latest}"
 UI_IMAGE="${E2E_UI_IMAGE:-opencode-gtk-ui-test-amd64-v4:latest}"
 CARGO_VOLUME="${E2E_CARGO_VOLUME:-opencode-gtk-e2e-cargo}"
 TARGET_VOLUME="${E2E_TARGET_VOLUME:-opencode-gtk-e2e-target}"
-NET="ocgtk-v2h-net"
+PREFIX="${OCGTK_V2H_PREFIX:-ocgtk-v2h}"
+NET="$PREFIX-net"
+UPSTREAM="$PREFIX-server"
 
 state="" shots="" build="" skip_gui=""
 while [ $# -gt 0 ]; do
@@ -68,9 +71,10 @@ if docker run --rm --platform linux/amd64 --network "$NET" \
   -e OCGTK_V2H_HARNESS=1 \
   -e OCGTK_LIVE_URL=http://127.0.0.1:14096 \
   -e OCGTK_LIVE_PASSWORD_FILE=/run/ocgtk/password \
+  -e OCGTK_V2H_UPSTREAM="$UPSTREAM" \
   "$BUILDER" bash -c '
     set -e
-    python3 tests/v2/loopback.py --ready /tmp/forward-ready 14096 ocgtk-v2h-server 4096 &
+    python3 tests/v2/loopback.py --ready /tmp/forward-ready 14096 "$OCGTK_V2H_UPSTREAM" 4096 &
     forwarder=$!
     for _ in $(seq 1 50); do
       [ -s /tmp/forward-ready ] && break
@@ -99,6 +103,7 @@ if [ -z "$skip_gui" ]; then
     -v "$shots":/shots \
     -e GUI_PASSWORD_FILE=/run/ocgtk/password \
     -e GUI_SHOTS=/shots \
+    -e GUI_UPSTREAM_HOST="$UPSTREAM" \
     "$UI_IMAGE" bash tests/v2/gui_smoke.sh; then
     record PASS gui-smoke
   else

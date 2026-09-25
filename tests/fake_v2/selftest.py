@@ -36,6 +36,9 @@ CWD = "/state/home"
 SES_MAIN = "ses_f90000000001ffeIntegration"
 SES_OTHER = "ses_f90000000002ffeSecondSessn"
 SES_CHILD = "ses_f90000000003ffeChildOfMain"
+SES_BG_CHILD = "ses_f90000000004ffeBgChildTask"
+SES_BG_OWNER = "ses_f90000000005ffeBgShellOwnr"
+OTHER_DIR = "/state/other"
 BOOT_PERMISSION = "per_000000000001BootPermissn1"
 PIXEL = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
 OPEN_KEYS = {"input", "metadata", "settings", "delta", "answer", "body"}
@@ -319,7 +322,7 @@ def sequence_equal(ours, theirs, label, collapse_runs=False):
 
 
 class Harness:
-    def __init__(self):
+    def __init__(self, extra_args=()):
         self.tmp = tempfile.mkdtemp(prefix="fake-v2-selftest-")
         self.password = secrets.token_hex(12)
         self.address_file = os.path.join(self.tmp, "address")
@@ -343,6 +346,7 @@ class Harness:
                 "--model-ready-ms", "100",
                 "--race-gap-ms", "300",
                 "--models-empty-once",
+                *extra_args,
             ],
             env=env,
         )
@@ -1164,6 +1168,83 @@ def test_boot_permission(h):
     check(status == 204, "boot permission reply -> 204")
 
 
+def test_shells(h, reader):
+    section("shell commands and execution events (background jobs)")
+    location = {"location[directory]": WORKSPACE}
+    status, _, listed, _ = h.client.get("/api/shell", location)
+    check(status == 200 and listed == {"location": {"directory": WORKSPACE}, "data": []}, "shell list is empty by default")
+    after = len(reader.snapshot())
+    shell_id = h.client.control(action="create_shell", directory=WORKSPACE, command="sleep 30", sessionID=SES_MAIN, startedAgoMs=5000)["id"]
+    created, _ = reader.wait(lambda e: e["type"] == "shell.created" and e["data"]["info"]["id"] == shell_id, 5, after)
+    check(created is not None and created.get("location") == {"directory": WORKSPACE}, "shell.created carries the location")
+    check(
+        created is not None
+        and created["data"]["info"]["metadata"] == {"sessionID": SES_MAIN}
+        and created["data"]["info"]["status"] == "running"
+        and created["data"]["info"]["time"]["started"] <= created["created"] - 4000,
+        "shell.created info: running, metadata.sessionID, time.started",
+    )
+    check(created is not None and "durable" not in created, "shell.created is not durable")
+    status, _, listed, _ = h.client.get("/api/shell", location)
+    check(status == 200 and [item["id"] for item in listed["data"]] == [shell_id], "the running command is listed in its location")
+    _, _, elsewhere, _ = h.client.get("/api/shell", {"location[directory]": CWD})
+    check(elsewhere["data"] == [] and elsewhere["location"] == {"directory": CWD}, "another location lists nothing")
+    samples = [event for event in fixture_events("permission") if event["type"] == "shell.created"]
+    if created is not None:
+        check_shape(created, samples, "shell.created")
+    h.client.control(action="exit_shell", id=shell_id)
+    exited, _ = reader.wait(lambda e: e["type"] == "shell.exited" and e["data"]["id"] == shell_id, 5, after)
+    check(exited is not None and exited["data"] == {"id": shell_id, "status": "exited", "exit": 0}, "shell.exited {id, status, exit}")
+    _, _, listed, _ = h.client.get("/api/shell", location)
+    check(listed["data"] == [], "an exited command is no longer listed")
+    status, _, created_value, _ = h.client.post(
+        "/api/shell?" + urlencode(location), {"command": "sleep 60", "metadata": {"sessionID": SES_OTHER}}
+    )
+    check(status == 200 and created_value["data"]["metadata"] == {"sessionID": SES_OTHER}, "POST /api/shell creates a command")
+    second = created_value["data"]["id"] if status == 200 else ""
+    status, _, _, _ = h.client.request("DELETE", f"/api/shell/{second}", location)
+    deleted, _ = reader.wait(lambda e: e["type"] == "shell.deleted" and e["data"] == {"id": second}, 5, after)
+    check(status == 204 and deleted is not None, "DELETE /api/shell/{id} -> 204 + shell.deleted")
+    h.client.control(action="set_running", sessionID=SES_CHILD, running=True)
+    started, _ = reader.wait(lambda e: e["type"] == "session.execution.started" and e["data"]["sessionID"] == SES_CHILD, 5, after)
+    check(started is not None and "location" not in started, "set_running emits session.execution.started (no location)")
+    _, _, active, _ = h.client.get("/api/session/active")
+    check(active["data"].get(SES_CHILD) == {"type": "running"}, "a running child session is active")
+    h.client.control(action="set_running", sessionID=SES_CHILD, running=False)
+    ended, _ = reader.wait(lambda e: e["type"] == "session.execution.succeeded" and e["data"]["sessionID"] == SES_CHILD, 5, after)
+    _, _, active, _ = h.client.get("/api/session/active")
+    check(ended is not None and SES_CHILD not in active["data"], "set_running false ends it")
+
+
+def test_background_seed():
+    section("--background-jobs seed")
+    h = Harness(["--background-jobs"])
+    try:
+        _, _, active, _ = h.client.get("/api/session/active")
+        check(active["data"] == {SES_BG_CHILD: {"type": "running"}}, "the seeded child session is running")
+        _, _, child, _ = h.client.get(f"/api/session/{SES_BG_CHILD}")
+        check(child["data"].get("parentID") == SES_MAIN and child["data"]["title"] == "Audit v1 call sites", "child info")
+        _, _, workspace, _ = h.client.get("/api/shell", {"location[directory]": WORKSPACE})
+        check(
+            [(item["command"], item["metadata"].get("sessionID")) for item in workspace["data"]]
+            == [("pnpm dev --port 5173", SES_BG_CHILD)],
+            "the workspace runs the child's dev server",
+        )
+        _, _, other, _ = h.client.get("/api/shell", {"location[directory]": OTHER_DIR})
+        check(
+            [(item["command"], item["metadata"].get("sessionID")) for item in other["data"]]
+            == [("cargo test --all-targets", SES_BG_OWNER)],
+            "the other directory runs the owner's tests",
+        )
+        _, _, roots, _ = h.client.get("/api/session", {"parentID": "null", "limit": "200"})
+        ids = [item["id"] for item in roots["data"]]
+        check(SES_BG_OWNER in ids and SES_BG_CHILD not in ids, "the owner is a root session, the child is not")
+        summary = h.client.control(action="state")["state"]
+        check(len(summary["shells"]) == 2, "the control summary lists running shells")
+    finally:
+        h.stop()
+
+
 def test_log(h):
     section("request log")
     records = h.log()
@@ -1194,6 +1275,7 @@ def main():
         test_lifecycle(h, reader)
         test_scenarios(h, reader)
         test_forms(h, reader)
+        test_shells(h, reader)
         test_event_schemas(h, reader)
         reader.close()
         test_sse_framing(h)
@@ -1201,6 +1283,7 @@ def main():
         test_log(h)
     finally:
         h.stop()
+    test_background_seed()
     print(f"\n{PASSES[0]} checks passed, {len(FAILURES)} failed")
     if FAILURES:
         for failure in FAILURES:

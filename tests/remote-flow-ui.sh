@@ -44,6 +44,11 @@ passes=()
 SES_MAIN="ses_f90000000001ffeIntegration"
 SES_OTHER="ses_f90000000002ffeSecondSessn"
 SES_STALE="ses_0000000000v1StaleTab000001"
+SES_CHILD="ses_f90000000003ffeChildOfMain"
+# --background-jobs seeds (fake_opencode_server.py): a running child of SES_MAIN with a dev server in
+# the workspace, and a test run in OTHER_DIR started by SES_BG_OWNER, a root session without a tab.
+SES_BG_CHILD="ses_f90000000004ffeBgChildTask"
+SES_BG_OWNER="ses_f90000000005ffeBgShellOwnr"
 BOOT_PERMISSION="per_000000000001BootPermissn1"
 WORKSPACE="/state/workspace"
 OTHER_DIR="/state/other"
@@ -172,6 +177,7 @@ FAKE_OPENCODE_PASSWORD="${password}" python3 tests/fake_opencode_server.py \
   --history-turns 120 \
   --extra-sessions 120 \
   --boot-permission \
+  --background-jobs \
   --heartbeat-s 2 \
   --slow-delay-ms 700 \
   --slow-deltas 40 \
@@ -426,6 +432,10 @@ if expect "models.list" 'http and route == "model.list" and "location[directory]
   mark="${saved_mark}"
 fi
 expect "messages.initial" "http and route == 'message.list' and p.get('sessionID') == '${SES_MAIN}' and 'cursor' not in q and 'order' not in q"
+expect "jobs.shells" "http and route == 'shell.list' and q.get('location[directory]') == '${OTHER_DIR}'" "${timeout_s}" \
+  "running shells per pending location with location[directory] (Background section)"
+expect "jobs.child-info" "http and route == 'session.get' and p.get('sessionID') == '${SES_BG_CHILD}'" "${timeout_s}" \
+  "the running child session is outside the root list, so its info is fetched"
 
 # ------------------------------------------------------------ 2. permission reply (boot request, no "save": Deny + Allow once)
 
@@ -439,6 +449,25 @@ if [[ -n "${window}" ]] && app_alive; then
     "http and route == 'session.permission.reply' and p.get('sessionID') == '${SES_MAIN}' and p.get('requestID') == '${BOOT_PERMISSION}' and b.get('decision') in ('once', 'always', 'reject')" \
     "$((WIDTH - 90)),$((HEIGHT - 57)) $((WIDTH - 75)),$((HEIGHT - 48)) $((WIDTH - 100)),$((HEIGHT - 64))"
   [[ -z "${found}" ]] || printf '     decision: %s\n' "$(field "${found}" 'r["body"]["decision"]')"
+fi
+
+# ------------------------------------------------------------ 2b. Background section: click a job, live child
+
+if [[ -n "${window}" ]] && app_alive; then
+  geometry
+  mark_now
+  # Sidebar "Background" section (ui.rs build_jobs_section), just above the Tabs/Settings nav.
+  # Rows run oldest first; the newest (the OTHER_DIR test run owned by SES_BG_OWNER) is the
+  # last one. Measured on a 1180x820 Xvfb screenshot: its centre is at ~(120, H-125).
+  click_until "jobs.click-opens-owner" \
+    "http and route == 'message.list' and p.get('sessionID') == '${SES_BG_OWNER}' and 'cursor' not in q" \
+    "120,$((HEIGHT - 125)) 120,$((HEIGHT - 118)) 120,$((HEIGHT - 132)) 120,$((HEIGHT - 140))"
+  mark_now
+  # A child the client has never seen starts running: its info is fetched once, live.
+  control "{\"action\": \"set_running\", \"sessionID\": \"${SES_CHILD}\", \"running\": true}"
+  expect "jobs.live-child-info" "http and route == 'session.get' and p.get('sessionID') == '${SES_CHILD}'" "${timeout_s}" \
+    "session.execution.started of an unknown child fetches its info"
+  control "{\"action\": \"set_running\", \"sessionID\": \"${SES_CHILD}\", \"running\": false}"
 fi
 
 # ------------------------------------------------------------ 3. older history via cursor
@@ -590,8 +619,16 @@ expect_none "no.unknown-routes" 'http and route in (None, "method.not_allowed")'
 expect_none "no.bad-auth" 'http and r["auth"] != "ok"' "Basic auth on every request, including SSE"
 expect_none "no.agent" 'http and route in ("session.prompt", "session.create") and any(k in b["keys"] for k in ("agent", "agents"))' "R5.4"
 expect_none "no.order-with-cursor" 'http and route == "message.list" and "cursor" in q and "order" in q' "R3.2"
-expect_none "no.plain-directory" 'http and route in ("model.list", "model.default", "permission.request.list", "form.list") and "directory" in q' \
+expect_none "no.plain-directory" 'http and route in ("model.list", "model.default", "permission.request.list", "form.list", "shell.list") and "directory" in q' \
   "location-scoped routes need location[directory]"
+expect_none "jobs.no-new-locations" "http and route == 'shell.list' and q.get('location[directory]') not in ('${WORKSPACE}', '${OTHER_DIR}')" \
+  "shells are listed only where tabs, active sessions or prompts already are"
+child_fetches="$(logq count "${log}" --expr "http and route == 'session.get' and p.get('sessionID') == '${SES_BG_CHILD}'")"
+if [[ "${child_fetches}" == 1 ]]; then
+  pass "jobs.child-info-once"
+else
+  fail "jobs.child-info-once" "the running child's info was fetched ${child_fetches} times across reconnects (cached: once)"
+fi
 expect_none "no.form-answer" 'http and route == "session.form.reply"' "never auto-answer forms (R8)"
 expect_none "no.blank-rename" 'http and route == "session.update" and not (b.get("title") or "").strip()' "R2.7"
 expect_none "no.server-errors" 'http and r["status"] >= 500'

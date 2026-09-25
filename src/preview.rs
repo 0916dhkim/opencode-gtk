@@ -1,9 +1,13 @@
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use serde_json::{json, Value};
 
 use crate::{
     api::{Bootstrap, Command, InboxRequest, MessagePage, ServerEnvelope, Settled, UiEvent},
+    jobs::{ShellJob, ShellSnapshot},
     model::{ModelCatalog, Project, RunStatus, Session, SessionModel},
     pending::{PendingForm, PendingRequest, PendingSnapshot},
     persist::{PersistedTab, ServerState},
@@ -19,6 +23,11 @@ const OTHER_ID: &str = "ses_other";
 const RUNNING_ID: &str = "ses_running";
 /// A stopped session whose waiting messages are parked.
 const PARKED_ID: &str = "ses_parked";
+/// A root session with a running shell but no open tab: clicking its job
+/// opens it.
+const RETRIES_ID: &str = "ses_retries";
+/// A running background subagent of the active session.
+const CHILD_ID: &str = "ses_preview_child";
 const CREATED: u64 = 1_704_067_200_000;
 
 pub fn server_state() -> ServerState {
@@ -81,6 +90,7 @@ impl State {
         let mut messages = HashMap::new();
         messages.insert(ACTIVE_ID.to_owned(), active_messages());
         messages.insert(OTHER_ID.to_owned(), other_messages());
+        messages.insert(RETRIES_ID.to_owned(), retries_messages());
         messages.insert(RUNNING_ID.to_owned(), running_messages());
         messages.insert(PARKED_ID.to_owned(), parked_messages());
         let waiting = |id: &str, text: &str, delivery, created| Waiting {
@@ -154,6 +164,7 @@ impl State {
                     CREATED - 10_800_000,
                     CREATED - 10_700_000,
                 ),
+                retries_session(),
             ],
             messages,
             next_id: 1,
@@ -173,6 +184,19 @@ impl State {
                 covered: HashSet::from([DIRECTORY.to_owned()]),
                 warnings: Vec::new(),
             }),
+            Command::LoadSessionInfo { session_ids } => UiEvent::SessionInfoLoaded(
+                session_ids
+                    .into_iter()
+                    .map(|id| {
+                        let result = if id == CHILD_ID {
+                            Ok(child_session())
+                        } else {
+                            Err(format!("Session not found: {id}"))
+                        };
+                        (id, result)
+                    })
+                    .collect(),
+            ),
             Command::LoadMessages { session_id, cursor } => UiEvent::MessagesLoaded {
                 result: Ok(self.message_page(&session_id, cursor.as_deref())),
                 session_id,
@@ -269,7 +293,7 @@ impl State {
     }
 
     fn bootstrap(&self) -> Bootstrap {
-        let statuses = self
+        let mut statuses: HashMap<_, _> = self
             .sessions
             .iter()
             .map(|session| {
@@ -281,6 +305,7 @@ impl State {
                 (session.id.clone(), status)
             })
             .collect();
+        statuses.insert(CHILD_ID.to_owned(), RunStatus::Busy);
         Bootstrap {
             version: "preview".into(),
             sessions: self.sessions.clone(),
@@ -295,6 +320,7 @@ impl State {
             statuses_complete: true,
             pending: self.pending.clone(),
             pending_covered: HashSet::from([DIRECTORY.to_owned()]),
+            shells: canned_shells(),
             retry_needed: false,
             warnings: Vec::new(),
         }
@@ -631,6 +657,41 @@ impl State {
     }
 }
 
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// Two running shells, as `GET /api/shell` lists them, started relative to
+/// now so the elapsed times read naturally.
+fn canned_shells() -> ShellSnapshot {
+    let now = now_ms() as i64;
+    let shell = |id: &str, command: &str, owner: &str, minutes: i64| {
+        let info: protocol::ShellInfo = decode(json!({
+            "id": id,
+            "status": "running",
+            "command": command,
+            "cwd": DIRECTORY,
+            "shell": "/bin/bash",
+            "file": format!("/tmp/{id}.out"),
+            "metadata": { "sessionID": owner },
+            "time": { "started": now - minutes * 60_000 }
+        }));
+        ShellJob::running(&info, DIRECTORY).expect("a running shell")
+    };
+    ShellSnapshot {
+        shells: vec![
+            shell("sh_preview_dev", "pnpm dev --port 5173", ACTIVE_ID, 22),
+            shell("sh_preview_test", "cargo test --all-targets", RETRIES_ID, 1),
+        ],
+        queried: [DIRECTORY.to_owned()].into(),
+        covered: HashSet::from([DIRECTORY.to_owned()]),
+        warnings: Vec::new(),
+    }
+}
+
 /// One permission for the background tab (so the active composer stays
 /// usable until that tab is opened) and one form notice for the active one.
 fn canned_pending() -> Vec<PendingRequest> {
@@ -733,6 +794,30 @@ fn other_session() -> Session {
         CREATED - 86_400_000,
         CREATED - 3_600_000,
     )
+}
+
+fn retries_session() -> Session {
+    session_info(
+        RETRIES_ID,
+        DIRECTORY,
+        Some("Reflection projection retries"),
+        CREATED - 7_200_000,
+        CREATED - 1_800_000,
+    )
+}
+
+/// The background subagent, created (and started) four minutes ago.
+fn child_session() -> Session {
+    let created = now_ms() - 4 * 60_000;
+    Session::from_info(&decode::<protocol::SessionInfo>(json!({
+        "id": CHILD_ID,
+        "parentID": ACTIVE_ID,
+        "projectID": "prj_preview",
+        "agent": "general",
+        "time": { "created": created, "updated": created },
+        "title": "Audit v1 call sites",
+        "location": { "directory": DIRECTORY }
+    })))
 }
 
 fn entry(value: Value) -> protocol::SessionMessage {
@@ -857,6 +942,23 @@ fn running_messages() -> Vec<protocol::SessionMessage> {
                 },
                 "time": { "created": RUNNING_CREATED + 21_000, "ran": RUNNING_CREATED + 21_100 }
             }]
+        })),
+    ]
+}
+
+fn retries_messages() -> Vec<protocol::SessionMessage> {
+    vec![
+        user_text(
+            "msg_retries_user",
+            CREATED - 7_200_000,
+            "Run the projection tests while I look at the retry backoff.",
+        ),
+        entry(json!({
+            "id": "msg_retries_assistant",
+            "type": "assistant",
+            "time": { "created": CREATED - 7_170_000, "completed": CREATED - 7_160_000 },
+            "agent": "build",
+            "content": [{ "type": "text", "text": "Started `cargo test --all-targets` in the background." }]
         })),
     ]
 }
@@ -1276,6 +1378,62 @@ mod tests {
             }
         ));
         assert!(state.bootstrap().pending.is_empty());
+    }
+
+    #[test]
+    fn canned_jobs_match_the_mockup() {
+        let mut state = State::new();
+        let bootstrap = state.bootstrap();
+        let running: HashSet<String> = bootstrap
+            .statuses
+            .iter()
+            .filter(|(_, status)| status.is_busy())
+            .map(|(id, _)| id.clone())
+            .collect();
+        let context = crate::jobs::Context {
+            roots: &bootstrap.sessions,
+            directories: &[],
+        };
+        let mut jobs = crate::jobs::Jobs::default();
+        jobs.apply_snapshot(Some(&running), bootstrap.shells, &context);
+        let wanted = jobs.take_wanted(&context);
+        assert_eq!(wanted, [CHILD_ID]);
+        let UiEvent::SessionInfoLoaded(results) = state.handle(Command::LoadSessionInfo {
+            session_ids: wanted,
+        }) else {
+            panic!("no session info");
+        };
+        jobs.apply_session_info(results);
+        let now = now_ms();
+        let rows: Vec<_> = jobs
+            .rows(&bootstrap.sessions)
+            .into_iter()
+            .map(|row| (row.title.clone(), row.root.clone(), row.subtitle(now)))
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                (
+                    "pnpm dev --port 5173".to_owned(),
+                    Some(ACTIVE_ID.to_owned()),
+                    "shell · Fix the attach clip padding · 22m".to_owned()
+                ),
+                (
+                    "Audit v1 call sites".to_owned(),
+                    Some(ACTIVE_ID.to_owned()),
+                    "subagent · Fix the attach clip padding · 4m".to_owned()
+                ),
+                (
+                    "cargo test --all-targets".to_owned(),
+                    Some(RETRIES_ID.to_owned()),
+                    "shell · Reflection projection retries · 1m".to_owned()
+                ),
+            ]
+        );
+        assert!(
+            !server_state().tabs.iter().any(|tab| tab.id == RETRIES_ID),
+            "clicking the last job opens a new tab"
+        );
     }
 
     #[test]

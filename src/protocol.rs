@@ -135,6 +135,7 @@ pub type MessageListResponse = Page<SessionMessage>;
 pub type ModelListResponse = Located<Vec<ModelInfo>>;
 pub type PermissionRequestListResponse = Located<Vec<PermissionRequest>>;
 pub type FormListResponse = Located<Vec<FormInfo>>;
+pub type ShellListResponse = Located<Vec<ShellInfo>>;
 // Routes the client does not call; decoded by the fixture tests only.
 #[cfg(test)]
 pub type SessionPermissionListResponse = Data<Vec<PermissionRequest>>;
@@ -1700,6 +1701,48 @@ pub struct ShellInfo {
     pub exit: Option<f64>,
     #[serde(default)]
     pub metadata: JsonMap,
+    #[serde(default)]
+    pub time: ShellTime,
+}
+
+impl ShellInfo {
+    /// The session that started the command (`metadata.sessionID`, set by
+    /// the `shell` tool; possibly a child session).
+    pub fn session_id(&self) -> Option<&str> {
+        self.metadata
+            .get("sessionID")
+            .and_then(Value::as_str)
+            .filter(|id| !id.is_empty())
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+pub struct ShellTime {
+    #[serde(default)]
+    pub started: Millis,
+    #[serde(default)]
+    pub completed: Option<Millis>,
+}
+
+/// `shell.created`: `data.info` is the new command, normally `running`.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+pub struct ShellCreated {
+    pub info: ShellInfo,
+}
+
+/// `shell.exited`: the command reached a terminal status.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+pub struct ShellExited {
+    pub id: String,
+    #[serde(default)]
+    pub exit: Option<f64>,
+    pub status: ShellStatus,
+}
+
+/// `shell.deleted`: the command and its output were removed.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+pub struct ShellRef {
+    pub id: String,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
@@ -1888,6 +1931,11 @@ pub enum EventKind {
     InstructionsUpdated(InstructionsUpdated),
     ShellStarted(ShellStarted),
     ShellEnded(ShellEnded),
+    /// `shell.created|exited|deleted`: location-scoped shell commands
+    /// (`/api/shell`), not session-scoped.
+    ShellCreated(ShellCreated),
+    ShellExited(ShellExited),
+    ShellDeleted(ShellRef),
     CompactionStarted(CompactionStarted),
     CompactionDelta(CompactionDelta),
     CompactionEnded(CompactionEnded),
@@ -1965,6 +2013,9 @@ pub fn decode_event(event: &Event) -> EventKind {
         "session.instructions.updated" => typed(event, EventKind::InstructionsUpdated),
         "session.shell.started" => typed(event, EventKind::ShellStarted),
         "session.shell.ended" => typed(event, EventKind::ShellEnded),
+        "shell.created" => typed(event, EventKind::ShellCreated),
+        "shell.exited" => typed(event, EventKind::ShellExited),
+        "shell.deleted" => typed(event, EventKind::ShellDeleted),
         "session.compaction.started" => typed(event, EventKind::CompactionStarted),
         "session.compaction.delta" => typed(event, EventKind::CompactionDelta),
         "session.compaction.ended" => typed(event, EventKind::CompactionEnded),
@@ -2044,6 +2095,9 @@ impl EventKind {
             Self::FormReplied(data) | Self::FormCancelled(data) => &data.session_id,
             Self::ServerConnected
             | Self::LocationShutdown
+            | Self::ShellCreated(_)
+            | Self::ShellExited(_)
+            | Self::ShellDeleted(_)
             | Self::ProjectUpdated(_)
             | Self::WorktreeUpdated(_)
             | Self::WorktreeResolved(_)
@@ -2430,6 +2484,11 @@ pub fn session_form_path(session_id: &str, form_id: &str) -> String {
         session_path(session_id),
         encode_segment(form_id)
     )
+}
+
+/// Running shell commands of one location (`location[directory]`).
+pub fn shells_path() -> String {
+    format!("{API_PREFIX}/shell")
 }
 
 pub fn models_path() -> String {
@@ -3985,8 +4044,7 @@ mod tests {
     }
 
     /// Event types seen in the captures that the client deliberately ignores.
-    const IGNORED_CAPTURED_EVENTS: &[&str] =
-        &["session.step.streamed", "shell.created", "shell.exited"];
+    const IGNORED_CAPTURED_EVENTS: &[&str] = &["session.step.streamed"];
 
     #[test]
     fn every_captured_event_decodes_without_malformed_payloads() {
@@ -4044,6 +4102,13 @@ mod tests {
                     ),
                     EventKind::PermissionReplied(data) => assert!(!data.reply.is_empty(), "{at}"),
                     EventKind::FormCreated(data) => assert!(!data.form.title.is_empty(), "{at}"),
+                    EventKind::ShellCreated(data) => assert!(
+                        data.info.status == ShellStatus::Running
+                            && data.info.session_id().is_some()
+                            && data.info.time.started > 0,
+                        "{at}"
+                    ),
+                    EventKind::ShellExited(data) => assert!(!data.id.is_empty(), "{at}"),
                     _ => {}
                 }
                 if !matches!(event.type_.as_str(), "server.connected") {

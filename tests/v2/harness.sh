@@ -9,15 +9,19 @@
 #
 # The server runs on the internal Docker network `ocgtk-v2h-net` (no egress)
 # as http://ocgtk-v2h-server:4096. Other containers join that network to reach it.
+# OCGTK_V2H_PREFIX (default `ocgtk-v2h`) renames the containers and network
+# (`$PREFIX-server`, `$PREFIX-mock`, `$PREFIX-net`), so two runs can coexist.
 set -euo pipefail
 
 export PATH="/usr/local/bin:$PATH"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE/../.." && pwd)"
 IMAGE="ocgtk-v2h-server:2.0.8"
-NET="ocgtk-v2h-net"
-SERVER="ocgtk-v2h-server"
-MOCK="ocgtk-v2h-mock"
+PREFIX="${OCGTK_V2H_PREFIX:-ocgtk-v2h}"
+case "$PREFIX" in *[!a-z0-9-]*|"") echo "harness: invalid OCGTK_V2H_PREFIX" >&2; exit 1 ;; esac
+NET="$PREFIX-net"
+SERVER="$PREFIX-server"
+MOCK="$PREFIX-mock"
 BASE_URL="http://$SERVER:4096"
 MOCK_URL="http://$MOCK:4100"
 
@@ -55,7 +59,7 @@ cmd_build() {
 cmd_up() {
   require_state
   docker image inspect "$IMAGE" >/dev/null 2>&1 || die "image $IMAGE missing; run build first"
-  if docker ps -aq --filter "name=^ocgtk-v2h-" | grep -q .; then
+  if docker ps -aq --filter "name=^$PREFIX-" | grep -q .; then
     die "harness containers already exist; run down first"
   fi
   docker network inspect "$NET" >/dev/null 2>&1 || docker network create --internal "$NET" >/dev/null
@@ -66,7 +70,8 @@ cmd_up() {
   chmod 600 "$STATE_DIR/password"
   printf '%s\n' "$BASE_URL" > "$STATE_DIR/base_url"
 
-  docker run -d --name "$MOCK" --network "$NET" --network-alias "$MOCK" \
+  # opencode.json names the mock `ocgtk-v2h-mock`; the alias is per network.
+  docker run -d --name "$MOCK" --network "$NET" --network-alias "$MOCK" --network-alias ocgtk-v2h-mock \
     "${hardening[@]}" --tmpfs /tmp:rw,nosuid,nodev,size=64m \
     "$IMAGE" python3 /harness/mock_provider.py --port 4100 >/dev/null
 
@@ -107,13 +112,13 @@ cmd_capture() {
 }
 
 cmd_status() {
-  docker ps -a --filter "name=^ocgtk-v2h-" --format '{{.Names}}\t{{.Status}}\t{{.Image}}'
-  docker network ls --filter "name=^ocgtk-v2h-" --format '{{.Name}}\t{{.Driver}}'
+  docker ps -a --filter "name=^$PREFIX-" --format '{{.Names}}\t{{.Status}}\t{{.Image}}'
+  docker network ls --filter "name=^$PREFIX-" --format '{{.Name}}\t{{.Driver}}'
 }
 
 cmd_down() {
   local names
-  names="$(docker ps -aq --filter "name=^ocgtk-v2h-")"
+  names="$(docker ps -aq --filter "name=^$PREFIX-")"
   if [ -n "$names" ]; then
     # shellcheck disable=SC2086
     docker rm -f -v $names >/dev/null

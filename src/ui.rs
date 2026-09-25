@@ -19,7 +19,7 @@ use crate::{
         MessagePage, ServerEnvelope, Settled, UiEvent,
     },
     credentials::{self, CloudflareAccessCredentials, PasswordTarget, SystemKeyring},
-    markdown,
+    jobs, markdown,
     model::{
         displayed_model, event_run_status, format_context_usage, model_switch_for_pick,
         run_status_change, CatalogInvalidation, Conversation, DebugCommand, ModelCatalog,
@@ -447,6 +447,9 @@ struct Widgets {
     window: gtk::ApplicationWindow,
     root_paned: gtk::Paned,
     tab_scroll: gtk::ScrolledWindow,
+    jobs_section: gtk::Box,
+    jobs_count: gtk::Label,
+    jobs_list: gtk::Box,
     sidebar: gtk::Box,
     sidebar_toggle: gtk::Button,
     session_button: gtk::Button,
@@ -597,6 +600,10 @@ struct Controller {
     form_cancels: HashSet<String>,
     /// Child session → parent session, from `subagent` tool metadata.
     child_parents: HashMap<String, String>,
+    /// The sidebar's "Background" section.
+    jobs: jobs::Jobs,
+    /// Next elapsed-time refresh, only while the section is shown.
+    jobs_tick: Option<glib::SourceId>,
     app_modal: Option<AppModalKind>,
     app_modal_focus: Option<gtk::Widget>,
     session_picker: Option<(gtk::ListBox, gtk::Entry)>,
@@ -737,6 +744,100 @@ fn sidebar_nav_button(icon: &str, label: &str, tooltip: &str) -> gtk::Button {
     button.set_tooltip_text(Some(tooltip));
     button.add_css_class("sidebar-nav");
     button
+}
+
+/// The sidebar's "Background" section: a header with a count badge above
+/// one row per running job. Hidden while nothing runs.
+fn build_jobs_section() -> (gtk::Box, gtk::Label, gtk::Box) {
+    let section = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    section.add_css_class("background-jobs");
+    section.set_margin_start(8);
+    section.set_margin_end(8);
+    section.set_visible(false);
+    let rule = gtk::Separator::new(gtk::Orientation::Horizontal);
+    rule.add_css_class("sidebar-nav-separator");
+    section.append(&rule);
+    let header = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    header.add_css_class("background-jobs-header");
+    let heading = gtk::Label::new(Some("BACKGROUND"));
+    heading.set_xalign(0.0);
+    heading.add_css_class("background-jobs-heading");
+    let count = gtk::Label::new(Some("0"));
+    count.set_valign(gtk::Align::Center);
+    count.add_css_class("background-jobs-count");
+    header.append(&heading);
+    header.append(&count);
+    section.append(&header);
+    let list = gtk::Box::new(gtk::Orientation::Vertical, 2);
+    list.add_css_class("background-jobs-list");
+    section.append(&list);
+    (section, count, list)
+}
+
+/// One job: kind icon, title, and `<kind> · <owner> · <elapsed>`. It is a
+/// button that activates the owning root session's tab, or a plain row
+/// when that session is unknown.
+fn background_job_row(
+    row: &jobs::JobRow,
+    now: u64,
+    controller: &Weak<RefCell<Controller>>,
+) -> gtk::Widget {
+    let content = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    let icon = gtk::Label::new(Some(match row.kind {
+        jobs::JobKind::Subagent => "◆",
+        jobs::JobKind::Shell => "$",
+    }));
+    icon.set_valign(gtk::Align::Start);
+    icon.add_css_class("background-job-icon");
+    icon.add_css_class(row.kind.label());
+    let text = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    text.set_hexpand(true);
+    let title = gtk::Label::new(Some(&row.title));
+    title.set_xalign(0.0);
+    title.set_ellipsize(pango::EllipsizeMode::End);
+    title.set_width_chars(1);
+    title.add_css_class("background-job-title");
+    let subtitle = row.subtitle(now);
+    let (label, elapsed) = row.subtitle_parts(now);
+    let meta = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    let owner = gtk::Label::new(Some(&label));
+    owner.set_xalign(0.0);
+    owner.set_ellipsize(pango::EllipsizeMode::End);
+    owner.set_width_chars(1);
+    owner.add_css_class("background-job-meta");
+    meta.append(&owner);
+    if let Some(elapsed) = elapsed {
+        let elapsed = gtk::Label::new(Some(&format!(" · {elapsed}")));
+        elapsed.add_css_class("background-job-meta");
+        meta.append(&elapsed);
+    }
+    text.append(&title);
+    text.append(&meta);
+    content.append(&icon);
+    content.append(&text);
+    let tooltip = format!("{}\n{subtitle}", row.title);
+    let Some(root) = row.root.clone() else {
+        content.add_css_class("background-job");
+        content.add_css_class("inert");
+        content.set_tooltip_text(Some(&tooltip));
+        return content.upcast();
+    };
+    let button = gtk::Button::new();
+    button.set_child(Some(&content));
+    // Like the tab rows: never a keyboard target, so focus that falls back
+    // when a prompt replaces the composer cannot land here and turn a stray
+    // Space/Enter into a tab switch.
+    button.set_focusable(false);
+    button.set_focus_on_click(false);
+    button.add_css_class("background-job");
+    button.set_tooltip_text(Some(&format!("{tooltip}\nOpen session")));
+    let weak = controller.clone();
+    button.connect_clicked(move |_| {
+        if let Some(controller) = weak.upgrade() {
+            Controller::open_tab(&controller, &root);
+        }
+    });
+    button.upcast()
 }
 
 fn paperclip_icon(pixel_size: i32) -> gtk::DrawingArea {
@@ -1121,6 +1222,8 @@ pub fn launch(
         forms: pending::Forms::default(),
         form_cancels: HashSet::new(),
         child_parents: HashMap::new(),
+        jobs: jobs::Jobs::default(),
+        jobs_tick: None,
         app_modal: None,
         app_modal_focus: None,
         session_picker: None,
@@ -1394,6 +1497,8 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
         .child(&tab_bar)
         .build();
     sidebar.append(&tab_scroll);
+    let (jobs_section, jobs_count, jobs_list) = build_jobs_section();
+    sidebar.append(&jobs_section);
     let nav = gtk::Box::new(gtk::Orientation::Vertical, 2);
     nav.add_css_class("sidebar-nav-footer");
     let nav_rule = gtk::Separator::new(gtk::Orientation::Horizontal);
@@ -1943,6 +2048,9 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
         window,
         root_paned: root,
         tab_scroll,
+        jobs_section,
+        jobs_count,
+        jobs_list,
         sidebar,
         sidebar_toggle,
         session_button,
@@ -3240,6 +3348,7 @@ impl Controller {
                     let retry_immediately = {
                         let mut this = controller.borrow_mut();
                         this.bootstrap_pending = false;
+                        this.jobs.abandon_refresh();
                         this.show_error(&error);
                         if this.bootstrap_reload_pending {
                             this.bootstrap_reload_pending = false;
@@ -3479,6 +3588,17 @@ impl Controller {
                 }
             }
             UiEvent::PendingLoaded(snapshot) => Self::apply_pending_reload(controller, snapshot),
+            UiEvent::SessionInfoLoaded(results) => {
+                let command = {
+                    let mut this = controller.borrow_mut();
+                    this.jobs.apply_session_info(results);
+                    this.refresh_jobs();
+                    this.job_info_command()
+                };
+                if let Some(command) = command {
+                    controller.borrow().api.send(command);
+                }
+            }
             UiEvent::ServerEvent(event) => Self::enqueue_server_event(controller, event),
         }
     }
@@ -3486,6 +3606,7 @@ impl Controller {
     fn begin_bootstrap(&mut self) {
         self.bootstrap_requested = true;
         self.bootstrap_pending = true;
+        self.jobs.begin_refresh();
         self.bootstrap_retry_token += 1;
         self.bootstrap_requests_at_start = self.open_request_ids();
     }
@@ -3501,6 +3622,7 @@ impl Controller {
 
     fn send_bootstrap(&mut self) {
         self.bootstrap_requested = true;
+        self.jobs.begin_refresh();
         self.api.send(self.bootstrap_command());
     }
 
@@ -3688,6 +3810,15 @@ impl Controller {
         let pending = bootstrap.pending;
         let pending_covered = bootstrap.pending_covered;
         let statuses_complete = bootstrap.statuses_complete;
+        let running: Option<HashSet<String>> = statuses_complete.then(|| {
+            bootstrap
+                .statuses
+                .iter()
+                .filter(|(_, status)| status.is_busy())
+                .map(|(id, _)| id.clone())
+                .collect()
+        });
+        let shells = bootstrap.shells;
         let retry_needed = bootstrap.retry_needed;
         let warnings = bootstrap.warnings;
         let mut api_commands = Vec::new();
@@ -3843,6 +3974,9 @@ impl Controller {
                 this.bootstrap_retry_token += 1;
                 this.bootstrap_partial_retries = 0;
             }
+            // Before a follow-up bootstrap starts a new journal.
+            this.with_jobs(|jobs, context| jobs.apply_snapshot(running.as_ref(), shells, context));
+            api_commands.extend(this.job_info_command());
             if this.bootstrap_reload_pending {
                 this.bootstrap_reload_pending = false;
                 this.begin_bootstrap();
@@ -4015,6 +4149,7 @@ impl Controller {
 
     fn flush_server_events(controller: &Rc<RefCell<Self>>) {
         let mut permission_events = Vec::new();
+        let mut job_events = Vec::new();
         let mut forms_changed = false;
         let mut resolved_requests = HashSet::new();
         let mut effects = FlushEffects::default();
@@ -4055,6 +4190,7 @@ impl Controller {
                 if let Some((child, parent)) = pending::subagent_child(kind) {
                     this.child_parents.insert(child, parent);
                 }
+                job_events.extend(jobs::job_event(event, kind, event.directory()));
                 match pending::pending_change(kind, directory.as_deref()) {
                     Some(PendingChange::Permission { directory, request }) => {
                         permission_events.push((directory, request));
@@ -4073,6 +4209,17 @@ impl Controller {
         }
         if forms_changed {
             this.refresh_form_notice();
+        }
+        if !job_events.is_empty() {
+            let changed = this.with_jobs(|jobs, context| {
+                job_events.into_iter().fold(false, |changed, event| {
+                    jobs.apply_event(event, context) | changed
+                })
+            });
+            effects.api_commands.extend(this.job_info_command());
+            if changed {
+                this.refresh_jobs();
+            }
         }
         let catalog_invalidations = std::mem::take(&mut effects.catalog_invalidations);
         if catalog_invalidations.iter().any(|change| change.shutdown) {
@@ -4488,6 +4635,57 @@ impl Controller {
             self.widgets.tab_bar.append(&tab);
         }
         self.refresh_session_header();
+        self.refresh_jobs();
+    }
+
+    /// Rebuilds the "Background" section. While it is shown, the elapsed
+    /// times refresh every [`jobs::ELAPSED_REFRESH_SECONDS`].
+    fn refresh_jobs(&mut self) {
+        let rows = self.jobs.rows(&self.state.sessions);
+        let now = unix_millis();
+        self.widgets.jobs_section.set_visible(!rows.is_empty());
+        self.widgets.jobs_count.set_label(&rows.len().to_string());
+        clear_box(&self.widgets.jobs_list);
+        for row in &rows {
+            self.widgets
+                .jobs_list
+                .append(&background_job_row(row, now, &self.self_weak));
+        }
+        if rows.is_empty() {
+            if let Some(tick) = self.jobs_tick.take() {
+                tick.remove();
+            }
+        } else if self.jobs_tick.is_none() {
+            let weak = self.self_weak.clone();
+            self.jobs_tick = Some(glib::timeout_add_seconds_local_once(
+                jobs::ELAPSED_REFRESH_SECONDS,
+                move || {
+                    if let Some(controller) = weak.upgrade() {
+                        let mut this = controller.borrow_mut();
+                        this.jobs_tick = None;
+                        this.refresh_jobs();
+                    }
+                },
+            ));
+        }
+    }
+
+    /// Runs `change` on the jobs list with the root sessions and the
+    /// locations a refresh lists shells in.
+    fn with_jobs<R>(&mut self, change: impl FnOnce(&mut jobs::Jobs, &jobs::Context) -> R) -> R {
+        let directories = self.pending_directories();
+        let context = jobs::Context {
+            roots: &self.state.sessions,
+            directories: &directories,
+        };
+        change(&mut self.jobs, &context)
+    }
+
+    /// Fetches the sessions the jobs list is missing (child sessions and
+    /// their parents), each once.
+    fn job_info_command(&mut self) -> Option<Command> {
+        let session_ids = self.with_jobs(|jobs, context| jobs.take_wanted(context));
+        (!session_ids.is_empty()).then_some(Command::LoadSessionInfo { session_ids })
     }
 
     fn open_tab(controller: &Rc<RefCell<Self>>, id: &str) {
@@ -7496,6 +7694,7 @@ impl Controller {
             this.forms.clear();
             this.form_cancels.clear();
             this.child_parents.clear();
+            this.jobs.clear();
             this.pending_reload = None;
             this.pending_reload_again = false;
             this.widgets.form_notice.set_visible(false);

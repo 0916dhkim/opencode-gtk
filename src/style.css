@@ -236,6 +236,76 @@ button.session-id-copy.copied {
   margin-right: 0.44em;
 }
 
+.background-jobs-header {
+  padding: 0.44em 0.74em 0.3em;
+}
+
+.background-jobs-heading {
+  font-size: 0.8em;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: @oc_fg_background_jobs_heading;
+}
+
+.background-jobs-count {
+  margin-left: 0.44em;
+  padding: 0 0.52em;
+  border-radius: 999em;
+  font-size: 0.76em;
+  background: @oc_bg_background_jobs_count;
+  color: @oc_fg_background_jobs_count;
+}
+
+.background-jobs-list {
+  margin-bottom: 0.3em;
+}
+
+.background-job,
+button.background-job {
+  min-height: 0;
+  padding: 0.44em 0.74em;
+  border: none;
+  border-radius: 0.59em;
+  background: transparent;
+  background-image: none;
+  box-shadow: none;
+}
+
+button.background-job:hover {
+  background: @oc_bg_sidebar_new_session_hover;
+}
+
+.background-job-icon {
+  min-width: 1.33em;
+  min-height: 1.33em;
+  margin-top: 0.07em;
+  margin-right: 0.67em;
+  border-radius: 0.37em;
+  font-size: 0.8em;
+  font-weight: 700;
+}
+
+.background-job-icon.subagent {
+  background: @oc_bg_background_job_icon_subagent;
+  color: @oc_fg_background_job_icon_subagent;
+}
+
+.background-job-icon.shell {
+  font-family: monospace;
+  background: @oc_bg_background_job_icon_shell;
+  color: @oc_fg_background_job_icon_shell;
+}
+
+.background-job-title {
+  font-size: 0.96em;
+  color: @oc_fg_background_job_title;
+}
+
+.background-job-meta {
+  font-size: 0.85em;
+  color: @oc_fg_background_job_meta;
+}
+
 .modal-heading {
   font-size: 1.15em;
   font-weight: 700;

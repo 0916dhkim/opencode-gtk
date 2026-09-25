@@ -1,5 +1,6 @@
 mod api;
 mod credentials;
+mod jobs;
 mod markdown;
 mod model;
 mod pending;

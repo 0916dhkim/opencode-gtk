@@ -23,6 +23,7 @@ use serde_json::Value;
 
 use crate::{
     credentials::CloudflareAccessCredentials,
+    jobs::{ShellJob, ShellSnapshot},
     model::{ModelCatalog, Project, RunStatus, Session},
     pending::{self, PendingForm, PendingRequest, PendingSnapshot},
     protocol,
@@ -63,6 +64,11 @@ pub enum Command {
     /// Refetches the pending permission and form lists of these locations.
     LoadPending {
         directories: Vec<String>,
+    },
+    /// Sessions outside the root list (running child sessions, shell owners
+    /// and their parents) for the background jobs list.
+    LoadSessionInfo {
+        session_ids: Vec<String>,
     },
     /// `cursor: None` loads the newest page; `Some` the page before it.
     LoadMessages {
@@ -169,6 +175,8 @@ pub struct Bootstrap {
     /// missing from `pending` was resolved while disconnected. A failed
     /// list sets `retry_needed` and a warning.
     pub pending_covered: HashSet<String>,
+    /// Running shells of the same locations as the pending lists.
+    pub shells: ShellSnapshot,
     pub retry_needed: bool,
     pub warnings: Vec<String>,
 }
@@ -268,6 +276,7 @@ pub enum UiEvent {
         result: Result<Settled, String>,
     },
     PendingLoaded(PendingSnapshot),
+    SessionInfoLoaded(Vec<(String, Result<Session, String>)>),
     PermissionReplied {
         request_id: String,
         result: Result<Settled, String>,
@@ -367,6 +376,7 @@ impl ApiHandle {
         let sender = match &command {
             Command::Bootstrap { .. }
             | Command::LoadPending { .. }
+            | Command::LoadSessionInfo { .. }
             | Command::LoadMessages { .. }
             | Command::LoadModels { .. } => &self.refresh_commands,
             // One worker, so a model switch lands before a prompt sent after it.
@@ -654,6 +664,11 @@ impl Api {
             retry_needed = true;
         }
         warnings.extend(pending.warnings);
+        let mut shells = self.load_shells(&directories);
+        if !shells.warnings.is_empty() {
+            retry_needed = true;
+        }
+        warnings.append(&mut shells.warnings);
 
         Ok(Bootstrap {
             version,
@@ -664,9 +679,58 @@ impl Api {
             statuses_complete,
             pending: pending.requests,
             pending_covered: pending.covered,
+            shells,
             retry_needed,
             warnings,
         })
+    }
+
+    /// Running shell commands of these locations (`location[directory]`,
+    /// the same set as the pending lists, so no new location is started).
+    /// A command seen in two locations is kept once. A location is covered
+    /// once its list loaded; a failed one sets a warning.
+    fn load_shells(&self, directories: &[String]) -> ShellSnapshot {
+        let mut snapshot = ShellSnapshot::default();
+        let mut seen = HashSet::new();
+        let directories: BTreeSet<&String> = directories.iter().collect();
+        for directory in directories.into_iter().filter(|d| !d.is_empty()) {
+            snapshot.queried.insert(directory.clone());
+            match self.get::<protocol::ShellListResponse>(
+                &protocol::shells_path(),
+                &[protocol::location_query(directory)],
+            ) {
+                Ok(list) => {
+                    snapshot.covered.insert(directory.clone());
+                    if !list.location.directory.is_empty() {
+                        snapshot.covered.insert(list.location.directory.clone());
+                    }
+                    for info in &list.data {
+                        if seen.insert(info.id.clone()) {
+                            snapshot.shells.extend(ShellJob::running(info, directory));
+                        }
+                    }
+                }
+                Err(error) => snapshot.warnings.push(format!(
+                    "Could not list running shell commands in {directory}: {error:#}"
+                )),
+            }
+        }
+        snapshot
+    }
+
+    /// `GET /api/session/{id}` for each session, in order; failures are per
+    /// session.
+    fn load_session_info(&self, session_ids: &[String]) -> Vec<(String, Result<Session, String>)> {
+        session_ids
+            .iter()
+            .map(|id| {
+                let result = self
+                    .get::<protocol::SessionResponse>(&protocol::session_path(id), &[])
+                    .map(|response| Session::from_info(&response.data))
+                    .map_err(format_error);
+                (id.clone(), result)
+            })
+            .collect()
     }
 
     /// Pending permissions and forms of these locations. Both lists are
@@ -1050,6 +1114,9 @@ fn spawn_command_worker(api: Api, commands: Receiver<Command>, ui: Sender<UiEven
                 }
                 Command::LoadPending { directories } => {
                     UiEvent::PendingLoaded(api.load_pending(&directories))
+                }
+                Command::LoadSessionInfo { session_ids } => {
+                    UiEvent::SessionInfoLoaded(api.load_session_info(&session_ids))
                 }
                 Command::LoadMessages { session_id, cursor } => {
                     let result = api
@@ -2360,13 +2427,29 @@ mod tests {
 
     #[test]
     fn bootstrap_pages_root_sessions_across_locations() {
-        let (base, requests, server) = serve(10, |request| {
+        let (base, requests, server) = serve(12, |request| {
             let query = request.query();
             let location = query
                 .get("location[directory]")
                 .cloned()
                 .unwrap_or_default();
+            let shell = |id: &str, status: &str, owner: &str| {
+                json!({
+                    "id": id, "status": status, "command": "pnpm dev\nmore", "cwd": location,
+                    "shell": "/bin/bash", "file": "/tmp/out", "metadata": { "sessionID": owner },
+                    "time": { "started": 1_000 }
+                })
+            };
             match (request.path(), query.get("cursor").map(String::as_str)) {
+                ("/api/shell", _) if location == "/a" => ok(json!({
+                    "location": { "directory": location },
+                    "data": [shell("sh_dev", "running", "ses_a"), shell("sh_done", "exited", "ses_a")]
+                })),
+                // The same command seen from a second location is kept once.
+                ("/api/shell", _) => ok(json!({
+                    "location": { "directory": location },
+                    "data": [shell("sh_dev", "running", "ses_a"), shell("sh_child", "running", "ses_child_of_c")]
+                })),
                 ("/api/permission/request", _) if location == "/elsewhere" => ok(json!({
                     "location": { "directory": location },
                     "data": [{
@@ -2475,6 +2558,28 @@ mod tests {
         );
         assert!(!bootstrap.retry_needed);
         assert!(bootstrap.warnings.is_empty());
+        let shells: Vec<_> = bootstrap
+            .shells
+            .shells
+            .iter()
+            .map(|shell| {
+                (
+                    shell.id.as_str(),
+                    shell.directory.as_str(),
+                    shell.session_id.as_deref(),
+                    shell.started,
+                )
+            })
+            .collect();
+        assert_eq!(
+            shells,
+            [
+                ("sh_dev", "/a", Some("ses_a"), 1_000),
+                ("sh_child", "/elsewhere", Some("ses_child_of_c"), 1_000)
+            ],
+            "running only, deduped by ID"
+        );
+        assert_eq!(bootstrap.shells.covered, bootstrap.pending_covered);
 
         let requests = requests.lock().unwrap();
         assert_eq!(requests[0].path(), "/api/info");
@@ -2493,7 +2598,12 @@ mod tests {
         assert_eq!(pages[2].get("cursor").map(String::as_str), Some("c2"));
         let mut pending: Vec<_> = requests
             .iter()
-            .filter(|request| matches!(request.path(), "/api/permission/request" | "/api/form"))
+            .filter(|request| {
+                matches!(
+                    request.path(),
+                    "/api/permission/request" | "/api/form" | "/api/shell"
+                )
+            })
             .map(|request| {
                 let query = request.query();
                 assert_eq!(query.len(), 1, "{}", request.line);
@@ -2504,7 +2614,7 @@ mod tests {
             })
             .collect();
         pending.sort();
-        let expected: Vec<_> = ["/api/form", "/api/permission/request"]
+        let expected: Vec<_> = ["/api/form", "/api/permission/request", "/api/shell"]
             .into_iter()
             .flat_map(|path| ["/a", "/elsewhere"].map(|dir| (path.to_owned(), dir.to_owned())))
             .collect();
@@ -2519,8 +2629,9 @@ mod tests {
 
     #[test]
     fn bootstrap_reports_a_partial_session_list() {
-        let (base, _, server) = serve(7, |request| {
+        let (base, _, server) = serve(8, |request| {
             match (request.path(), request.query().contains_key("cursor")) {
+                ("/api/shell", _) => (503, String::new()),
                 ("/api/permission/request", _) => ok(json!({
                     "location": { "directory": "/a" },
                     "data": [{ "id": "per_1", "sessionID": "ses_a" }]
@@ -2561,7 +2672,13 @@ mod tests {
                 "Could not list every session: server returned 503 Service Unavailable: unavailable",
                 "Could not refresh session status: server returned 503 Service Unavailable",
                 "Could not list pending forms in /a: server returned 503 Service Unavailable",
+                "Could not list running shell commands in /a: server returned 503 Service Unavailable",
             ]
+        );
+        assert!(bootstrap.shells.queried.contains("/a"));
+        assert!(
+            bootstrap.shells.covered.is_empty(),
+            "a failed location keeps its shells"
         );
     }
 
@@ -2817,6 +2934,85 @@ mod tests {
         );
     }
 
+    #[test]
+    fn job_sessions_and_shells_load_per_item() {
+        let child = fixture("session.get.child");
+        let active = fixture("session.active.running");
+        let (base, requests, server) = serve(5, move |request| {
+            let location = request.query().get("location[directory]").cloned();
+            match (request.path(), location.as_deref()) {
+                ("/api/session/ses_f2a7444aaffemNHKVCr3zoKjZZ", None) => ok(child.clone()),
+                ("/api/session/ses_gone", None) => (
+                    404,
+                    json!({ "_tag": "SessionNotFoundError", "sessionID": "ses_gone",
+                            "message": "Session not found: ses_gone" })
+                    .to_string(),
+                ),
+                ("/api/session/active", None) => ok(active.clone()),
+                ("/api/shell", Some("/ok")) => ok(json!({
+                    "location": { "directory": "/ok" },
+                    "data": [{ "id": "sh_1", "status": "running", "command": "sleep 9",
+                               "cwd": "/ok", "shell": "sh", "file": "/tmp/f", "metadata": {},
+                               "time": { "started": 5 } }]
+                })),
+                ("/api/shell", Some("/broken")) => (500, String::new()),
+                _ => panic!("unexpected request: {}", request.line),
+            }
+        });
+        let api = Api::new(config(base, None)).unwrap();
+        let results =
+            api.load_session_info(&["ses_f2a7444aaffemNHKVCr3zoKjZZ".into(), "ses_gone".into()]);
+        let statuses = api.load_statuses().unwrap();
+        let shells = api.load_shells(&["/ok".into(), "/broken".into(), String::new()]);
+        server.join().unwrap();
+
+        let child = results[0].1.as_ref().unwrap();
+        assert_eq!(child.title, "Mock child task");
+        assert_eq!(
+            child.parent_id.as_deref(),
+            Some("ses_f2a7444ccffe7yJDIJFaA9PlRV")
+        );
+        assert_eq!(child.time.created, 1_790_289_099_609);
+        assert_eq!(results[1].0, "ses_gone");
+        assert!(results[1]
+            .1
+            .as_ref()
+            .unwrap_err()
+            .contains("Session not found"));
+        assert_eq!(
+            statuses,
+            HashMap::from([("ses_f2a743e02ffe9b0pzkusFTSsVL".to_owned(), RunStatus::Busy)])
+        );
+        assert_eq!(
+            shells.shells,
+            [ShellJob {
+                id: "sh_1".into(),
+                directory: "/ok".into(),
+                command: "sleep 9".into(),
+                session_id: None,
+                started: 5,
+            }]
+        );
+        assert_eq!(
+            shells.queried,
+            BTreeSet::from(["/broken".to_owned(), "/ok".to_owned()])
+        );
+        assert_eq!(shells.covered, HashSet::from(["/ok".to_owned()]));
+        assert_eq!(shells.warnings.len(), 1, "{:?}", shells.warnings);
+        let requests = requests.lock().unwrap();
+        for request in requests
+            .iter()
+            .filter(|request| request.path() == "/api/shell")
+        {
+            assert_eq!(
+                request.query().keys().collect::<Vec<_>>(),
+                ["location[directory]"],
+                "{}",
+                request.line
+            );
+        }
+    }
+
     fn fixture(name: &str) -> Value {
         let path = format!(
             "{}/tests/fixtures/v2-2.0.8/{name}.json",
@@ -2852,7 +3048,7 @@ mod tests {
 
         let child_permissions = fixture("permission.request.list.child");
         let forms = fixture("form.list");
-        let (base, _, server) = serve(8, move |request| {
+        let (base, _, server) = serve(9, move |request| {
             let cursor = request.query().get("cursor").cloned();
             let workspace = request
                 .query()
@@ -2862,6 +3058,9 @@ mod tests {
                 // Only the running session's location; never project /state/home.
                 ("/api/permission/request", _) if workspace => ok(child_permissions.clone()),
                 ("/api/form", _) if workspace => ok(forms.clone()),
+                ("/api/shell", _) if workspace => ok(json!({
+                    "location": { "directory": "/state/workspace" }, "data": []
+                })),
                 ("/api/info", _) => ok(info.clone()),
                 ("/api/project", _) => ok(projects.clone()),
                 ("/api/session", None) => ok(page1.clone()),

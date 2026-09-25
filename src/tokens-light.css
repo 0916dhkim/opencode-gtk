@@ -180,3 +180,12 @@
 @define-color oc_bg_resume_warning #fbf1dc;
 @define-color oc_border_resume_warning #ecd3a0;
 @define-color oc_fg_resume_warning #7a4f12;
+@define-color oc_fg_background_jobs_heading #707673;
+@define-color oc_bg_background_jobs_count #e4ddd0;
+@define-color oc_fg_background_jobs_count #5c4a2e;
+@define-color oc_bg_background_job_icon_subagent #f3e7cf;
+@define-color oc_fg_background_job_icon_subagent #9c641a;
+@define-color oc_bg_background_job_icon_shell #e3e8e5;
+@define-color oc_fg_background_job_icon_shell #3f5a4c;
+@define-color oc_fg_background_job_title #2f2d29;
+@define-color oc_fg_background_job_meta #8b918e;
