@@ -1,5 +1,5 @@
 use cosmic::Element;
-use cosmic::iced::Length;
+use cosmic::iced::{Border, Color, Length};
 use cosmic::widget::{button, column, container, row, text};
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 
@@ -159,20 +159,55 @@ where
             }
             MarkdownBlock::Code(lang, code) => {
                 let lang_label = lang.unwrap_or_else(|| "code".to_string());
-                let header = row::with_children(vec![
-                    text(lang_label).size(12).width(Length::Fill).into(),
-                    button::text("Copy").on_press(on_copy(code.clone())).into(),
-                ])
-                .padding([4, 8]);
+                let header = container(
+                    row::with_children(vec![
+                        text(lang_label).size(11).width(Length::Fill).into(),
+                        button::text("Copy")
+                            .padding([2, 8])
+                            .on_press(on_copy(code.clone()))
+                            .into(),
+                    ])
+                    .align_y(cosmic::iced::Alignment::Center),
+                )
+                .padding([4, 10])
+                .style(|_theme| container::Style {
+                    background: Some(Color::from_rgb8(0x14, 0x17, 0x1a).into()),
+                    border: Border {
+                        color: Color::from_rgb8(0x28, 0x2c, 0x30),
+                        width: 1.0,
+                        radius: 0.0.into(),
+                    },
+                    text_color: Some(Color::from_rgb8(0x89, 0x91, 0x98)),
+                    ..Default::default()
+                });
 
                 let code_text = text(code).font(cosmic::iced::Font::MONOSPACE).size(13);
 
-                let code_container = container(code_text).padding(8).width(Length::Fill);
+                let code_container =
+                    container(code_text)
+                        .padding(10)
+                        .width(Length::Fill)
+                        .style(|_theme| container::Style {
+                            text_color: Some(Color::from_rgb8(0xe1, 0xdd, 0xd5)),
+                            ..Default::default()
+                        });
 
-                let block_col =
-                    column::with_children(vec![header.into(), code_container.into()]).spacing(2);
+                let block_col = column::with_children(vec![header.into(), code_container.into()]);
 
-                elements.push(container(block_col).padding(4).into());
+                let code_block_container =
+                    container(block_col)
+                        .width(Length::Fill)
+                        .style(|_theme| container::Style {
+                            background: Some(Color::from_rgb8(0x17, 0x1a, 0x1d).into()),
+                            border: Border {
+                                color: Color::from_rgb8(0x30, 0x35, 0x3a),
+                                width: 1.0,
+                                radius: 6.0.into(),
+                            },
+                            ..Default::default()
+                        });
+
+                elements.push(code_block_container.into());
             }
             MarkdownBlock::List(items) => {
                 let mut list_col = column::with_capacity(items.len()).spacing(4);
@@ -186,11 +221,29 @@ where
                 elements.push(container(list_col).padding([2, 8]).into());
             }
             MarkdownBlock::Blockquote(quote) => {
-                let q = container(text(quote).size(14)).padding([4, 12]);
+                let q = container(text(quote).size(13))
+                    .padding([6, 12])
+                    .style(|_theme| container::Style {
+                        background: Some(Color::from_rgba8(255, 255, 255, 0.02).into()),
+                        border: Border {
+                            color: Color::from_rgb8(0x6f, 0x77, 0x80),
+                            width: 1.0,
+                            radius: 4.0.into(),
+                        },
+                        text_color: Some(Color::from_rgb8(0xbc, 0xc1, 0xc4)),
+                        ..Default::default()
+                    });
                 elements.push(q.into());
             }
             MarkdownBlock::Rule => {
-                elements.push(container(text("───").size(10)).padding(4).into());
+                let rule = container(text(""))
+                    .height(1)
+                    .width(Length::Fill)
+                    .style(|_theme| container::Style {
+                        background: Some(Color::from_rgb8(0x28, 0x2c, 0x30).into()),
+                        ..Default::default()
+                    });
+                elements.push(rule.into());
             }
         }
     }

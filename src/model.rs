@@ -302,7 +302,7 @@ impl Role {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum SegmentKind {
+pub enum SegmentKind {
     Text,
     Reasoning,
     Tool,
@@ -310,7 +310,7 @@ enum SegmentKind {
 }
 
 impl SegmentKind {
-    fn prefix(self) -> &'static str {
+    pub fn prefix(self) -> &'static str {
         match self {
             Self::Text => "text",
             Self::Reasoning => "reasoning",
@@ -321,15 +321,15 @@ impl SegmentKind {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-struct Segment {
-    key: String,
-    kind: SegmentKind,
-    text: String,
-    image_url: Option<String>,
-    created: u64,
+pub struct Segment {
+    pub key: String,
+    pub kind: SegmentKind,
+    pub text: String,
+    pub image_url: Option<String>,
+    pub created: u64,
     /// A tool segment's structured state; `text` is always rendered from it
     /// by [`tool_segment`], for history and live events alike.
-    tool: Option<protocol::ToolCall>,
+    pub tool: Option<protocol::ToolCall>,
 }
 
 impl Segment {
@@ -396,6 +396,14 @@ impl ChatMessage {
     /// An undelivered user prompt: a tray item, not a transcript row.
     fn in_tray(&self) -> bool {
         self.queued && self.role == Role::User
+    }
+
+    pub fn segments(&self) -> &[Segment] {
+        &self.segments
+    }
+
+    pub fn error(&self) -> Option<&str> {
+        self.error.as_deref()
     }
 
     pub fn render(&self) -> String {

@@ -41,6 +41,10 @@ pub struct Args {
     /// Show canned UI without contacting a server.
     #[arg(long)]
     pub preview: bool,
+
+    /// Initial drawer page to show (jobs, sessions, settings)
+    #[arg(long)]
+    pub drawer: Option<String>,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {

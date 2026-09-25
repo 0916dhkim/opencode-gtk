@@ -1,11 +1,11 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use async_channel::Receiver;
 use cosmic::app::{ContextDrawer, Core, Task, context_drawer};
-use cosmic::iced::{Alignment, Length, Subscription};
+use cosmic::iced::{Alignment, Border, Color, Length, Subscription};
 use cosmic::widget::{button, column, container, row, scrollable, text, text_input};
 use cosmic::{Application, Element};
 use serde::Deserialize;
@@ -46,6 +46,7 @@ pub struct OpenCodeCosmic {
     composer_text: String,
     search_query: String,
     active_drawer: Option<DrawerPage>,
+    sidebar_open: bool,
     connection_status: String,
     error_banner: Option<String>,
     server_url_input: String,
@@ -57,6 +58,7 @@ pub struct OpenCodeCosmic {
 #[derive(Clone, Debug)]
 pub enum Message {
     Tick,
+    ToggleSidebar,
     SelectTab(String),
     CloseTab(String),
     NewSession,
@@ -120,6 +122,7 @@ impl Application for OpenCodeCosmic {
             composer_text: String::new(),
             search_query: String::new(),
             active_drawer: None,
+            sidebar_open: true,
             connection_status: "Connecting...".to_string(),
             error_banner: None,
             server_url_input: server_url,
@@ -130,21 +133,49 @@ impl Application for OpenCodeCosmic {
 
         if flags.preview {
             let mut mock = preview::State::new();
-            let initial_events = mock.take_server_events();
             app.connection_status = "Preview (Offline)".to_string();
 
+            let b_event = mock.handle(Command::Bootstrap {
+                sessions: Vec::new(),
+                directories: Vec::new(),
+            });
+            app.handle_ui_event(b_event);
+
             let s_state = preview::server_state();
+            app.tabs.clear();
             for tab in &s_state.tabs {
                 app.tabs.push(tab.id.clone());
             }
             app.active_session_id = s_state.active;
 
-            for event in initial_events {
+            for tab in &s_state.tabs {
+                let m_event = mock.handle(Command::LoadMessages {
+                    session_id: tab.id.clone(),
+                    cursor: None,
+                });
+                app.handle_ui_event(m_event);
+            }
+
+            let mod_event = mock.handle(Command::LoadModels {
+                directory: "/repo".to_string(),
+            });
+            app.handle_ui_event(mod_event);
+
+            for event in mock.take_server_events() {
                 app.handle_ui_event(event);
             }
             app.mock_server = Some(mock);
         } else {
             app.connect_api();
+        }
+
+        if let Some(drawer_name) = &flags.drawer {
+            match drawer_name.to_lowercase().as_str() {
+                "jobs" => app.active_drawer = Some(DrawerPage::Jobs),
+                "sessions" => app.active_drawer = Some(DrawerPage::Sessions),
+                "settings" => app.active_drawer = Some(DrawerPage::Settings),
+                _ => {}
+            }
         }
 
         (app, Task::none())
@@ -154,6 +185,10 @@ impl Application for OpenCodeCosmic {
         match message {
             Message::Tick => {
                 self.drain_events();
+                Task::none()
+            }
+            Message::ToggleSidebar => {
+                self.sidebar_open = !self.sidebar_open;
                 Task::none()
             }
             Message::SelectTab(id) => {
@@ -238,8 +273,46 @@ impl Application for OpenCodeCosmic {
     }
 
     fn header_start(&self) -> Vec<Element<'_, Self::Message>> {
-        let mut tab_buttons = Vec::new();
+        vec![
+            button::text("☰")
+                .on_press(Message::ToggleSidebar)
+                .padding([3, 8])
+                .into(),
+            text("OpenCode").size(14).into(),
+            text(format!("· {}", self.connection_status))
+                .size(12)
+                .into(),
+        ]
+    }
 
+    fn header_center(&self) -> Vec<Element<'_, Self::Message>> {
+        Vec::new()
+    }
+
+    fn header_end(&self) -> Vec<Element<'_, Self::Message>> {
+        vec![
+            button::text("Tabs (Ctrl+P)")
+                .on_press(Message::ToggleDrawer(DrawerPage::Sessions))
+                .padding([3, 8])
+                .into(),
+            button::text("⚙ Settings")
+                .on_press(Message::ToggleDrawer(DrawerPage::Settings))
+                .padding([3, 8])
+                .into(),
+        ]
+    }
+
+    fn view(&self) -> Element<'_, Self::Message> {
+        // 1. Build Left Sidebar (GTK style)
+        let mut sidebar_items = Vec::new();
+
+        let new_session_btn = button::text("+ New session")
+            .on_press(Message::NewSession)
+            .width(Length::Fill)
+            .padding([8, 12]);
+        sidebar_items.push(container(new_session_btn).padding([8, 8, 4, 8]).into());
+
+        let mut tab_rows = Vec::new();
         for tab_id in &self.tabs {
             let title = self
                 .sessions
@@ -248,80 +321,158 @@ impl Application for OpenCodeCosmic {
                 .unwrap_or(tab_id.as_str());
 
             let is_busy = self.is_session_busy(tab_id);
+            let is_active = self.active_session_id.as_deref() == Some(tab_id.as_str());
 
-            let label = if is_busy {
-                format!("⏳ {title}")
+            let display_title = if title.chars().count() > 20 {
+                let s: String = title.chars().take(19).collect();
+                format!("{s}…")
             } else {
                 title.to_string()
             };
 
-            let id_clone = tab_id.clone();
+            let status_dot = if is_busy {
+                "⟳"
+            } else if is_active {
+                "●"
+            } else {
+                "○"
+            };
+
+            let tab_id_clone = tab_id.clone();
             let close_id = tab_id.clone();
 
-            let btn = button::text(label)
-                .on_press(Message::SelectTab(id_clone))
-                .padding([4, 8]);
+            let tab_btn = button::text(format!("{status_dot}  {display_title}"))
+                .on_press(Message::SelectTab(tab_id_clone))
+                .width(Length::Fill)
+                .padding([6, 10]);
 
             let close_btn = button::text("✕")
                 .on_press(Message::CloseTab(close_id))
-                .padding([2, 4]);
+                .padding([4, 6]);
 
-            let tab_box = row::with_children(vec![btn.into(), close_btn.into()])
+            let tab_row = row::with_children(vec![tab_btn.into(), close_btn.into()])
                 .align_y(Alignment::Center)
                 .spacing(2);
 
-            let tab_container = container(tab_box).padding(2);
-            tab_buttons.push(tab_container.into());
+            let tab_card = container(tab_row)
+                .width(Length::Fill)
+                .padding([1, 4])
+                .style(move |_theme| {
+                    if is_active {
+                        container::Style {
+                            background: Some(Color::from_rgb8(0x22, 0x26, 0x2a).into()),
+                            border: Border {
+                                color: Color::from_rgb8(0x2b, 0x30, 0x34),
+                                width: 1.0,
+                                radius: 6.0.into(),
+                            },
+                            ..Default::default()
+                        }
+                    } else {
+                        container::Style {
+                            background: None,
+                            border: Border::default(),
+                            ..Default::default()
+                        }
+                    }
+                });
+
+            tab_rows.push(tab_card.into());
         }
 
-        tab_buttons.push(
-            button::text("+")
-                .on_press(Message::NewSession)
-                .padding([4, 8])
+        let tab_list_col = column::with_children(tab_rows).spacing(2);
+        let tab_scroll = scrollable(tab_list_col)
+            .height(Length::Fill)
+            .width(Length::Fill);
+        sidebar_items.push(
+            container(tab_scroll)
+                .padding([4, 4])
+                .height(Length::Fill)
                 .into(),
         );
 
-        tab_buttons
-    }
+        let job_rows = self.jobs.rows(self.active_session_id.as_deref());
+        if !job_rows.is_empty() {
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0);
 
-    fn header_center(&self) -> Vec<Element<'_, Self::Message>> {
-        let active_model = self.active_session_model_label();
-        vec![
-            button::text(format!("Model: {active_model}"))
-                .on_press(Message::ToggleDrawer(DrawerPage::Settings))
-                .padding([4, 10])
-                .into(),
-        ]
-    }
+            let mut jobs_col_items = Vec::new();
+            jobs_col_items.push(
+                text(format!("BACKGROUND ({})", job_rows.len()))
+                    .size(11)
+                    .into(),
+            );
 
-    fn header_end(&self) -> Vec<Element<'_, Self::Message>> {
-        let usage = self.active_context_usage();
-        let running_jobs = self.active_jobs_count();
+            for row in job_rows {
+                let kind_str = match row.kind {
+                    JobKind::Subagent => "◈",
+                    JobKind::Shell => ">_",
+                };
 
-        let jobs_label = if running_jobs > 0 {
-            format!("⚡ Jobs ({running_jobs})")
-        } else {
-            "Jobs".to_string()
-        };
+                let item = column::with_children(vec![
+                    text(format!("{kind_str} {}", row.title)).size(12).into(),
+                    text(row.subtitle(now)).size(10).into(),
+                ])
+                .spacing(1);
 
-        vec![
-            text(usage).size(12).into(),
-            button::text(jobs_label)
-                .on_press(Message::ToggleDrawer(DrawerPage::Jobs))
-                .padding([4, 8])
-                .into(),
-            button::text("Sessions")
+                let job_card =
+                    container(item)
+                        .padding([4, 8])
+                        .width(Length::Fill)
+                        .style(|_theme| container::Style {
+                            background: Some(Color::from_rgb8(0x18, 0x1c, 0x21).into()),
+                            border: Border {
+                                color: Color::from_rgb8(0x28, 0x2c, 0x30),
+                                width: 1.0,
+                                radius: 4.0.into(),
+                            },
+                            ..Default::default()
+                        });
+
+                jobs_col_items.push(job_card.into());
+            }
+
+            let jobs_section =
+                container(column::with_children(jobs_col_items).spacing(4)).padding([6, 8]);
+            sidebar_items.push(jobs_section.into());
+        }
+
+        let footer_buttons = column::with_children(vec![
+            button::text("All Sessions (Ctrl+P)")
                 .on_press(Message::ToggleDrawer(DrawerPage::Sessions))
-                .padding([4, 8])
+                .width(Length::Fill)
+                .padding([6, 10])
                 .into(),
-            button::text("⚙ Settings")
+            button::text("Settings (Ctrl+,)")
                 .on_press(Message::ToggleDrawer(DrawerPage::Settings))
-                .padding([4, 8])
+                .width(Length::Fill)
+                .padding([6, 10])
                 .into(),
-        ]
-    }
+        ])
+        .spacing(4);
 
-    fn view(&self) -> Element<'_, Self::Message> {
+        let footer_container = container(footer_buttons).padding([8, 8, 8, 8]);
+        sidebar_items.push(footer_container.into());
+
+        let sidebar_column = column::with_children(sidebar_items)
+            .width(Length::Fixed(260.0))
+            .height(Length::Fill);
+
+        let sidebar = container(sidebar_column)
+            .height(Length::Fill)
+            .style(|_theme| container::Style {
+                background: Some(Color::from_rgb8(0x0d, 0x0f, 0x11).into()),
+                border: Border {
+                    color: Color::from_rgb8(0x24, 0x28, 0x2c),
+                    width: 1.0,
+                    radius: 0.0.into(),
+                },
+                ..Default::default()
+            });
+
+        // 2. Build Main Content Pane
         let mut main_items = Vec::new();
 
         if let Some(err) = &self.error_banner {
@@ -338,6 +489,51 @@ impl Application for OpenCodeCosmic {
         }
 
         if let Some(active_id) = &self.active_session_id {
+            let active_title = self
+                .sessions
+                .get(active_id)
+                .map(|s| s.title.as_str())
+                .unwrap_or(active_id.as_str());
+            let active_model = self.active_session_model_label();
+            let usage = self.active_context_usage();
+
+            let hint_str = if usage.is_empty() {
+                format!("Model: {active_model}")
+            } else {
+                format!("Model: {active_model} · {usage}")
+            };
+
+            let title_max = if self.active_drawer.is_some() { 20 } else { 38 };
+            let display_title = if active_title.chars().count() > title_max {
+                let s: String = active_title.chars().take(title_max - 1).collect();
+                format!("{s}…")
+            } else {
+                active_title.to_string()
+            };
+
+            let session_header = container(
+                row::with_children(vec![
+                    text(display_title).size(15).width(Length::Fill).into(),
+                    button::text(hint_str)
+                        .on_press(Message::ToggleDrawer(DrawerPage::Settings))
+                        .padding([3, 8])
+                        .into(),
+                ])
+                .align_y(Alignment::Center)
+                .padding([10, 20]),
+            )
+            .width(Length::Fill)
+            .style(|_theme| container::Style {
+                background: Some(Color::from_rgb8(0x13, 0x16, 0x19).into()),
+                border: Border {
+                    color: Color::from_rgb8(0x23, 0x27, 0x2c),
+                    width: 1.0,
+                    radius: 0.0.into(),
+                },
+                ..Default::default()
+            });
+
+            main_items.push(session_header.into());
             let conversation = self.conversations.get(active_id);
             let tray_items: Vec<TrayItem> =
                 conversation.map(|c| c.tray_items()).unwrap_or_default();
@@ -352,21 +548,222 @@ impl Application for OpenCodeCosmic {
                     }
 
                     let is_user = message.role == Role::User;
-                    let role_badge = if is_user { "You" } else { "OpenCode" };
+                    let role_text = if is_user { "YOU" } else { "AGENT" };
+
+                    let header_row = row::with_children(vec![
+                        text(role_text).size(11).width(Length::Fill).into(),
+                    ])
+                    .align_y(Alignment::Center);
 
                     let mut turn_items = Vec::new();
-                    turn_items.push(text(role_badge).size(12).into());
+                    turn_items.push(header_row.into());
 
-                    let rendered_content = message.render();
-                    if !rendered_content.is_empty() {
-                        turn_items.push(markdown::render_markdown(
-                            &rendered_content,
-                            Message::CopyText,
-                        ));
+                    for segment in message.segments() {
+                        match segment.kind {
+                            model::SegmentKind::Text => {
+                                if !segment.text.trim().is_empty() {
+                                    turn_items.push(markdown::render_markdown(
+                                        &segment.text,
+                                        Message::CopyText,
+                                    ));
+                                }
+                            }
+                            model::SegmentKind::Reasoning => {
+                                if !segment.text.trim().is_empty() {
+                                    let reasoning_header = text("◈ Thinking").size(11).into();
+                                    let reasoning_body = text(segment.text.trim()).size(13).into();
+                                    let reasoning_col = column::with_children(vec![
+                                        reasoning_header,
+                                        reasoning_body,
+                                    ])
+                                    .spacing(4);
+
+                                    let reasoning_box = container(reasoning_col)
+                                        .padding([8, 12])
+                                        .width(Length::Fill)
+                                        .style(|_theme| container::Style {
+                                            background: Some(
+                                                Color::from_rgba8(255, 255, 255, 0.02).into(),
+                                            ),
+                                            border: Border {
+                                                color: Color::from_rgb8(0x6f, 0x77, 0x80),
+                                                width: 1.0,
+                                                radius: 4.0.into(),
+                                            },
+                                            text_color: Some(Color::from_rgb8(0x8d, 0x95, 0x9d)),
+                                            ..Default::default()
+                                        });
+
+                                    turn_items.push(reasoning_box.into());
+                                }
+                            }
+                            model::SegmentKind::Tool => {
+                                let (name, status, command, output) = if let Some(tool) =
+                                    &segment.tool
+                                {
+                                    let (status_text, command_text, out_text) = match &tool.state {
+                                        protocol::ToolState::Completed {
+                                            input, content, ..
+                                        } => {
+                                            let cmd = input
+                                                .get("command")
+                                                .and_then(|v| v.as_str())
+                                                .unwrap_or(&segment.text);
+                                            let out = content.first().and_then(|c| match c {
+                                                protocol::ToolContent::Text { text } => {
+                                                    Some(text.as_str())
+                                                }
+                                                _ => None,
+                                            });
+                                            ("COMPLETED", cmd, out)
+                                        }
+                                        protocol::ToolState::Running { input, .. } => {
+                                            let cmd = input
+                                                .get("command")
+                                                .and_then(|v| v.as_str())
+                                                .unwrap_or(&segment.text);
+                                            ("RUNNING", cmd, None)
+                                        }
+                                        protocol::ToolState::Error { input, .. } => {
+                                            let cmd = input
+                                                .get("command")
+                                                .and_then(|v| v.as_str())
+                                                .unwrap_or(&segment.text);
+                                            ("ERROR", cmd, None)
+                                        }
+                                        protocol::ToolState::Streaming { .. }
+                                        | protocol::ToolState::Unknown => {
+                                            ("PENDING", segment.text.as_str(), None)
+                                        }
+                                    };
+                                    (tool.name.as_str(), status_text, command_text, out_text)
+                                } else {
+                                    ("tool", "COMPLETED", segment.text.as_str(), None)
+                                };
+
+                                let is_completed = status == "COMPLETED";
+                                let badge_color = if is_completed {
+                                    Color::from_rgb8(0x56, 0xd3, 0x64)
+                                } else {
+                                    Color::from_rgb8(0xe5, 0xb5, 0x67)
+                                };
+
+                                let tool_header = row::with_children(vec![
+                                    text(format!("⚙ {}", name.to_uppercase()))
+                                        .size(11)
+                                        .width(Length::Fill)
+                                        .into(),
+                                    container(text(status).size(10))
+                                        .padding([1, 6])
+                                        .style(move |_theme| container::Style {
+                                            background: Some(
+                                                Color::from_rgba8(255, 255, 255, 0.05).into(),
+                                            ),
+                                            border: Border {
+                                                color: badge_color,
+                                                width: 1.0,
+                                                radius: 4.0.into(),
+                                            },
+                                            text_color: Some(badge_color),
+                                            ..Default::default()
+                                        })
+                                        .into(),
+                                ])
+                                .align_y(Alignment::Center);
+
+                                let cmd_text =
+                                    text(command).font(cosmic::iced::Font::MONOSPACE).size(12);
+
+                                let mut tool_box_items = vec![tool_header.into(), cmd_text.into()];
+
+                                if let Some(out) = output {
+                                    let out_box = container(
+                                        text(out).font(cosmic::iced::Font::MONOSPACE).size(12),
+                                    )
+                                    .padding([6, 10])
+                                    .width(Length::Fill)
+                                    .style(|_theme| container::Style {
+                                        background: Some(Color::from_rgb8(0x0d, 0x0f, 0x11).into()),
+                                        border: Border {
+                                            color: Color::from_rgb8(0x24, 0x28, 0x2c),
+                                            width: 1.0,
+                                            radius: 4.0.into(),
+                                        },
+                                        text_color: Some(Color::from_rgb8(0x89, 0x91, 0x98)),
+                                        ..Default::default()
+                                    });
+                                    tool_box_items.push(out_box.into());
+                                }
+
+                                let tool_col = column::with_children(tool_box_items).spacing(6);
+
+                                let tool_card = container(tool_col)
+                                    .padding(10)
+                                    .width(Length::Fill)
+                                    .style(|_theme| container::Style {
+                                        background: Some(Color::from_rgb8(0x14, 0x17, 0x1a).into()),
+                                        border: Border {
+                                            color: Color::from_rgb8(0x28, 0x2c, 0x30),
+                                            width: 1.0,
+                                            radius: 6.0.into(),
+                                        },
+                                        ..Default::default()
+                                    });
+
+                                turn_items.push(tool_card.into());
+                            }
+                            model::SegmentKind::File => {
+                                let file_text = text(&segment.text).size(13);
+                                turn_items.push(file_text.into());
+                            }
+                        }
                     }
 
-                    let turn_col = column::with_children(turn_items).spacing(6);
-                    let card = container(turn_col).padding(12).width(Length::Fill);
+                    if let Some(error) = message.error() {
+                        let err_box = container(text(format!("⚠ Error: {error}")).size(13))
+                            .padding([8, 12])
+                            .width(Length::Fill)
+                            .style(|_theme| container::Style {
+                                background: Some(Color::from_rgba8(248, 81, 73, 0.08).into()),
+                                border: Border {
+                                    color: Color::from_rgba8(248, 81, 73, 0.32),
+                                    width: 1.0,
+                                    radius: 4.0.into(),
+                                },
+                                text_color: Some(Color::from_rgb8(248, 81, 73)),
+                                ..Default::default()
+                            });
+                        turn_items.push(err_box.into());
+                    }
+
+                    let turn_col = column::with_children(turn_items).spacing(8);
+
+                    let card = container(turn_col)
+                        .padding([14, 20])
+                        .width(Length::Fill)
+                        .style(move |_theme| {
+                            if is_user {
+                                container::Style {
+                                    background: Some(Color::from_rgb8(0x1c, 0x24, 0x2b).into()),
+                                    border: Border {
+                                        color: Color::from_rgba8(255, 255, 255, 0.08),
+                                        width: 1.0,
+                                        radius: 8.0.into(),
+                                    },
+                                    ..Default::default()
+                                }
+                            } else {
+                                container::Style {
+                                    background: Some(Color::from_rgb8(0x13, 0x16, 0x19).into()),
+                                    border: Border {
+                                        color: Color::from_rgba8(255, 255, 255, 0.04),
+                                        width: 1.0,
+                                        radius: 8.0.into(),
+                                    },
+                                    ..Default::default()
+                                }
+                            }
+                        });
 
                     message_elements.push(card.into());
                 }
@@ -374,13 +771,30 @@ impl Application for OpenCodeCosmic {
 
             if is_busy {
                 let busy_indicator = row::with_children(vec![
-                    text("⏳ OpenCode is thinking...").size(13).into(),
-                    button::text("Stop").on_press(Message::StopSession).into(),
+                    text("⟳ OpenCode is thinking...").size(13).into(),
+                    button::text("Stop")
+                        .padding([3, 8])
+                        .on_press(Message::StopSession)
+                        .into(),
                 ])
-                .spacing(8)
-                .padding(8);
+                .spacing(10)
+                .align_y(Alignment::Center);
 
-                message_elements.push(container(busy_indicator).padding(4).into());
+                let busy_card =
+                    container(busy_indicator)
+                        .padding([8, 14])
+                        .style(|_theme| container::Style {
+                            background: Some(Color::from_rgb8(0x18, 0x1c, 0x21).into()),
+                            border: Border {
+                                color: Color::from_rgb8(0x30, 0x35, 0x3a),
+                                width: 1.0,
+                                radius: 6.0.into(),
+                            },
+                            text_color: Some(Color::from_rgb8(0xe5, 0xb5, 0x67)),
+                            ..Default::default()
+                        });
+
+                message_elements.push(busy_card.into());
             }
 
             let message_list = column::with_children(message_elements)
@@ -403,6 +817,7 @@ impl Application for OpenCodeCosmic {
                             .width(Length::Fill)
                             .into(),
                         button::text("Clear all")
+                            .padding([2, 6])
                             .on_press(Message::TrayClear)
                             .into(),
                     ])
@@ -412,9 +827,9 @@ impl Application for OpenCodeCosmic {
 
                 for item in &tray_items {
                     let delivery_label = match item.delivery {
-                        protocol::Delivery::Steer => "Steer",
-                        protocol::Delivery::Queue => "Queue",
-                        _ => "Steer",
+                        protocol::Delivery::Steer => "STEER",
+                        protocol::Delivery::Queue => "QUEUE",
+                        _ => "STEER",
                     };
 
                     let preview_text = if item.text.len() > 60 {
@@ -423,24 +838,66 @@ impl Application for OpenCodeCosmic {
                         item.text.clone()
                     };
 
+                    let badge = container(text(delivery_label).size(10))
+                        .padding([2, 6])
+                        .style(|_theme| container::Style {
+                            background: Some(Color::from_rgb8(0xd2, 0x9b, 0x52).into()),
+                            border: Border {
+                                radius: 4.0.into(),
+                                ..Default::default()
+                            },
+                            text_color: Some(Color::from_rgb8(0x17, 0x13, 0x0e)),
+                            ..Default::default()
+                        });
+
                     let item_row = row::with_children(vec![
-                        text(delivery_label).size(12).into(),
+                        badge.into(),
                         text(preview_text).size(13).width(Length::Fill).into(),
                         button::text("Switch")
+                            .padding([2, 6])
                             .on_press(Message::TrayAction(item.id.clone(), RowAction::Switch))
                             .into(),
                         button::text("✕")
+                            .padding([2, 4])
                             .on_press(Message::TrayAction(item.id.clone(), RowAction::Cancel))
                             .into(),
                     ])
                     .spacing(8)
                     .align_y(Alignment::Center);
 
-                    tray_rows.push(container(item_row).padding(4).into());
+                    let item_card =
+                        container(item_row)
+                            .padding([4, 8])
+                            .style(|_theme| container::Style {
+                                background: Some(Color::from_rgb8(0x18, 0x1c, 0x21).into()),
+                                border: Border {
+                                    color: Color::from_rgb8(0x28, 0x2c, 0x30),
+                                    width: 1.0,
+                                    radius: 4.0.into(),
+                                },
+                                ..Default::default()
+                            });
+
+                    tray_rows.push(item_card.into());
                 }
 
-                let tray_col = column::with_children(tray_rows).spacing(4).padding(8);
-                main_items.push(container(tray_col).padding(4).into());
+                let tray_col = column::with_children(tray_rows).spacing(6);
+                let tray_container =
+                    container(tray_col)
+                        .padding(10)
+                        .width(Length::Fill)
+                        .style(|_theme| container::Style {
+                            background: Some(Color::from_rgb8(0x14, 0x17, 0x1a).into()),
+                            border: Border {
+                                color: Color::from_rgb8(0x2a, 0x2e, 0x32),
+                                width: 1.0,
+                                radius: 6.0.into(),
+                            },
+                            ..Default::default()
+                        });
+
+                let tray_outer = container(tray_container).padding([0, 16, 6, 16]);
+                main_items.push(tray_outer.into());
             }
 
             // Composer area
@@ -457,26 +914,39 @@ impl Application for OpenCodeCosmic {
                 .spacing(6)
             } else {
                 row::with_children(vec![
-                    button::text("Send")
+                    button::suggested("Send")
                         .on_press(Message::SendPrompt(SendMode::Send))
                         .into(),
                 ])
                 .spacing(6)
             };
 
-            let composer_row = row::with_children(vec![
-                text_input("Ask OpenCode...", &self.composer_text)
-                    .on_input(Message::ComposerInput)
-                    .on_submit(|_| Message::SendPrompt(SendMode::Send))
-                    .width(Length::Fill)
-                    .into(),
-                send_buttons.into(),
-            ])
-            .spacing(8)
-            .padding(12)
-            .align_y(Alignment::Center);
+            let composer_frame = container(
+                row::with_children(vec![
+                    text_input("Ask OpenCode...", &self.composer_text)
+                        .on_input(Message::ComposerInput)
+                        .on_submit(|_| Message::SendPrompt(SendMode::Send))
+                        .width(Length::Fill)
+                        .into(),
+                    send_buttons.into(),
+                ])
+                .spacing(8)
+                .padding([6, 10])
+                .align_y(Alignment::Center),
+            )
+            .width(Length::Fill)
+            .style(|_theme| container::Style {
+                background: Some(Color::from_rgb8(0x19, 0x1c, 0x1f).into()),
+                border: Border {
+                    color: Color::from_rgb8(0x30, 0x35, 0x3a),
+                    width: 1.0,
+                    radius: 8.0.into(),
+                },
+                ..Default::default()
+            });
 
-            main_items.push(container(composer_row).padding(4).into());
+            let composer_outer = container(composer_frame).padding([8, 16, 14, 16]);
+            main_items.push(composer_outer.into());
         } else {
             let empty_view = column::with_children(vec![
                 text("Welcome to OpenCode COSMIC").size(20).into(),
@@ -502,13 +972,27 @@ impl Application for OpenCodeCosmic {
             );
         }
 
-        let main_content = column::with_children(main_items)
+        let main_pane = column::with_children(main_items)
             .width(Length::Fill)
             .height(Length::Fill);
 
-        container(main_content)
+        let body = if self.sidebar_open {
+            row::with_children(vec![sidebar.into(), main_pane.into()])
+                .width(Length::Fill)
+                .height(Length::Fill)
+        } else {
+            row::with_children(vec![main_pane.into()])
+                .width(Length::Fill)
+                .height(Length::Fill)
+        };
+
+        container(body)
             .width(Length::Fill)
             .height(Length::Fill)
+            .style(|_theme| container::Style {
+                background: Some(Color::from_rgb8(0x10, 0x12, 0x14).into()),
+                ..Default::default()
+            })
             .into()
     }
 
@@ -523,17 +1007,7 @@ impl Application for OpenCodeCosmic {
                     .unwrap_or(0);
 
                 let mut list_items = Vec::new();
-                list_items.push(
-                    row::with_children(vec![
-                        text("Running Background Jobs")
-                            .size(16)
-                            .width(Length::Fill)
-                            .into(),
-                        button::text("✕").on_press(Message::CloseDrawer).into(),
-                    ])
-                    .align_y(Alignment::Center)
-                    .into(),
-                );
+                list_items.push(text("Running Background Jobs").size(16).into());
 
                 if job_rows.is_empty() {
                     list_items.push(
@@ -544,17 +1018,31 @@ impl Application for OpenCodeCosmic {
                 } else {
                     for row in job_rows {
                         let kind_str = match row.kind {
-                            JobKind::Subagent => "🤖 Subagent",
-                            JobKind::Shell => "🐚 Shell",
+                            JobKind::Subagent => "◈ Subagent",
+                            JobKind::Shell => ">_ Shell",
                         };
 
                         let item = column::with_children(vec![
-                            text(format!("{kind_str}: {}", row.title)).size(14).into(),
-                            text(row.subtitle(now)).size(12).into(),
+                            text(format!("{kind_str}: {}", row.title)).size(13).into(),
+                            text(row.subtitle(now)).size(11).into(),
                         ])
-                        .spacing(2);
+                        .spacing(3);
 
-                        list_items.push(container(item).padding(8).into());
+                        let job_card =
+                            container(item)
+                                .padding([8, 12])
+                                .width(Length::Fill)
+                                .style(|_theme| container::Style {
+                                    background: Some(Color::from_rgb8(0x18, 0x1c, 0x21).into()),
+                                    border: Border {
+                                        color: Color::from_rgb8(0x28, 0x2c, 0x30),
+                                        width: 1.0,
+                                        radius: 6.0.into(),
+                                    },
+                                    ..Default::default()
+                                });
+
+                        list_items.push(job_card.into());
                     }
                 }
 
@@ -710,17 +1198,31 @@ impl OpenCodeCosmic {
                 }
             }
             UiEvent::Bootstrap(Ok(bootstrap)) => {
-                for session in bootstrap.sessions {
-                    self.sessions.insert(session.id.clone(), session);
+                for session in &bootstrap.sessions {
+                    self.sessions.insert(session.id.clone(), session.clone());
                 }
 
-                for (id, st) in bootstrap.statuses {
+                for (id, st) in &bootstrap.statuses {
                     if st.is_busy() {
-                        self.statuses.insert(id, RunStatus::Busy);
+                        self.statuses.insert(id.clone(), RunStatus::Busy);
                     } else {
-                        self.statuses.insert(id, RunStatus::Idle);
+                        self.statuses.insert(id.clone(), RunStatus::Idle);
                     }
                 }
+
+                let roots: Vec<Session> = self.sessions.values().cloned().collect();
+                let ctx = jobs::Context {
+                    roots: &roots,
+                    directories: &[],
+                };
+                let active_statuses: HashSet<String> = bootstrap
+                    .statuses
+                    .iter()
+                    .filter(|(_, st)| st.is_busy())
+                    .map(|(id, _)| id.clone())
+                    .collect();
+                self.jobs
+                    .apply_snapshot(Some(&active_statuses), bootstrap.shells, &ctx);
 
                 if self.tabs.is_empty() {
                     let mut roots: Vec<_> = self
@@ -844,13 +1346,19 @@ impl OpenCodeCosmic {
 
     fn set_active_session(&mut self, id: &str) {
         self.active_session_id = Some(id.to_string());
-        if !self.conversations.contains_key(id)
-            && let Some(api) = &self.api
-        {
-            api.send(Command::LoadMessages {
-                session_id: id.to_string(),
-                cursor: None,
-            });
+        if !self.conversations.contains_key(id) {
+            if let Some(api) = &self.api {
+                api.send(Command::LoadMessages {
+                    session_id: id.to_string(),
+                    cursor: None,
+                });
+            } else if let Some(mock) = &mut self.mock_server {
+                let event = mock.handle(Command::LoadMessages {
+                    session_id: id.to_string(),
+                    cursor: None,
+                });
+                self.handle_ui_event(event);
+            }
         }
     }
 
