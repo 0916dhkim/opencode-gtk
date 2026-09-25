@@ -101,8 +101,8 @@
 @define-color oc_bg_prompt_detail #efede8;
 @define-color oc_fg_prompt_detail #34312d;
 @define-color oc_fg_prompt_metadata #626764;
-@define-color oc_border_question_section #cbc7bf;
-@define-color oc_bg_question_section #f0eee9;
+@define-color oc_border_form_notice #cbc7bf;
+@define-color oc_bg_form_notice #f0eee9;
 @define-color oc_fg_question_header #8b5918;
 @define-color oc_bg_button_suggested_action #d29b52;
 @define-color oc_fg_button_suggested_action #17130e;

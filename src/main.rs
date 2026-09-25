@@ -2,6 +2,7 @@ mod api;
 mod credentials;
 mod markdown;
 mod model;
+mod pending;
 mod persist;
 mod preview;
 mod protocol;

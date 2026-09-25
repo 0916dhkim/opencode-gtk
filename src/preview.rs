@@ -3,8 +3,9 @@ use std::collections::{HashMap, HashSet};
 use serde_json::{json, Value};
 
 use crate::{
-    api::{Bootstrap, Command, MessagePage, ServerEnvelope, UiEvent},
+    api::{Bootstrap, Command, MessagePage, ServerEnvelope, Settled, UiEvent},
     model::{ModelCatalog, Project, RunStatus, Session, SessionModel},
+    pending::{PendingForm, PendingRequest, PendingSnapshot},
     persist::{PersistedTab, ServerState},
     protocol,
 };
@@ -44,6 +45,8 @@ pub struct State {
     next_id: u64,
     /// Canned `/api/event` events produced by the last command.
     server_events: Vec<Value>,
+    /// Pending permissions and forms, until answered or cancelled.
+    pending: Vec<PendingRequest>,
 }
 
 impl State {
@@ -56,12 +59,18 @@ impl State {
             messages,
             next_id: 1,
             server_events: Vec::new(),
+            pending: canned_pending(),
         }
     }
 
     pub fn handle(&mut self, command: Command) -> UiEvent {
         match command {
-            Command::Bootstrap => UiEvent::Bootstrap(Ok(self.bootstrap())),
+            Command::Bootstrap { .. } => UiEvent::Bootstrap(Ok(self.bootstrap())),
+            Command::LoadPending { .. } => UiEvent::PendingLoaded(PendingSnapshot {
+                requests: self.pending.clone(),
+                complete: true,
+                warnings: Vec::new(),
+            }),
             Command::LoadMessages { session_id, cursor } => UiEvent::MessagesLoaded {
                 result: Ok(self.message_page(&session_id, cursor.as_deref())),
                 session_id,
@@ -126,11 +135,13 @@ impl State {
                 session_id,
                 result: Ok(()),
             },
-            Command::ReplyPermission { request_id, .. }
-            | Command::ReplyQuestion { request_id, .. }
-            | Command::RejectQuestion { request_id, .. } => UiEvent::ActionFinished {
+            Command::ReplyPermission { request_id, .. } => UiEvent::PermissionReplied {
+                result: Ok(self.settle(&request_id)),
                 request_id,
-                result: Ok(()),
+            },
+            Command::CancelForm { form_id, .. } => UiEvent::FormCancelled {
+                result: Ok(self.settle(&form_id)),
+                form_id,
             },
         }
     }
@@ -153,11 +164,20 @@ impl State {
             })))],
             statuses,
             statuses_complete: true,
-            pending: Vec::new(),
-            // Matches the real client until pending recovery is ported.
-            pending_complete: false,
+            pending: self.pending.clone(),
+            pending_complete: true,
             retry_needed: false,
             warnings: Vec::new(),
+        }
+    }
+
+    fn settle(&mut self, id: &str) -> Settled {
+        let before = self.pending.len();
+        self.pending.retain(|request| request.id() != id);
+        if self.pending.len() == before {
+            Settled::AlreadyResolved
+        } else {
+            Settled::Done
         }
     }
 
@@ -318,6 +338,34 @@ impl State {
             })
             .collect()
     }
+}
+
+/// One permission for the background tab (so the active composer stays
+/// usable until that tab is opened) and one form notice for the active one.
+fn canned_pending() -> Vec<PendingRequest> {
+    vec![
+        PendingRequest::Permission {
+            directory: DIRECTORY.into(),
+            request: decode(json!({
+                "id": "per_preview",
+                "sessionID": OTHER_ID,
+                "action": "shell",
+                "resources": ["ssh -N -L 4096:127.0.0.1:4096 host"],
+                "save": ["ssh *"],
+                "metadata": { "description": "Open the tunnel" },
+                "source": { "type": "tool", "messageID": "msg_other_assistant", "id": "call_preview_ssh" }
+            })),
+        },
+        PendingRequest::Form(PendingForm {
+            form: decode(json!({
+                "id": "frm_preview",
+                "sessionID": ACTIVE_ID,
+                "title": "Choose a padding",
+                "fields": [{ "key": "px", "type": "integer", "title": "Pixels" }]
+            })),
+            directory: Some(DIRECTORY.into()),
+        }),
+    ]
 }
 
 /// Canned `GET /api/model` and `/api/model/default`, built through the same
@@ -636,6 +684,51 @@ mod tests {
             Some(&RunStatus::Idle)
         );
         assert!(state.take_server_events().is_empty());
+    }
+
+    #[test]
+    fn canned_requests_settle_once() {
+        let mut state = State::new();
+        let bootstrap = state.bootstrap();
+        assert!(bootstrap.pending_complete);
+        assert_eq!(bootstrap.pending.len(), 2);
+        let event = state.handle(Command::ReplyPermission {
+            request_id: "per_preview".into(),
+            session_id: OTHER_ID.into(),
+            decision: protocol::PermissionDecision::Once,
+        });
+        assert!(matches!(
+            event,
+            UiEvent::PermissionReplied {
+                result: Ok(Settled::Done),
+                ..
+            }
+        ));
+        let event = state.handle(Command::CancelForm {
+            form_id: "frm_preview".into(),
+            session_id: ACTIVE_ID.into(),
+            directory: None,
+        });
+        assert!(matches!(
+            event,
+            UiEvent::FormCancelled {
+                result: Ok(Settled::Done),
+                ..
+            }
+        ));
+        let again = state.handle(Command::CancelForm {
+            form_id: "frm_preview".into(),
+            session_id: ACTIVE_ID.into(),
+            directory: None,
+        });
+        assert!(matches!(
+            again,
+            UiEvent::FormCancelled {
+                result: Ok(Settled::AlreadyResolved),
+                ..
+            }
+        ));
+        assert!(state.bootstrap().pending.is_empty());
     }
 
     #[test]

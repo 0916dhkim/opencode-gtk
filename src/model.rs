@@ -1656,13 +1656,6 @@ fn push_transcript_row(
     );
 }
 
-pub fn event_data(payload: &Value) -> &Value {
-    payload
-        .get("properties")
-        .or_else(|| payload.get("data"))
-        .unwrap_or(&Value::Null)
-}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RunStatus {
     Idle,

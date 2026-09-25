@@ -1,6 +1,6 @@
 use std::{
     cell::{Cell, RefCell},
-    collections::{HashMap, HashSet},
+    collections::{BTreeSet, HashMap, HashSet},
     fs,
     io::Write,
     path::PathBuf,
@@ -16,16 +16,17 @@ use serde::Deserialize;
 use crate::{
     api::{
         self, ApiConfig, ApiHandle, Bootstrap, Command, MessageLoadError, MessagePage,
-        ServerEnvelope, UiEvent,
+        ServerEnvelope, Settled, UiEvent,
     },
     credentials::{self, CloudflareAccessCredentials},
     markdown,
     model::{
-        displayed_model, event_data, event_run_status, format_context_usage, model_switch_for_pick,
+        displayed_model, event_run_status, format_context_usage, model_switch_for_pick,
         run_status_change, CatalogInvalidation, Conversation, DebugCommand, ModelCatalog,
         ModelOption, ModelSelection, Project, RunStatus, Session, SessionChange, SessionModel,
         SessionTime,
     },
+    pending::{self, PendingChange, PendingRequest, PendingSnapshot},
     persist::{default_path, ConnectionSettings, PersistedState, PersistedTab, ServerState},
     protocol,
 };
@@ -151,13 +152,6 @@ struct OptimisticPrompt {
     accepted: bool,
 }
 
-#[derive(Clone)]
-struct QuestionInputs {
-    options: Vec<(gtk::CheckButton, String)>,
-    custom: Option<gtk::Entry>,
-    multiple: bool,
-}
-
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum AppModalKind {
     Sessions,
@@ -172,11 +166,26 @@ struct ModelSwitch {
     model: ModelSelection,
 }
 
+/// A blocking prompt that replaces the composer (permission requests).
+/// `session_id` is the session whose composer it replaces; `None` shows it
+/// whatever session is active.
 #[derive(Clone)]
 struct ComposerPrompt {
     request_id: String,
     session_id: Option<String>,
+    directory: String,
     widget: gtk::Widget,
+    /// Receives keyboard focus when the prompt is shown.
+    focus: gtk::Widget,
+}
+
+/// A pending-list reconciliation in flight: the requests open when it
+/// started (only those may be dismissed) and the ones resolved meanwhile
+/// (never re-shown from its stale list).
+#[derive(Default)]
+struct PendingReload {
+    at_start: HashSet<String>,
+    resolved: HashSet<String>,
 }
 
 #[derive(Default)]
@@ -335,6 +344,10 @@ struct Widgets {
     transcript_spinner: gtk::Spinner,
     transcript_status_label: gtk::Label,
     load_earlier: gtk::Button,
+    form_notice: gtk::Box,
+    form_notice_label: gtk::Label,
+    form_notice_cancel: gtk::Button,
+    form_notice_open: gtk::Button,
     composer_stack: gtk::Stack,
     prompt_host: gtk::Box,
     composer: gtk::TextView,
@@ -421,7 +434,9 @@ struct Controller {
     empty_catalog_retry_scheduled: HashSet<String>,
     bootstrap_pending: bool,
     bootstrap_reload_pending: bool,
-    bootstrap_dialogs_at_start: HashSet<String>,
+    /// Permission and form IDs open when the bootstrap started; only those
+    /// may be dismissed by its (complete) pending lists.
+    bootstrap_requests_at_start: HashSet<String>,
     bootstrap_retry_token: u64,
     bootstrap_retry_delay: Duration,
     self_weak: Weak<RefCell<Controller>>,
@@ -429,6 +444,13 @@ struct Controller {
     pending_actions: HashSet<String>,
     composer_prompts: Vec<ComposerPrompt>,
     shown_composer_prompt: Option<String>,
+    pending_reload: Option<PendingReload>,
+    pending_reload_again: bool,
+    forms: pending::Forms,
+    /// Forms whose cancel request is in flight.
+    form_cancels: HashSet<String>,
+    /// Child session → parent session, from `subagent` tool metadata.
+    child_parents: HashMap<String, String>,
     app_modal: Option<AppModalKind>,
     app_modal_focus: Option<gtk::Widget>,
     session_picker: Option<(gtk::ListBox, gtk::Entry)>,
@@ -890,7 +912,7 @@ pub fn launch(
         empty_catalog_retry_scheduled: HashSet::new(),
         bootstrap_pending: true,
         bootstrap_reload_pending: false,
-        bootstrap_dialogs_at_start: HashSet::new(),
+        bootstrap_requests_at_start: HashSet::new(),
         bootstrap_retry_token: 1,
         bootstrap_retry_delay: BOOTSTRAP_RETRY_MIN,
         self_weak: Weak::new(),
@@ -898,6 +920,11 @@ pub fn launch(
         pending_actions: HashSet::new(),
         composer_prompts: Vec::new(),
         shown_composer_prompt: None,
+        pending_reload: None,
+        pending_reload_again: false,
+        forms: pending::Forms::default(),
+        form_cancels: HashSet::new(),
+        child_parents: HashMap::new(),
         app_modal: None,
         app_modal_focus: None,
         session_picker: None,
@@ -953,7 +980,7 @@ pub fn launch(
         gtk::prelude::GtkWindowExt::set_focus(&widgets.window, Some(&widgets.new_button));
         widgets.window.present();
     }
-    controller.borrow().api.send(Command::Bootstrap);
+    controller.borrow().send_bootstrap();
 
     let close_controller = Rc::downgrade(&controller);
     controller
@@ -1485,6 +1512,32 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
     composer_stack.add_named(&composer_frame, Some("composer"));
     composer_stack.add_named(&prompt_frame, Some("prompt"));
     composer_stack.set_visible_child_name("composer");
+
+    // Forms are never filled in here: a one-line notice above the composer
+    // (which stays usable) offers Cancel and the server's web UI.
+    let form_notice = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    form_notice.add_css_class("form-notice");
+    form_notice.set_margin_start(18);
+    form_notice.set_margin_end(18);
+    form_notice.set_margin_bottom(8);
+    form_notice.set_visible(false);
+    let form_notice_label = gtk::Label::new(None);
+    form_notice_label.set_xalign(0.0);
+    form_notice_label.set_hexpand(true);
+    form_notice_label.set_ellipsize(pango::EllipsizeMode::End);
+    form_notice_label.add_css_class("form-notice-label");
+    let form_notice_open = gtk::Button::with_label("Open web UI");
+    form_notice_open.add_css_class("flat");
+    form_notice_open.set_tooltip_text(Some("Answer it in the server's web UI"));
+    let form_notice_cancel = gtk::Button::with_label("Cancel");
+    form_notice_cancel.set_tooltip_text(Some(&format!(
+        "Cancel this form ({})",
+        pending::CANCEL_FORM_SHORTCUT
+    )));
+    form_notice.append(&form_notice_label);
+    form_notice.append(&form_notice_open);
+    form_notice.append(&form_notice_cancel);
+    main.append(&form_notice);
     main.append(&composer_stack);
     root.set_end_child(Some(&main));
 
@@ -1597,6 +1650,10 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
         transcript_spinner,
         transcript_status_label,
         load_earlier,
+        form_notice,
+        form_notice_label,
+        form_notice_cancel,
+        form_notice_open,
         composer_stack,
         prompt_host,
         composer,
@@ -2619,6 +2676,12 @@ fn wire_callbacks(controller: &Rc<RefCell<Controller>>) {
         if !modifiers.contains(gdk::ModifierType::CONTROL_MASK) {
             return glib::Propagation::Proceed;
         }
+        if matches!(key, gdk::Key::x | gdk::Key::X)
+            && modifiers.contains(gdk::ModifierType::SHIFT_MASK)
+        {
+            Controller::cancel_shown_form(&controller);
+            return glib::Propagation::Stop;
+        }
         match key {
             gdk::Key::b | gdk::Key::B => controller.borrow().toggle_sidebar(),
             gdk::Key::m | gdk::Key::M => {
@@ -2679,6 +2742,27 @@ fn wire_callbacks(controller: &Rc<RefCell<Controller>>) {
     controller
         .borrow()
         .widgets
+        .form_notice_cancel
+        .connect_clicked(move |_| {
+            if let Some(controller) = weak.upgrade() {
+                Controller::cancel_shown_form(&controller);
+            }
+        });
+    let weak = Rc::downgrade(controller);
+    controller
+        .borrow()
+        .widgets
+        .form_notice_open
+        .connect_clicked(move |_| {
+            if let Some(controller) = weak.upgrade() {
+                controller.borrow_mut().open_web_ui();
+            }
+        });
+
+    let weak = Rc::downgrade(controller);
+    controller
+        .borrow()
+        .widgets
         .window
         .connect_notify_local(Some("is-active"), move |window, _| {
             if window.is_active() {
@@ -2706,7 +2790,7 @@ impl Controller {
                                 this.bootstrap_reload_pending = true;
                             } else {
                                 this.begin_bootstrap();
-                                commands.push(Command::Bootstrap);
+                                commands.push(this.bootstrap_command());
                             }
                             let loaded_sessions: Vec<_> = this
                                 .state
@@ -2776,13 +2860,13 @@ impl Controller {
                         if this.bootstrap_reload_pending {
                             this.bootstrap_reload_pending = false;
                             this.begin_bootstrap();
-                            Some(this.api.clone())
+                            Some((this.api.clone(), this.bootstrap_command()))
                         } else {
                             None
                         }
                     };
-                    if let Some(api) = retry_immediately {
-                        api.send(Command::Bootstrap);
+                    if let Some((api, command)) = retry_immediately {
+                        api.send(command);
                     } else {
                         Self::schedule_bootstrap_retry(controller);
                     }
@@ -2988,19 +3072,53 @@ impl Controller {
                     Err(error) => this.show_error(&error),
                 }
             }
-            UiEvent::ActionFinished { request_id, result } => {
-                let mut this = controller.borrow_mut();
-                this.pending_actions.remove(&request_id);
-                match result {
-                    Ok(()) => this.remove_composer_prompt(&request_id),
-                    Err(error) => {
-                        if let Some(dialog) = this.dialogs.get(&request_id) {
-                            dialog.set_sensitive(true);
+            UiEvent::PermissionReplied { request_id, result } => {
+                let reload = {
+                    let mut this = controller.borrow_mut();
+                    this.pending_actions.remove(&request_id);
+                    match result {
+                        Ok(settled) => {
+                            this.resolve_request(&request_id);
+                            (settled == Settled::AlreadyResolved)
+                                .then(|| this.pending_reload_command())
+                                .flatten()
                         }
-                        this.show_error(&error);
+                        Err(error) => {
+                            if let Some(dialog) = this.dialogs.get(&request_id) {
+                                dialog.set_sensitive(true);
+                            }
+                            this.show_error(&format!("Could not answer the permission: {error}"));
+                            None
+                        }
                     }
+                };
+                if let Some(command) = reload {
+                    controller.borrow().api.send(command);
                 }
             }
+            UiEvent::FormCancelled { form_id, result } => {
+                let reload = {
+                    let mut this = controller.borrow_mut();
+                    this.form_cancels.remove(&form_id);
+                    match result {
+                        Ok(settled) => {
+                            this.resolve_request(&form_id);
+                            (settled == Settled::AlreadyResolved)
+                                .then(|| this.pending_reload_command())
+                                .flatten()
+                        }
+                        Err(error) => {
+                            this.show_error(&format!("Could not cancel the form: {error}"));
+                            this.refresh_form_notice();
+                            None
+                        }
+                    }
+                };
+                if let Some(command) = reload {
+                    controller.borrow().api.send(command);
+                }
+            }
+            UiEvent::PendingLoaded(snapshot) => Self::apply_pending_reload(controller, snapshot),
             UiEvent::ServerEvent(event) => Self::enqueue_server_event(controller, event),
         }
     }
@@ -3008,7 +3126,155 @@ impl Controller {
     fn begin_bootstrap(&mut self) {
         self.bootstrap_pending = true;
         self.bootstrap_retry_token += 1;
-        self.bootstrap_dialogs_at_start = self.dialogs.keys().cloned().collect();
+        self.bootstrap_requests_at_start = self.open_request_ids();
+    }
+
+    fn bootstrap_command(&self) -> Command {
+        Command::Bootstrap {
+            directories: self.pending_directories(),
+        }
+    }
+
+    fn send_bootstrap(&self) {
+        self.api.send(self.bootstrap_command());
+    }
+
+    /// Open permission prompts and pending forms.
+    fn open_request_ids(&self) -> HashSet<String> {
+        self.dialogs
+            .keys()
+            .cloned()
+            .chain(self.forms.ids().map(str::to_owned))
+            .collect()
+    }
+
+    /// Every location whose pending permissions and forms matter: projects,
+    /// known sessions, open tabs, and the locations of open prompts (so a
+    /// complete result can dismiss them).
+    fn pending_directories(&self) -> Vec<String> {
+        let directories: BTreeSet<&str> = self
+            .state
+            .projects
+            .iter()
+            .map(|project| project.worktree.as_str())
+            .chain(
+                self.state
+                    .sessions
+                    .iter()
+                    .map(|session| session.directory.as_str()),
+            )
+            .chain(
+                self.composer_prompts
+                    .iter()
+                    .map(|prompt| prompt.directory.as_str()),
+            )
+            .chain(self.forms.directories())
+            .filter(|directory| !directory.is_empty())
+            .collect();
+        directories.into_iter().map(str::to_owned).collect()
+    }
+
+    /// Starts reconciling the pending lists, e.g. after a reply found its
+    /// request already gone. Coalesced while one is in flight.
+    fn pending_reload_command(&mut self) -> Option<Command> {
+        if self.pending_reload.is_some() {
+            self.pending_reload_again = true;
+            return None;
+        }
+        self.pending_reload = Some(PendingReload {
+            at_start: self.open_request_ids(),
+            resolved: HashSet::new(),
+        });
+        Some(Command::LoadPending {
+            directories: self.pending_directories(),
+        })
+    }
+
+    fn apply_pending_reload(controller: &Rc<RefCell<Self>>, snapshot: PendingSnapshot) {
+        let reload = {
+            let mut this = controller.borrow_mut();
+            let Some(reload) = this.pending_reload.take() else {
+                return;
+            };
+            if let Some(warning) = snapshot.warnings.first() {
+                this.show_error(warning);
+            }
+            reload
+        };
+        Self::apply_pending_snapshot(
+            controller,
+            snapshot.requests,
+            snapshot.complete,
+            &reload.at_start,
+            &reload.resolved,
+        );
+        let again = {
+            let mut this = controller.borrow_mut();
+            std::mem::take(&mut this.pending_reload_again)
+                .then(|| this.pending_reload_command())
+                .flatten()
+        };
+        if let Some(command) = again {
+            controller.borrow().api.send(command);
+        }
+    }
+
+    /// Applies recovered pending lists. Requests resolved while the lists were
+    /// loading are skipped; when every list loaded, requests that were open
+    /// at the start and are missing now were resolved elsewhere and go away.
+    /// A partial result never dismisses anything (P4). Recovered requests
+    /// take the same path as live `permission.asked` / `form.created`.
+    fn apply_pending_snapshot(
+        controller: &Rc<RefCell<Self>>,
+        requests: Vec<PendingRequest>,
+        complete: bool,
+        at_start: &HashSet<String>,
+        resolved: &HashSet<String>,
+    ) {
+        let requests: Vec<_> = requests
+            .into_iter()
+            .filter(|request| !resolved.contains(request.id()))
+            .collect();
+        let mut permissions = Vec::new();
+        {
+            let mut this = controller.borrow_mut();
+            if complete {
+                let current: HashSet<&str> = requests.iter().map(PendingRequest::id).collect();
+                for id in at_start.iter().filter(|id| !current.contains(id.as_str())) {
+                    this.remove_composer_prompt(id);
+                    this.forms.remove(id);
+                    this.form_cancels.remove(id);
+                }
+            }
+            for request in requests {
+                match request {
+                    PendingRequest::Permission { directory, request } => {
+                        permissions.push((Some(directory), request));
+                    }
+                    PendingRequest::Form(form) => this.forms.upsert(form),
+                }
+            }
+            this.refresh_form_notice();
+        }
+        for (directory, request) in permissions {
+            Self::show_permission(controller, directory, request);
+        }
+    }
+
+    /// A permission or form was answered, cancelled or found already gone.
+    fn resolve_request(&mut self, id: &str) {
+        if self.bootstrap_pending {
+            self.resolved_requests_during_bootstrap
+                .insert(id.to_owned());
+        }
+        if let Some(reload) = &mut self.pending_reload {
+            reload.resolved.insert(id.to_owned());
+        }
+        self.remove_composer_prompt(id);
+        self.form_cancels.remove(id);
+        if self.forms.remove(id) {
+            self.refresh_form_notice();
+        }
     }
 
     fn schedule_bootstrap_retry(controller: &Rc<RefCell<Self>>) {
@@ -3025,29 +3291,33 @@ impl Controller {
             let Some(controller) = weak.upgrade() else {
                 return;
             };
-            let api = {
+            let (api, command) = {
                 let mut this = controller.borrow_mut();
                 if this.bootstrap_retry_token != token || this.bootstrap_pending {
                     return;
                 }
                 this.begin_bootstrap();
-                this.api.clone()
+                (this.api.clone(), this.bootstrap_command())
             };
-            api.send(Command::Bootstrap);
+            api.send(command);
         });
     }
 
     fn apply_bootstrap(controller: &Rc<RefCell<Self>>, bootstrap: Bootstrap) {
-        let mut pending = bootstrap.pending;
+        let pending = bootstrap.pending;
         let pending_complete = bootstrap.pending_complete;
         let statuses_complete = bootstrap.statuses_complete;
         let retry_needed = bootstrap.retry_needed;
         let warnings = bootstrap.warnings;
         let mut api_commands = Vec::new();
         let mut retry_immediately = None;
+        let requests_at_start;
+        let resolved_requests;
         {
             let mut this = controller.borrow_mut();
             this.bootstrap_pending = false;
+            requests_at_start = std::mem::take(&mut this.bootstrap_requests_at_start);
+            resolved_requests = std::mem::take(&mut this.resolved_requests_during_bootstrap);
             let partial_refresh = !warnings.is_empty();
             let persistence_failed = this.persistence_error.is_some();
             let credentials_failed = this.credential_warning.is_some();
@@ -3131,33 +3401,6 @@ impl Controller {
                 }
             }
             this.apply_missed_idle(statuses_complete);
-            let resolved = std::mem::take(&mut this.resolved_requests_during_bootstrap);
-            pending.retain(|event| {
-                event_data(&event.payload)
-                    .get("id")
-                    .and_then(serde_json::Value::as_str)
-                    .is_none_or(|id| !resolved.contains(id))
-            });
-            if pending_complete {
-                let pending_ids: HashSet<_> = pending
-                    .iter()
-                    .filter_map(|event| {
-                        event_data(&event.payload)
-                            .get("id")
-                            .and_then(serde_json::Value::as_str)
-                            .map(str::to_owned)
-                    })
-                    .collect();
-                let resolved_dialogs: Vec<_> = this
-                    .bootstrap_dialogs_at_start
-                    .iter()
-                    .filter(|id| !pending_ids.contains(*id))
-                    .cloned()
-                    .collect();
-                for id in resolved_dialogs {
-                    this.remove_composer_prompt(&id);
-                }
-            }
             let known: HashSet<_> = this
                 .state
                 .sessions
@@ -3235,7 +3478,7 @@ impl Controller {
             if this.bootstrap_reload_pending {
                 this.bootstrap_reload_pending = false;
                 this.begin_bootstrap();
-                retry_immediately = Some(this.api.clone());
+                retry_immediately = Some((this.api.clone(), this.bootstrap_command()));
             }
             this.persist_state();
         }
@@ -3247,9 +3490,20 @@ impl Controller {
         if let Some(active) = active {
             Self::activate_tab(controller, &active);
         }
-        Self::enqueue_bootstrap_events(controller, pending);
-        if let Some(api) = retry_immediately {
-            api.send(Command::Bootstrap);
+        Self::apply_pending_snapshot(
+            controller,
+            pending,
+            pending_complete,
+            &requests_at_start,
+            &resolved_requests,
+        );
+        if retry_immediately.is_some() {
+            // The follow-up bootstrap may also dismiss what was just recovered.
+            let mut this = controller.borrow_mut();
+            this.bootstrap_requests_at_start = this.open_request_ids();
+        }
+        if let Some((api, command)) = retry_immediately {
+            api.send(command);
         } else if retry_needed {
             Self::schedule_bootstrap_retry(controller);
         }
@@ -3371,28 +3625,9 @@ impl Controller {
         });
     }
 
-    fn enqueue_bootstrap_events(controller: &Rc<RefCell<Self>>, mut events: Vec<ServerEnvelope>) {
-        if events.is_empty() {
-            return;
-        }
-        let mut this = controller.borrow_mut();
-        events.append(&mut this.pending_events);
-        this.pending_events = events;
-        if this.event_flush_scheduled {
-            return;
-        }
-        this.event_flush_scheduled = true;
-        let weak = Rc::downgrade(controller);
-        glib::timeout_add_local_once(STREAM_FRAME, move || {
-            if let Some(controller) = weak.upgrade() {
-                Self::flush_server_events(&controller);
-            }
-        });
-    }
-
     fn flush_server_events(controller: &Rc<RefCell<Self>>) {
         let mut permission_events = Vec::new();
-        let mut question_events = Vec::new();
+        let mut forms_changed = false;
         let mut resolved_requests = HashSet::new();
         let mut effects = FlushEffects::default();
         let mut this = controller.borrow_mut();
@@ -3429,31 +3664,27 @@ impl Controller {
                 if let Some(invalidation) = CatalogInvalidation::from_kind(event, kind) {
                     effects.catalog_invalidations.push(invalidation);
                 }
-            }
-            match payload.get("type").and_then(serde_json::Value::as_str) {
-                Some("permission.asked") | Some("permission.updated") => {
-                    permission_events.push((directory, payload));
+                if let Some((child, parent)) = pending::subagent_child(kind) {
+                    this.child_parents.insert(child, parent);
                 }
-                Some("question.asked") => question_events.push((directory, payload)),
-                Some("permission.replied")
-                | Some("question.replied")
-                | Some("question.rejected") => {
-                    let data = event_data(&payload);
-                    if let Some(request_id) = data
-                        .get("requestID")
-                        .or_else(|| data.get("permissionID"))
-                        .and_then(serde_json::Value::as_str)
-                    {
-                        resolved_requests.insert(request_id.to_owned());
-                        if this.bootstrap_pending {
-                            this.resolved_requests_during_bootstrap
-                                .insert(request_id.to_owned());
-                        }
-                        this.remove_composer_prompt(request_id);
+                match pending::pending_change(kind, directory.as_deref()) {
+                    Some(PendingChange::Permission { directory, request }) => {
+                        permission_events.push((directory, request));
                     }
+                    Some(PendingChange::Form(form)) => {
+                        this.forms.upsert(form);
+                        forms_changed = true;
+                    }
+                    Some(PendingChange::Resolved(id)) => {
+                        this.resolve_request(&id);
+                        resolved_requests.insert(id);
+                    }
+                    None => {}
                 }
-                _ => {}
             }
+        }
+        if forms_changed {
+            this.refresh_form_notice();
         }
         let catalog_invalidations = std::mem::take(&mut effects.catalog_invalidations);
         if catalog_invalidations.iter().any(|change| change.shutdown) {
@@ -3461,23 +3692,13 @@ impl Controller {
                 this.bootstrap_reload_pending = true;
             } else {
                 this.begin_bootstrap();
-                effects.api_commands.push(Command::Bootstrap);
+                let command = this.bootstrap_command();
+                effects.api_commands.push(command);
             }
         }
         let catalog_reloads = this.invalidate_catalogs(&catalog_invalidations);
         effects.api_commands.extend(catalog_reloads);
-        permission_events.retain(|(_, payload)| {
-            event_data(payload)
-                .get("id")
-                .and_then(serde_json::Value::as_str)
-                .is_none_or(|id| !resolved_requests.contains(id))
-        });
-        question_events.retain(|(_, payload)| {
-            event_data(payload)
-                .get("id")
-                .and_then(serde_json::Value::as_str)
-                .is_none_or(|id| !resolved_requests.contains(id))
-        });
+        permission_events.retain(|(_, request)| !resolved_requests.contains(&request.id));
         let FlushEffects {
             api_commands,
             persist_unread,
@@ -3519,11 +3740,8 @@ impl Controller {
         for command in api_commands {
             controller.borrow().api.send(command);
         }
-        for (directory, payload) in permission_events {
-            Self::show_permission(controller, directory, payload);
-        }
-        for (directory, payload) in question_events {
-            Self::show_question(controller, directory, payload);
+        for (directory, request) in permission_events {
+            Self::show_permission(controller, directory, request);
         }
     }
 
@@ -4089,6 +4307,64 @@ impl Controller {
         self.refresh_send_button();
         self.refresh_context_usage();
         self.refresh_composer_prompt();
+        self.refresh_form_notice();
+    }
+
+    /// The one-line form notice for the active session (plus global forms).
+    fn refresh_form_notice(&mut self) {
+        let notice = self
+            .forms
+            .notice(self.state.active.as_deref(), &self.child_parents);
+        let Some(notice) = notice else {
+            self.widgets.form_notice.set_visible(false);
+            return;
+        };
+        let label = &self.widgets.form_notice_label;
+        label.set_label(&notice.text);
+        label.set_tooltip_text(Some(&notice.tooltip));
+        let cancel = &self.widgets.form_notice_cancel;
+        cancel.set_visible(notice.cancel.is_some());
+        cancel.set_sensitive(
+            notice
+                .cancel
+                .as_ref()
+                .is_some_and(|target| !self.form_cancels.contains(&target.form_id)),
+        );
+        self.widgets.form_notice.set_visible(true);
+    }
+
+    /// Cancels the form the notice shows. Never answers it.
+    fn cancel_shown_form(controller: &Rc<RefCell<Self>>) {
+        let command = {
+            let mut this = controller.borrow_mut();
+            let Some(target) = this
+                .forms
+                .notice(this.state.active.as_deref(), &this.child_parents)
+                .and_then(|notice| notice.cancel)
+            else {
+                return;
+            };
+            if !this.form_cancels.insert(target.form_id.clone()) {
+                return;
+            }
+            this.refresh_form_notice();
+            Command::CancelForm {
+                form_id: target.form_id,
+                session_id: target.session_id,
+                directory: target.directory,
+            }
+        };
+        controller.borrow().api.send(command);
+    }
+
+    /// Opens the server's own web UI, which can answer forms.
+    fn open_web_ui(&mut self) {
+        let uri = self.connection_config.base_url.trim().to_owned();
+        if let Err(error) =
+            gio::AppInfo::launch_default_for_uri(&uri, None::<&gio::AppLaunchContext>)
+        {
+            self.show_error(&format!("Could not open {uri}: {error}"));
+        }
     }
 
     fn refresh_composer_prompt(&mut self) {
@@ -4125,6 +4401,16 @@ impl Controller {
                 self.widgets.prompt_host.append(&prompt.widget);
                 self.shown_composer_prompt = Some(prompt.request_id.clone());
                 self.widgets.composer_stack.set_visible_child_name("prompt");
+                // The primary action takes focus so the keyboard can answer,
+                // unless an overlay currently owns it.
+                if self.app_modal.is_none() && !self.widgets.new_session_overlay.is_visible() {
+                    let focus = prompt.focus.clone();
+                    glib::idle_add_local_once(move || {
+                        if focus.is_mapped() {
+                            focus.grab_focus();
+                        }
+                    });
+                }
             }
         }
     }
@@ -6476,6 +6762,12 @@ impl Controller {
             this.dialogs.clear();
             this.composer_prompts.clear();
             this.shown_composer_prompt = None;
+            this.forms.clear();
+            this.form_cancels.clear();
+            this.child_parents.clear();
+            this.pending_reload = None;
+            this.pending_reload_again = false;
+            this.widgets.form_notice.set_visible(false);
             clear_box(&this.widgets.prompt_host);
             this.widgets
                 .composer_stack
@@ -6523,7 +6815,7 @@ impl Controller {
             this.pending_actions.clear();
             this.bootstrap_pending = true;
             this.bootstrap_reload_pending = false;
-            this.bootstrap_dialogs_at_start.clear();
+            this.bootstrap_requests_at_start.clear();
             this.bootstrap_retry_token += 1;
             this.bootstrap_retry_delay = BOOTSTRAP_RETRY_MIN;
             this.pending_session_request = None;
@@ -6540,7 +6832,7 @@ impl Controller {
         };
         Self::refresh_all(controller);
         start_event_loop(controller, events, generation);
-        controller.borrow().api.send(Command::Bootstrap);
+        controller.borrow().send_bootstrap();
     }
 
     fn show_new_session(controller: &Rc<RefCell<Self>>) {
@@ -6864,96 +7156,84 @@ impl Controller {
         title.grab_focus();
     }
 
+    /// Shows a permission request (live or recovered) in place of the
+    /// composer, once per request ID. A child session's request is shown with
+    /// its parent, or everywhere when the parent is unknown.
     fn show_permission(
         controller: &Rc<RefCell<Self>>,
         directory: Option<String>,
-        payload: serde_json::Value,
+        request: protocol::PermissionRequest,
     ) {
-        let data = event_data(&payload);
-        let Some(request_id) = data
-            .get("id")
-            .and_then(serde_json::Value::as_str)
-            .map(str::to_owned)
-        else {
-            return;
-        };
-        if controller.borrow().dialogs.contains_key(&request_id) {
-            return;
-        }
-        let session_id = data
-            .get("sessionID")
-            .and_then(serde_json::Value::as_str)
-            .map(str::to_owned);
-        let directory = directory.or_else(|| {
-            session_id.as_ref().and_then(|session_id| {
-                controller
-                    .borrow()
-                    .session(session_id)
+        let request_id = request.id.clone();
+        let (directory, scope, context) = {
+            let this = controller.borrow();
+            if this.dialogs.contains_key(&request_id) {
+                return;
+            }
+            let directory = directory.or_else(|| {
+                this.session(&request.session_id)
+                    .or_else(|| {
+                        this.child_parents
+                            .get(&request.session_id)
+                            .and_then(|parent| this.session(parent))
+                    })
                     .map(|session| session.directory.clone())
-            })
-        });
-        let Some(directory) = directory else {
+            });
+            let scope = pending::permission_scope(
+                &request.session_id,
+                |id| this.session(id).is_some(),
+                &this.child_parents,
+            );
+            let context = directory
+                .as_deref()
+                .map(|directory| this.permission_context(&request, directory));
+            (directory, scope, context)
+        };
+        let (Some(directory), Some(context)) = (directory, context) else {
             controller
                 .borrow_mut()
                 .show_error("Permission request did not include a server directory");
             return;
         };
-        let request_context = controller
-            .borrow()
-            .request_context(session_id.as_deref(), &directory);
-        let permission = data
-            .get("permission")
-            .or_else(|| data.get("type"))
-            .or_else(|| data.get("title"))
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("tool action");
-        let patterns = match data.get("patterns").or_else(|| data.get("pattern")) {
-            Some(serde_json::Value::Array(values)) => values
-                .iter()
-                .filter_map(serde_json::Value::as_str)
-                .collect::<Vec<_>>()
-                .join("\n"),
-            Some(serde_json::Value::String(value)) => value.clone(),
-            _ => String::new(),
+        let action = match request.action.trim() {
+            "" => "tool action",
+            action => action,
         };
-        let metadata = data
-            .get("metadata")
-            .filter(|value| !value.is_null())
-            .and_then(|value| serde_json::to_string_pretty(value).ok())
-            .unwrap_or_default();
-        let always_patterns = data
-            .get("always")
-            .and_then(serde_json::Value::as_array)
-            .map(|values| {
-                values
-                    .iter()
-                    .filter_map(serde_json::Value::as_str)
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            })
-            .filter(|patterns| !patterns.is_empty());
+        let always_patterns = pending::always_patterns(&request);
 
         let root = gtk::Box::new(gtk::Orientation::Vertical, 12);
-        let heading = gtk::Label::new(Some(&format!("Allow {permission}?")));
+        let heading = gtk::Label::new(Some(&format!("Allow {action}?")));
         heading.set_xalign(0.0);
         heading.add_css_class("prompt-heading");
         root.append(&heading);
-        let context = gtk::Label::new(Some(&request_context));
+        let context = gtk::Label::new(Some(&context));
         context.set_xalign(0.0);
         context.set_wrap(true);
         context.set_selectable(true);
         context.add_css_class("session-picker-path");
         root.append(&context);
         let details = gtk::Box::new(gtk::Orientation::Vertical, 12);
-        if !patterns.is_empty() {
-            let label = gtk::Label::new(Some(&patterns));
+        if let Some(message) = request
+            .message
+            .as_deref()
+            .map(str::trim)
+            .filter(|message| !message.is_empty())
+        {
+            let label = gtk::Label::new(Some(message));
+            label.set_xalign(0.0);
+            label.set_wrap(true);
+            label.set_selectable(true);
+            details.append(&label);
+        }
+        if !request.resources.is_empty() {
+            let label = gtk::Label::new(Some(&request.resources.join("\n")));
             label.set_xalign(0.0);
             label.set_wrap(true);
             label.set_selectable(true);
             label.add_css_class("prompt-detail");
             details.append(&label);
         }
-        if !metadata.is_empty() && metadata != "{}" {
+        if let Some(metadata) = pending::metadata_text(request.metadata.as_ref()) {
             let label = gtk::Label::new(Some(&metadata));
             label.set_xalign(0.0);
             label.set_wrap(true);
@@ -6998,22 +7278,26 @@ impl Controller {
         });
         root.append(&actions);
 
-        let mut replies = vec![(reject, "reject"), (once, "once")];
+        use protocol::PermissionDecision;
+        let mut replies = vec![
+            (reject, PermissionDecision::Reject),
+            (once.clone(), PermissionDecision::Once),
+        ];
         if let Some(always) = always {
-            replies.push((always, "always"));
+            replies.push((always, PermissionDecision::Always));
         }
-        for (button, reply) in replies {
+        for (button, decision) in replies {
             let weak = Rc::downgrade(controller);
             let request_id = request_id.clone();
-            let directory = directory.clone();
+            let session_id = request.session_id.clone();
             button.connect_clicked(move |_| {
                 submit_request(
                     &weak,
                     &request_id,
                     Command::ReplyPermission {
                         request_id: request_id.clone(),
-                        directory: directory.clone(),
-                        reply: reply.to_owned(),
+                        session_id: session_id.clone(),
+                        decision,
                     },
                 );
             });
@@ -7023,254 +7307,10 @@ impl Controller {
         this.dialogs.insert(request_id.clone(), widget.clone());
         this.composer_prompts.push(ComposerPrompt {
             request_id,
-            session_id,
+            session_id: scope,
+            directory,
             widget,
-        });
-        this.refresh_composer_prompt();
-    }
-
-    fn show_question(
-        controller: &Rc<RefCell<Self>>,
-        directory: Option<String>,
-        payload: serde_json::Value,
-    ) {
-        let data = event_data(&payload);
-        let Some(request_id) = data
-            .get("id")
-            .and_then(serde_json::Value::as_str)
-            .map(str::to_owned)
-        else {
-            return;
-        };
-        if controller.borrow().dialogs.contains_key(&request_id) {
-            return;
-        }
-        let session_id = data
-            .get("sessionID")
-            .and_then(serde_json::Value::as_str)
-            .map(str::to_owned);
-        let directory = directory.or_else(|| {
-            session_id.as_ref().and_then(|session_id| {
-                controller
-                    .borrow()
-                    .session(session_id)
-                    .map(|session| session.directory.clone())
-            })
-        });
-        let Some(directory) = directory else {
-            controller
-                .borrow_mut()
-                .show_error("Question request did not include a server directory");
-            return;
-        };
-        let request_context = controller
-            .borrow()
-            .request_context(session_id.as_deref(), &directory);
-        let questions = data
-            .get("questions")
-            .and_then(serde_json::Value::as_array)
-            .cloned()
-            .unwrap_or_default();
-        if questions.is_empty() {
-            controller.borrow().api.send(Command::ReplyQuestion {
-                request_id,
-                directory,
-                answers: Vec::new(),
-            });
-            return;
-        }
-
-        let root = gtk::Box::new(gtk::Orientation::Vertical, 12);
-        let context = gtk::Label::new(Some(&request_context));
-        context.set_xalign(0.0);
-        context.set_wrap(true);
-        context.set_selectable(true);
-        context.add_css_class("session-picker-path");
-        root.append(&context);
-        let question_box = gtk::Box::new(gtk::Orientation::Vertical, 16);
-        let mut inputs = Vec::new();
-
-        for question in questions {
-            let section = gtk::Box::new(gtk::Orientation::Vertical, 7);
-            section.add_css_class("question-section");
-            let header = question
-                .get("header")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("Question");
-            let header = gtk::Label::new(Some(header));
-            header.set_xalign(0.0);
-            header.add_css_class("question-header");
-            section.append(&header);
-            let prompt = question
-                .get("question")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or_default();
-            let prompt = gtk::Label::new(Some(prompt));
-            prompt.set_xalign(0.0);
-            prompt.set_wrap(true);
-            section.append(&prompt);
-            let multiple = question
-                .get("multiple")
-                .and_then(serde_json::Value::as_bool)
-                .unwrap_or(false);
-            let mut first = None;
-            let mut options = Vec::new();
-            for option in question
-                .get("options")
-                .and_then(serde_json::Value::as_array)
-                .into_iter()
-                .flatten()
-            {
-                let label = option
-                    .get("label")
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or("Option")
-                    .to_owned();
-                let choice = gtk::CheckButton::with_label(&label);
-                if !multiple {
-                    if let Some(first) = &first {
-                        choice.set_group(Some(first));
-                    } else {
-                        first = Some(choice.clone());
-                    }
-                }
-                if let Some(description) = option
-                    .get("description")
-                    .and_then(serde_json::Value::as_str)
-                    .filter(|description| !description.is_empty())
-                {
-                    choice.set_tooltip_text(Some(description));
-                }
-                section.append(&choice);
-                options.push((choice, label));
-            }
-            let custom = question
-                .get("custom")
-                .and_then(serde_json::Value::as_bool)
-                .unwrap_or(true)
-                .then(|| {
-                    let entry = gtk::Entry::new();
-                    entry.set_placeholder_text(Some("Type your own answer"));
-                    section.append(&entry);
-                    entry
-                });
-            if !multiple {
-                if let Some(entry) = &custom {
-                    for (choice, _) in &options {
-                        choice.connect_toggled({
-                            let entry = entry.clone();
-                            move |choice| {
-                                if choice.is_active() && !entry.text().is_empty() {
-                                    entry.set_text("");
-                                }
-                            }
-                        });
-                    }
-                    let choices: Vec<_> =
-                        options.iter().map(|(choice, _)| choice.clone()).collect();
-                    entry.connect_changed(move |entry| {
-                        if !entry.text().is_empty() {
-                            for choice in &choices {
-                                choice.set_active(false);
-                            }
-                        }
-                    });
-                }
-            }
-            question_box.append(&section);
-            inputs.push(QuestionInputs {
-                options,
-                custom,
-                multiple,
-            });
-        }
-
-        let scroll = gtk::ScrolledWindow::builder()
-            .vexpand(true)
-            .hscrollbar_policy(gtk::PolicyType::Never)
-            .child(&question_box)
-            .build();
-        let validation = gtk::Label::new(None);
-        validation.set_xalign(0.0);
-        validation.add_css_class("error");
-        let actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        actions.set_halign(gtk::Align::End);
-        let dismiss = gtk::Button::with_label("Dismiss");
-        let submit = gtk::Button::with_label("Submit");
-        submit.add_css_class("suggested-action");
-        actions.append(&dismiss);
-        actions.append(&submit);
-        root.append(&scroll);
-        root.append(&validation);
-        root.append(&actions);
-
-        submit.connect_clicked({
-            let weak = Rc::downgrade(controller);
-            let request_id = request_id.clone();
-            let directory = directory.clone();
-            let validation = validation.clone();
-            move |_| {
-                let answers: Vec<Vec<String>> = inputs
-                    .iter()
-                    .map(|input| {
-                        let mut answer: Vec<_> = input
-                            .options
-                            .iter()
-                            .filter(|(button, _)| button.is_active())
-                            .map(|(_, label)| label.clone())
-                            .collect();
-                        let custom = input
-                            .custom
-                            .as_ref()
-                            .map(|entry| entry.text().trim().to_owned())
-                            .filter(|custom| !custom.is_empty());
-                        if let Some(custom) = custom {
-                            if input.multiple {
-                                answer.push(custom);
-                            } else {
-                                answer = vec![custom];
-                            }
-                        }
-                        answer
-                    })
-                    .collect();
-                if answers.iter().any(Vec::is_empty) {
-                    validation.set_label("Choose or enter an answer for every question.");
-                    return;
-                }
-                submit_request(
-                    &weak,
-                    &request_id,
-                    Command::ReplyQuestion {
-                        request_id: request_id.clone(),
-                        directory: directory.clone(),
-                        answers,
-                    },
-                );
-            }
-        });
-        dismiss.connect_clicked({
-            let weak = Rc::downgrade(controller);
-            let request_id = request_id.clone();
-            let directory = directory.clone();
-            move |_| {
-                submit_request(
-                    &weak,
-                    &request_id,
-                    Command::RejectQuestion {
-                        request_id: request_id.clone(),
-                        directory: directory.clone(),
-                    },
-                );
-            }
-        });
-        let widget = root.upcast::<gtk::Widget>();
-        let mut this = controller.borrow_mut();
-        this.dialogs.insert(request_id.clone(), widget.clone());
-        this.composer_prompts.push(ComposerPrompt {
-            request_id,
-            session_id,
-            widget,
+            focus: once.upcast(),
         });
         this.refresh_composer_prompt();
     }
@@ -7283,13 +7323,26 @@ impl Controller {
             .map(|session| session.directory.clone())
     }
 
-    fn request_context(&self, session_id: Option<&str>, directory: &str) -> String {
-        let session = session_id.and_then(|session_id| self.session(session_id));
-        let title = session
-            .map(|session| session.title.as_str())
-            .or(session_id)
-            .unwrap_or("Unknown session");
-        format!("Requested by {title}\n{directory}")
+    /// Who asked and where: a root session by title, a known child session
+    /// as a subagent of its parent, anything else by ID.
+    fn permission_context(&self, request: &protocol::PermissionRequest, directory: &str) -> String {
+        let session_id = request.session_id.as_str();
+        let requester = match self.session(session_id) {
+            Some(session) => session.title.clone(),
+            None => match self
+                .child_parents
+                .get(session_id)
+                .and_then(|parent| self.session(parent))
+            {
+                Some(parent) => format!("a subagent of {}", parent.title),
+                None => format!("session {session_id}"),
+            },
+        };
+        let mut context = format!("Requested by {requester}\n{directory}");
+        if let Some(source) = pending::source_text(request) {
+            context.push_str(&format!("\n{source}"));
+        }
+        context
     }
 
     fn session(&self, id: &str) -> Option<&Session> {

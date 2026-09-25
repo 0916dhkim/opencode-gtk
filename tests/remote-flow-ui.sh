@@ -11,8 +11,9 @@
 #   FLOW_TIMEOUT=15       seconds to wait for each request-log marker
 #   FLOW_DEADLINE=900     hard limit for the whole run
 #   FLOW_KEEP=1           keep the temp dir (state.json, request log, app log)
-#   FLOW_FORM_CANCEL_KEYS="Tab Tab Return"   keys that reach the form notice's Cancel (see step 7)
+#   FLOW_FORM_CANCEL_KEYS="ctrl+shift+x"     keys that cancel the form notice's form (default; see step 7)
 #   FLOW_FORM_CANCEL_CLICK="dx,dy"           or a click, relative to the window's bottom-right corner
+#                                            (set FLOW_FORM_CANCEL_KEYS= to use it)
 #
 # Every step asserts markers in the fake server's request log (tests/fake_v2/logwait.py) and
 # reports PASS/FAIL per marker; nothing waits forever. This is the CP-012 acceptance test: it is
@@ -26,6 +27,8 @@ if [[ -z "${DBUS_SESSION_BUS_ADDRESS:-}" && -z "${FLOW_IN_DBUS:-}" ]] && command
 fi
 
 timeout_s="${FLOW_TIMEOUT:-15}"
+# The form notice's Cancel shortcut (ui.rs, pending::CANCEL_FORM_SHORTCUT).
+FLOW_FORM_CANCEL_KEYS="${FLOW_FORM_CANCEL_KEYS-ctrl+shift+x}"
 temporary="$(mktemp -d)"
 log="${temporary}/requests.jsonl"
 app_log="${temporary}/app.log"
@@ -353,8 +356,8 @@ if [[ -n "${window}" ]] && app_alive && [[ -n "${new_session}" ]]; then
   key Return
   if expect "form.created" "ev == 'form.created'" "${timeout_s}" "prompt with [[scenario:form]] was not sent"; then
     sleep 1
-    # The one-line notice's Cancel (CP-011) has no keyboard path or fixed position yet. Provide one
-    # via FLOW_FORM_CANCEL_KEYS / FLOW_FORM_CANCEL_CLICK once the notice exists.
+    # The one-line notice above the composer (CP-011) cancels its form with Ctrl+Shift+X;
+    # FLOW_FORM_CANCEL_CLICK can click its Cancel button instead.
     if [[ -n "${FLOW_FORM_CANCEL_KEYS:-}" ]]; then
       # shellcheck disable=SC2086
       key ${FLOW_FORM_CANCEL_KEYS}
@@ -363,7 +366,7 @@ if [[ -n "${window}" ]] && app_alive && [[ -n "${new_session}" ]]; then
       click_at "$((WIDTH - ${FLOW_FORM_CANCEL_CLICK%,*}))" "$((HEIGHT - ${FLOW_FORM_CANCEL_CLICK#*,}))"
     fi
     expect "form.cancel" "http and route == 'session.form.cancel' and p.get('sessionID') in ('${new_session}', 'global') and r['status'] in (204, 409)" "${timeout_s}" \
-      "DELETE /api/session/{id}/form/{formID}; not headless-drivable until the notice has a key path (set FLOW_FORM_CANCEL_KEYS/CLICK)"
+      "DELETE /api/session/{id}/form/{formID} via the notice's Cancel (FLOW_FORM_CANCEL_KEYS/CLICK)"
   fi
 fi
 

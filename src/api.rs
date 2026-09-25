@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeSet, HashMap, HashSet},
     fs::{self, File},
     io::{BufRead, BufReader, Read},
     path::{Path, PathBuf},
@@ -19,11 +19,12 @@ use reqwest::{
     Method, StatusCode, Url,
 };
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::Value;
 
 use crate::{
     credentials::CloudflareAccessCredentials,
     model::{ModelCatalog, Project, RunStatus, Session},
+    pending::{PendingForm, PendingRequest, PendingSnapshot},
     protocol,
 };
 
@@ -46,7 +47,16 @@ pub struct ApiConfig {
 
 #[derive(Debug)]
 pub enum Command {
-    Bootstrap,
+    /// `directories` are locations the UI knows beyond the server's project
+    /// and session lists (open tabs, open prompts); their pending
+    /// permissions and forms are recovered too.
+    Bootstrap {
+        directories: Vec<String>,
+    },
+    /// Refetches the pending permission and form lists of these locations.
+    LoadPending {
+        directories: Vec<String>,
+    },
     /// `cursor: None` loads the newest page; `Some` the page before it.
     LoadMessages {
         session_id: String,
@@ -88,20 +98,26 @@ pub enum Command {
         session_id: String,
         directory: String,
     },
+    /// `session_id` is the request's own session, possibly a child session.
     ReplyPermission {
         request_id: String,
-        directory: String,
-        reply: String,
+        session_id: String,
+        decision: protocol::PermissionDecision,
     },
-    ReplyQuestion {
-        request_id: String,
-        directory: String,
-        answers: Vec<Vec<String>>,
+    /// `directory` is required for a `"global"` owner's form.
+    CancelForm {
+        form_id: String,
+        session_id: String,
+        directory: Option<String>,
     },
-    RejectQuestion {
-        request_id: String,
-        directory: String,
-    },
+}
+
+/// A permission reply or form cancel the server accepted, or found already
+/// settled (by another client or an earlier attempt).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Settled {
+    Done,
+    AlreadyResolved,
 }
 
 #[derive(Debug)]
@@ -112,7 +128,9 @@ pub struct Bootstrap {
     pub projects: Vec<Project>,
     pub statuses: HashMap<String, RunStatus>,
     pub statuses_complete: bool,
-    pub pending: Vec<ServerEnvelope>,
+    pub pending: Vec<PendingRequest>,
+    /// Every pending permission and form list succeeded, so an open prompt
+    /// missing from `pending` was resolved while disconnected.
     pub pending_complete: bool,
     pub retry_needed: bool,
     pub warnings: Vec<String>,
@@ -206,9 +224,14 @@ pub enum UiEvent {
         session_id: String,
         result: Result<(), String>,
     },
-    ActionFinished {
+    PendingLoaded(PendingSnapshot),
+    PermissionReplied {
         request_id: String,
-        result: Result<(), String>,
+        result: Result<Settled, String>,
+    },
+    FormCancelled {
+        form_id: String,
+        result: Result<Settled, String>,
     },
     ServerEvent(ServerEnvelope),
 }
@@ -299,18 +322,17 @@ impl ApiHandle {
 
     pub fn send(&self, command: Command) {
         let sender = match &command {
-            Command::Bootstrap | Command::LoadMessages { .. } | Command::LoadModels { .. } => {
-                &self.refresh_commands
-            }
+            Command::Bootstrap { .. }
+            | Command::LoadPending { .. }
+            | Command::LoadMessages { .. }
+            | Command::LoadModels { .. } => &self.refresh_commands,
             // One worker, so a model switch lands before a prompt sent after it.
             Command::CreateSession { .. }
             | Command::RenameSession { .. }
             | Command::SelectModel { .. }
             | Command::SendPrompt { .. } => &self.interaction_commands,
             Command::Abort { .. } => &self.abort_commands,
-            Command::ReplyPermission { .. }
-            | Command::ReplyQuestion { .. }
-            | Command::RejectQuestion { .. } => &self.urgent_commands,
+            Command::ReplyPermission { .. } | Command::CancelForm { .. } => &self.urgent_commands,
         };
         let _ = sender.send_blocking(command);
     }
@@ -471,17 +493,30 @@ impl Api {
         expect_success(response).map(|_| ())
     }
 
-    fn complete_request(&self, method: Method, url: Url, body: Option<&Value>) -> Result<()> {
-        let request = self.request(method, url);
-        let response = match body {
-            Some(body) => request.json(body).send(),
-            None => request.send(),
+    /// Settles a pending permission or form. Only a declared "already
+    /// resolved" error counts as settled; any other failure, including a
+    /// bare 404 from a missing route, is an error.
+    fn settle_request(
+        &self,
+        method: Method,
+        path: &str,
+        query: &[(String, String)],
+        body: Option<&impl Serialize>,
+    ) -> Result<Settled> {
+        let request = self.request(method, self.url(path, query)?);
+        let request = match body {
+            Some(body) => request.json(body),
+            None => request,
+        };
+        let result = request
+            .send()
+            .context("request failed")
+            .and_then(expect_success);
+        match result {
+            Ok(_) => Ok(Settled::Done),
+            Err(error) if is_already_resolved(&error) => Ok(Settled::AlreadyResolved),
+            Err(error) => Err(error),
         }
-        .context("request failed")?;
-        if matches!(response.status(), StatusCode::NOT_FOUND | StatusCode::GONE) {
-            return Ok(());
-        }
-        expect_success(response).map(|_| ())
     }
 
     fn server_info(&self) -> Result<protocol::ServerInfo> {
@@ -504,7 +539,7 @@ impl Api {
         Ok(info)
     }
 
-    fn bootstrap(&self) -> Result<Bootstrap> {
+    fn bootstrap(&self, extra_directories: &[String]) -> Result<Bootstrap> {
         let mut warnings = Vec::new();
         let mut retry_needed = false;
         let version = self.server_info()?.version;
@@ -535,8 +570,18 @@ impl Api {
             }
         };
 
-        // Pending permission and form recovery is ported in CP-010/CP-011.
-        // Until then report it incomplete so no open prompt is dismissed.
+        let directories: BTreeSet<String> = projects
+            .iter()
+            .map(|project: &Project| project.worktree.clone())
+            .chain(sessions.iter().map(|session| session.directory.clone()))
+            .chain(extra_directories.iter().cloned())
+            .collect();
+        let pending = self.load_pending(&directories);
+        if !pending.complete {
+            retry_needed = true;
+        }
+        warnings.extend(pending.warnings);
+
         Ok(Bootstrap {
             version,
             sessions,
@@ -544,11 +589,75 @@ impl Api {
             projects,
             statuses,
             statuses_complete,
-            pending: Vec::new(),
-            pending_complete: false,
+            pending: pending.requests,
+            pending_complete: pending.complete,
             retry_needed,
             warnings,
         })
+    }
+
+    /// Pending permissions and forms of every location. Both lists are
+    /// location-scoped (`location[directory]`) and include the requests of
+    /// child sessions in that location. A request seen in two locations is
+    /// kept once.
+    fn load_pending(&self, directories: &BTreeSet<String>) -> PendingSnapshot {
+        let mut snapshot = PendingSnapshot {
+            complete: true,
+            ..PendingSnapshot::default()
+        };
+        let mut seen = HashSet::new();
+        for directory in directories.iter().filter(|d| !d.is_empty()) {
+            let location = [protocol::location_query(directory)];
+            let resolved = |located: &protocol::LocationRef| {
+                if located.directory.is_empty() {
+                    directory.clone()
+                } else {
+                    located.directory.clone()
+                }
+            };
+            match self.get::<protocol::PermissionRequestListResponse>(
+                &protocol::permission_requests_path(),
+                &location,
+            ) {
+                Ok(list) => {
+                    let directory = resolved(&list.location);
+                    for request in list.data {
+                        if seen.insert(request.id.clone()) {
+                            snapshot.requests.push(PendingRequest::Permission {
+                                directory: directory.clone(),
+                                request,
+                            });
+                        }
+                    }
+                }
+                Err(error) => {
+                    snapshot.complete = false;
+                    snapshot.warnings.push(format!(
+                        "Could not list pending permissions in {directory}: {error:#}"
+                    ));
+                }
+            }
+            match self.get::<protocol::FormListResponse>(&protocol::forms_path(), &location) {
+                Ok(list) => {
+                    let directory = resolved(&list.location);
+                    for form in list.data {
+                        if seen.insert(form.id.clone()) {
+                            snapshot.requests.push(PendingRequest::Form(PendingForm {
+                                form,
+                                directory: Some(directory.clone()),
+                            }));
+                        }
+                    }
+                }
+                Err(error) => {
+                    snapshot.complete = false;
+                    snapshot.warnings.push(format!(
+                        "Could not list pending forms in {directory}: {error:#}"
+                    ));
+                }
+            }
+        }
+        snapshot
     }
 
     /// Every root session across all locations and projects: an unfiltered
@@ -738,41 +847,42 @@ impl Api {
         Ok(interrupted.interrupted)
     }
 
-    fn reply_permission(&self, request_id: &str, directory: &str, reply: &str) -> Result<()> {
-        self.complete_request(
-            Method::POST,
-            self.url(
-                &format!("{}/permission/{request_id}/reply", protocol::API_PREFIX),
-                &[protocol::location_query(directory)],
-            )?,
-            Some(&json!({ "reply": reply })),
-        )
-    }
-
-    fn reply_question(
+    fn reply_permission(
         &self,
+        session_id: &str,
         request_id: &str,
-        directory: &str,
-        answers: &[Vec<String>],
-    ) -> Result<()> {
-        self.complete_request(
+        decision: protocol::PermissionDecision,
+    ) -> Result<Settled> {
+        self.settle_request(
             Method::POST,
-            self.url(
-                &format!("{}/question/{request_id}/reply", protocol::API_PREFIX),
-                &[protocol::location_query(directory)],
-            )?,
-            Some(&json!({ "answers": answers })),
+            &protocol::permission_reply_path(session_id, request_id),
+            &[],
+            Some(&protocol::PermissionReplyBody {
+                decision,
+                message: None,
+            }),
         )
     }
 
-    fn reject_question(&self, request_id: &str, directory: &str) -> Result<()> {
-        self.complete_request(
-            Method::POST,
-            self.url(
-                &format!("{}/question/{request_id}/reject", protocol::API_PREFIX),
-                &[protocol::location_query(directory)],
-            )?,
-            None,
+    /// `DELETE` with no body; only a `"global"` form takes the location.
+    fn cancel_form(
+        &self,
+        session_id: &str,
+        form_id: &str,
+        directory: Option<&str>,
+    ) -> Result<Settled> {
+        let query = match directory {
+            Some(directory) => protocol::form_location_query(session_id, directory),
+            None if session_id == protocol::GLOBAL_FORM_OWNER => {
+                bail!("the form's location is unknown, so it cannot be cancelled here")
+            }
+            None => Vec::new(),
+        };
+        self.settle_request(
+            Method::DELETE,
+            &protocol::session_form_path(session_id, form_id),
+            &query,
+            None::<&()>,
         )
     }
 }
@@ -803,7 +913,12 @@ fn spawn_command_worker(api: Api, commands: Receiver<Command>, ui: Sender<UiEven
     thread::spawn(move || {
         while let Ok(command) = commands.recv_blocking() {
             let event = match command {
-                Command::Bootstrap => UiEvent::Bootstrap(api.bootstrap().map_err(format_error)),
+                Command::Bootstrap { directories } => {
+                    UiEvent::Bootstrap(api.bootstrap(&directories).map_err(format_error))
+                }
+                Command::LoadPending { directories } => {
+                    UiEvent::PendingLoaded(api.load_pending(&directories.into_iter().collect()))
+                }
                 Command::LoadMessages { session_id, cursor } => {
                     let result = api
                         .load_messages(&session_id, cursor.as_deref())
@@ -879,32 +994,23 @@ fn spawn_command_worker(api: Api, commands: Receiver<Command>, ui: Sender<UiEven
                 }
                 Command::ReplyPermission {
                     request_id,
-                    directory,
-                    reply,
+                    session_id,
+                    decision,
                 } => {
                     let result = api
-                        .reply_permission(&request_id, &directory, &reply)
+                        .reply_permission(&session_id, &request_id, decision)
                         .map_err(format_error);
-                    UiEvent::ActionFinished { request_id, result }
+                    UiEvent::PermissionReplied { request_id, result }
                 }
-                Command::ReplyQuestion {
-                    request_id,
-                    directory,
-                    answers,
-                } => {
-                    let result = api
-                        .reply_question(&request_id, &directory, &answers)
-                        .map_err(format_error);
-                    UiEvent::ActionFinished { request_id, result }
-                }
-                Command::RejectQuestion {
-                    request_id,
+                Command::CancelForm {
+                    form_id,
+                    session_id,
                     directory,
                 } => {
                     let result = api
-                        .reject_question(&request_id, &directory)
+                        .cancel_form(&session_id, &form_id, directory.as_deref())
                         .map_err(format_error);
-                    UiEvent::ActionFinished { request_id, result }
+                    UiEvent::FormCancelled { form_id, result }
                 }
             };
             if ui.send_blocking(event).is_err() {
@@ -1000,7 +1106,7 @@ enum EventFrame {
 }
 
 /// Maps one `/api/event` frame. Consumers get the whole event as the payload
-/// (`model::event_data` reads its `data`) and the directory from `location`.
+/// and the directory from `location`.
 fn event_frame(payload: Value) -> EventFrame {
     let Ok(event) = protocol::Event::deserialize(&payload) else {
         return EventFrame::Ignored;
@@ -1140,6 +1246,20 @@ impl std::fmt::Display for ApiFailure {
 
 impl std::error::Error for ApiFailure {}
 
+/// A declared `PermissionNotFoundError`, `FormNotFoundError` or
+/// `FormAlreadySettledError`.
+fn is_already_resolved(error: &anyhow::Error) -> bool {
+    error
+        .chain()
+        .filter_map(|cause| cause.downcast_ref::<ApiFailure>())
+        .any(|failure| {
+            failure
+                .error
+                .as_ref()
+                .is_some_and(protocol::ApiError::is_already_resolved)
+        })
+}
+
 impl ApiFailure {
     /// A declared `SessionNotFoundError`; a bare 404 (e.g. from a proxy) is not.
     pub fn is_session_not_found(&self) -> bool {
@@ -1191,13 +1311,17 @@ mod tests {
         sync::{Arc, Mutex},
     };
 
+    use serde_json::json;
+
     use super::*;
 
     #[test]
     fn preview_handle_answers_without_a_server() {
         let (api, events, key) = ApiHandle::preview();
         assert_eq!(key, crate::preview::SERVER_KEY);
-        api.send(Command::Bootstrap);
+        api.send(Command::Bootstrap {
+            directories: Vec::new(),
+        });
         api.send(Command::LoadModels {
             directory: "/repo".into(),
         });
@@ -1371,7 +1495,7 @@ mod tests {
             panic!("unexpected {:?}", frames[1]);
         };
         assert_eq!(renamed.directory.as_deref(), Some("/work"));
-        assert_eq!(crate::model::event_data(&renamed.payload)["title"], "T");
+        assert_eq!(renamed.payload["data"]["title"], "T");
         let EventFrame::Event(started) = &frames[2] else {
             panic!("unexpected {:?}", frames[2]);
         };
@@ -1746,12 +1870,127 @@ mod tests {
     }
 
     #[test]
-    fn completing_an_already_resolved_request_succeeds() {
-        let (base, _, server) = serve(1, |_| (404, String::new()));
+    fn permission_replies_post_the_decision_to_the_request_session() {
+        let captured = serde_json::from_str::<Value>(
+            &fs::read_to_string(format!(
+                "{}/tests/fixtures/v2-2.0.8/session.permission.reply.child.json",
+                env!("CARGO_MANIFEST_DIR")
+            ))
+            .unwrap(),
+        )
+        .unwrap();
+        let (base, requests, server) = serve(4, |request| match request.path() {
+            "/api/session/ses_child/permission/per_1/reply" => (204, String::new()),
+            "/api/session/ses_a/permission/per_gone/reply" => (
+                404,
+                json!({
+                    "_tag": "PermissionNotFoundError",
+                    "requestID": "per_gone",
+                    "message": "Permission request not found: per_gone"
+                })
+                .to_string(),
+            ),
+            // A route the server does not have: a bare 404 is not "resolved".
+            "/api/session/ses_a/permission/per_route/reply" => (404, String::new()),
+            _ => (
+                400,
+                json!({ "_tag": "InvalidRequestError", "message": "Expected decision" })
+                    .to_string(),
+            ),
+        });
         let api = Api::new(config(base, None)).unwrap();
-        let result = api.reply_permission("per_resolved", "/repo", "reject");
-        assert!(result.is_ok(), "{result:?}");
+        use protocol::PermissionDecision::{Always, Once, Reject};
+
+        assert_eq!(
+            api.reply_permission("ses_child", "per_1", Once).unwrap(),
+            Settled::Done
+        );
+        assert_eq!(
+            api.reply_permission("ses_a", "per_gone", Reject).unwrap(),
+            Settled::AlreadyResolved
+        );
+        let route = api
+            .reply_permission("ses_a", "per_route", Always)
+            .unwrap_err();
+        let invalid = api.reply_permission("ses_a", "per_bad", Once).unwrap_err();
         server.join().unwrap();
+
+        assert_eq!(format_error(route), "server returned 404 Not Found");
+        assert_eq!(format_error(invalid), "Expected decision");
+        let requests = requests.lock().unwrap();
+        assert_eq!(
+            requests[0].line,
+            "POST /api/session/ses_child/permission/per_1/reply HTTP/1.1"
+        );
+        assert_eq!(requests[0].json(), json!({ "decision": "once" }));
+        assert_eq!(requests[0].json(), captured["request"]["body"]);
+        assert_eq!(requests[1].json(), json!({ "decision": "reject" }));
+        assert_eq!(requests[2].json(), json!({ "decision": "always" }));
+        assert!(requests
+            .iter()
+            .all(|request| !request.target().contains('?')));
+    }
+
+    #[test]
+    fn form_cancel_deletes_and_treats_settled_forms_as_resolved() {
+        let settled = fixture("session.form.cancel.again").to_string();
+        let (base, requests, server) = serve(5, move |request| {
+            match (request.path(), request.query().is_empty()) {
+                ("/api/session/ses_a/form/frm_1", true) => (204, String::new()),
+                ("/api/session/ses_a/form/frm_done", true) => (409, settled.clone()),
+                ("/api/session/global/form/frm_mcp", false) => (204, String::new()),
+                ("/api/session/ses_a/form/frm_gone", true) => (
+                    404,
+                    json!({ "_tag": "FormNotFoundError", "id": "frm_gone", "message": "gone" })
+                        .to_string(),
+                ),
+                _ => (503, String::new()),
+            }
+        });
+        let api = Api::new(config(base, None)).unwrap();
+
+        assert_eq!(
+            api.cancel_form("ses_a", "frm_1", Some("/repo")).unwrap(),
+            Settled::Done
+        );
+        assert_eq!(
+            api.cancel_form("ses_a", "frm_done", None).unwrap(),
+            Settled::AlreadyResolved
+        );
+        assert_eq!(
+            api.cancel_form("global", "frm_mcp", Some("/my repo"))
+                .unwrap(),
+            Settled::Done
+        );
+        assert_eq!(
+            api.cancel_form("ses_a", "frm_gone", Some("/repo")).unwrap(),
+            Settled::AlreadyResolved
+        );
+        let unavailable = api
+            .cancel_form("ses_a", "frm_x", Some("/repo"))
+            .unwrap_err();
+        assert!(api.cancel_form("global", "frm_mcp", None).is_err());
+        server.join().unwrap();
+
+        assert_eq!(
+            format_error(unavailable),
+            "server returned 503 Service Unavailable"
+        );
+        let requests = requests.lock().unwrap();
+        assert_eq!(requests.len(), 5, "no request without the global location");
+        assert_eq!(
+            requests[0].line,
+            "DELETE /api/session/ses_a/form/frm_1 HTTP/1.1"
+        );
+        assert!(requests.iter().all(|request| request.body.is_empty()));
+        assert_eq!(
+            requests[2].query(),
+            HashMap::from([("location[directory]".to_owned(), "/my repo".to_owned())])
+        );
+        assert!(requests
+            .iter()
+            .filter(|request| !request.path().contains("/global/"))
+            .all(|request| request.query().is_empty()));
     }
 
     #[test]
@@ -1804,9 +2043,27 @@ mod tests {
 
     #[test]
     fn bootstrap_pages_root_sessions_across_locations() {
-        let (base, requests, server) = serve(6, |request| {
+        let (base, requests, server) = serve(12, |request| {
             let query = request.query();
+            let location = query
+                .get("location[directory]")
+                .cloned()
+                .unwrap_or_default();
             match (request.path(), query.get("cursor").map(String::as_str)) {
+                ("/api/permission/request", _) if location == "/elsewhere" => ok(json!({
+                    "location": { "directory": location },
+                    "data": [{
+                        "id": "per_child", "sessionID": "ses_child_of_c", "action": "shell",
+                        "resources": ["ls"]
+                    }]
+                })),
+                ("/api/form", _) if location == "/a" => ok(json!({
+                    "location": { "directory": location },
+                    "data": [{ "id": "frm_a", "sessionID": "ses_a", "title": "Pick" }]
+                })),
+                ("/api/permission/request" | "/api/form", _) => {
+                    ok(json!({ "location": { "directory": location }, "data": [] }))
+                }
                 ("/api/info", _) => ok(json!({ "version": "2.0.8", "pid": 1 })),
                 ("/api/project", _) => ok(json!([
                     { "id": "prj_a", "canonical": "/a", "name": "A", "sandboxes": [] },
@@ -1840,7 +2097,7 @@ mod tests {
         });
 
         let api = Api::new(config(base, Some("secret"))).unwrap();
-        let bootstrap = api.bootstrap().unwrap();
+        let bootstrap = api.bootstrap(&[]).unwrap();
         server.join().unwrap();
 
         assert_eq!(bootstrap.version, "2.0.8");
@@ -1872,11 +2129,28 @@ mod tests {
         );
         assert!(bootstrap.sessions_complete);
         assert!(bootstrap.statuses_complete);
-        assert!(bootstrap.pending.is_empty());
-        assert!(
-            !bootstrap.pending_complete,
-            "pending recovery is not ported, so open prompts must survive"
+        assert_eq!(
+            bootstrap.pending,
+            [
+                PendingRequest::Form(PendingForm {
+                    form: serde_json::from_value(
+                        json!({ "id": "frm_a", "sessionID": "ses_a", "title": "Pick" })
+                    )
+                    .unwrap(),
+                    directory: Some("/a".into()),
+                }),
+                PendingRequest::Permission {
+                    directory: "/elsewhere".into(),
+                    request: serde_json::from_value(json!({
+                        "id": "per_child", "sessionID": "ses_child_of_c", "action": "shell",
+                        "resources": ["ls"]
+                    }))
+                    .unwrap(),
+                },
+            ],
+            "a child session's request is recovered even though the child is not listed"
         );
+        assert!(bootstrap.pending_complete);
         assert!(!bootstrap.retry_needed);
         assert!(bootstrap.warnings.is_empty());
 
@@ -1895,17 +2169,40 @@ mod tests {
             .all(|query| query.get("limit") == Some(&SESSION_PAGE_SIZE.to_string())));
         assert_eq!(pages[1].get("cursor").map(String::as_str), Some("c1"));
         assert_eq!(pages[2].get("cursor").map(String::as_str), Some("c2"));
+        let mut pending: Vec<_> = requests
+            .iter()
+            .filter(|request| matches!(request.path(), "/api/permission/request" | "/api/form"))
+            .map(|request| {
+                let query = request.query();
+                assert_eq!(query.len(), 1, "{}", request.line);
+                (
+                    request.path().to_owned(),
+                    query["location[directory]"].clone(),
+                )
+            })
+            .collect();
+        pending.sort();
+        let expected: Vec<_> = ["/api/form", "/api/permission/request"]
+            .into_iter()
+            .flat_map(|path| {
+                ["/a", "/b", "/elsewhere"].map(|dir| (path.to_owned(), dir.to_owned()))
+            })
+            .collect();
+        assert_eq!(pending, expected, "every project and session location");
         assert!(requests
             .iter()
-            .all(|request| !request.target().contains("directory")
-                && !request.path().contains("/permission")
-                && !request.path().contains("/question")));
+            .all(|request| !request.query().contains_key("directory")));
     }
 
     #[test]
     fn bootstrap_reports_a_partial_session_list() {
-        let (base, _, server) = serve(5, |request| {
+        let (base, _, server) = serve(7, |request| {
             match (request.path(), request.query().contains_key("cursor")) {
+                ("/api/permission/request", _) => ok(json!({
+                    "location": { "directory": "/a" },
+                    "data": [{ "id": "per_1", "sessionID": "ses_a" }]
+                })),
+                ("/api/form", _) => (503, String::new()),
                 ("/api/info", _) => ok(json!({ "version": "2.0.8" })),
                 ("/api/project", _) => (
                     500,
@@ -1921,13 +2218,17 @@ mod tests {
             }
         });
         let api = Api::new(config(base, None)).unwrap();
-        let bootstrap = api.bootstrap().unwrap();
+        let bootstrap = api.bootstrap(&[]).unwrap();
         server.join().unwrap();
 
         assert_eq!(bootstrap.sessions.len(), 1);
         assert!(!bootstrap.sessions_complete);
         assert!(!bootstrap.statuses_complete);
-        assert!(!bootstrap.pending_complete);
+        assert_eq!(bootstrap.pending.len(), 1, "what did load is still shown");
+        assert!(
+            !bootstrap.pending_complete,
+            "one failed list keeps every open prompt"
+        );
         assert!(bootstrap.retry_needed);
         assert!(bootstrap.projects.is_empty());
         assert_eq!(
@@ -1936,6 +2237,7 @@ mod tests {
                 "Could not list every project: boom",
                 "Could not list every session: server returned 503 Service Unavailable: unavailable",
                 "Could not refresh session status: server returned 503 Service Unavailable",
+                "Could not list pending forms in /a: server returned 503 Service Unavailable",
             ]
         );
     }
@@ -1961,14 +2263,14 @@ mod tests {
         ] {
             let (base, _, server) = serve(1, move |_| (status, body.clone()));
             let api = Api::new(config(base, None)).unwrap();
-            let error = api.bootstrap().unwrap_err();
+            let error = api.bootstrap(&[]).unwrap_err();
             server.join().unwrap();
             assert_eq!(format_error(error), expected);
         }
 
         let (base, _, server) = serve(1, |_| (401, String::new()));
         let api = Api::new(config(base, None)).unwrap();
-        let error = api.bootstrap().unwrap_err();
+        let error = api.bootstrap(&[]).unwrap_err();
         server.join().unwrap();
         assert_eq!(format_error(error), "server returned 401 Unauthorized");
     }
@@ -2116,7 +2418,9 @@ mod tests {
             panic!("preview model switch failed");
         };
         assert_eq!(echoed, model);
-        let UiEvent::Bootstrap(Ok(bootstrap)) = state.handle(Command::Bootstrap) else {
+        let UiEvent::Bootstrap(Ok(bootstrap)) = state.handle(Command::Bootstrap {
+            directories: Vec::new(),
+        }) else {
             panic!("preview bootstrap failed");
         };
         let session = bootstrap
@@ -2222,9 +2526,21 @@ mod tests {
             .unwrap()
             .clone();
 
-        let (base, _, server) = serve(6, move |request| {
+        let child_permissions = fixture("permission.request.list.child");
+        let forms = fixture("form.list");
+        let home_permissions = fixture("permission.request.list.directoryQuery");
+        let home_forms = fixture("form.list.directoryQuery");
+        let (base, _, server) = serve(10, move |request| {
             let cursor = request.query().get("cursor").cloned();
+            let workspace = request
+                .query()
+                .get("location[directory]")
+                .is_some_and(|dir| dir == "/state/workspace");
             match (request.path(), cursor) {
+                ("/api/permission/request", _) if workspace => ok(child_permissions.clone()),
+                ("/api/permission/request", _) => ok(home_permissions.clone()),
+                ("/api/form", _) if workspace => ok(forms.clone()),
+                ("/api/form", _) => ok(home_forms.clone()),
                 ("/api/info", _) => ok(info.clone()),
                 ("/api/project", _) => ok(projects.clone()),
                 ("/api/session", None) => ok(page1.clone()),
@@ -2235,7 +2551,7 @@ mod tests {
             }
         });
         let api = Api::new(config(base, Some("secret"))).unwrap();
-        let bootstrap = api.bootstrap().unwrap();
+        let bootstrap = api.bootstrap(&[]).unwrap();
         server.join().unwrap();
 
         assert_eq!(bootstrap.version, "2.0.8");
@@ -2253,6 +2569,26 @@ mod tests {
             .iter()
             .all(|project| project.worktree.starts_with('/')));
         assert_eq!(bootstrap.statuses.get(&running), Some(&RunStatus::Busy));
+        assert!(bootstrap.pending_complete);
+        let ids: Vec<_> = bootstrap.pending.iter().map(PendingRequest::id).collect();
+        assert_eq!(
+            ids,
+            [
+                "per_0d58bc8dd001QchLXJK02UCCAr",
+                "frm_0d58bede7001Oe4MviTBLpPVWZ"
+            ]
+        );
+        let PendingRequest::Permission { directory, request } = &bootstrap.pending[0] else {
+            panic!("unexpected {:?}", bootstrap.pending[0]);
+        };
+        assert_eq!(directory, "/state/workspace");
+        assert!(
+            bootstrap
+                .sessions
+                .iter()
+                .all(|session| session.id != request.session_id),
+            "the request belongs to a child session outside the root list"
+        );
 
         for name in ["session.get", "session.create", "session.get.renamed"] {
             let response: protocol::SessionResponse =

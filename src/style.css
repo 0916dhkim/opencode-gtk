@@ -887,11 +887,16 @@ button.model-picker-row {
   font-size: 0.9em;
 }
 
-.question-section {
-  padding: 1.04em;
-  border: 1px solid @oc_border_question_section;
+.form-notice {
+  padding: 0.3em 0.3em 0.3em 0.89em;
+  border: 1px solid @oc_border_form_notice;
   border-radius: 0.67em;
-  background: @oc_bg_question_section;
+  background: @oc_bg_form_notice;
+}
+
+.form-notice-label {
+  color: @oc_fg_question_header;
+  font-weight: 600;
 }
 
 .question-header {
