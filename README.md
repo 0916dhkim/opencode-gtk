@@ -16,7 +16,7 @@ A lightweight GTK 4 desktop client for a remote [OpenCode](https://opencode.ai) 
 - Answers permission requests, including those of subagent sessions, in place of the composer
 - Sends messages while the agent works: steer them into the current run or queue them for after it
 - Loads long conversations in pages
-- Lists running subagents and shell commands of every session in a sidebar "Background" section; clicking one opens its session
+- Lists running subagents and shell commands of the active session in a sidebar Background section
 
 Prompts always use the server's default agent; there is no agent picker. Forms (input requests from tools, MCP servers or plugins) are not filled in here: a one-line notice above the composer names the waiting form and offers **Open web UI** and **Cancel** (`Ctrl+Shift+X`). The client never answers a form on its own.
 
@@ -174,7 +174,7 @@ cargo run -- --preview
 UI tests run only headless (Xvfb and D-Bus, for example in Docker), never on a live desktop:
 
 - `tests/smoke-ui.sh`: the window opens and survives the everyday shortcuts, in preview mode and against an unreachable server.
-- `tests/remote-flow-ui.sh`: a full flow (bootstrap, paging, rename, create, prompt with an attachment, steer, queue, tray switch/cancel, Stop and Resume (with a parked steer, and with queued messages only), the paused composer warning, permissions, form cancel, the Background section (clicking a job opens its session, a new running child is fetched live), reconnects) against `tests/fake_opencode_server.py`, a fake 2.x server built from real 2.0.8 captures. `python3 tests/fake_v2/selftest.py` checks the fake server itself.
+- `tests/remote-flow-ui.sh`: a full flow (bootstrap, paging, rename, create, prompt with an attachment, steer, queue, tray switch/cancel, Stop and Resume (with a parked steer, and with queued messages only), the paused composer warning, permissions, form cancel, the Background section (only the active session's jobs, switching tabs switches them, a new running child is fetched live), reconnects) against `tests/fake_opencode_server.py`, a fake 2.x server built from real 2.0.8 captures. `python3 tests/fake_v2/selftest.py` checks the fake server itself.
 - `tests/keyring-ui.sh`: the password saved in **Settings** lands in a real Secret Service (gnome-keyring, installed at test time; see the script header), survives app and keyring restarts, is removed by unchecking **Remember**, is never saved from `OPENCODE_SERVER_PASSWORD`, and the client still connects without a session bus.
 - `tests/v2/e2e.sh --state DIR`: runs against a real, isolated OpenCode 2.0.8 server with a scripted mock model provider in Docker (`tests/v2/README.md`). It runs the ignored live API test (`cargo test live_server_end_to_end -- --ignored`) and a GUI smoke test, then takes the server down. It builds its Docker image from the published CLI, so CI does not run it.
 

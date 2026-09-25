@@ -1,5 +1,6 @@
 //! Running background jobs for the sidebar's "Background" section: running
-//! child sessions (subagents) and running shell commands, of every session.
+//! child sessions (subagents) and running shell commands. The client tracks
+//! them for every session; the section lists those of the active session.
 //!
 //! OpenCode 2.0.8 has no job list. Subagents are the sessions `GET
 //! /api/session/active` reports running that have a `parentID`, kept live by
@@ -150,16 +151,16 @@ pub struct JobRow {
     pub id: String,
     pub kind: JobKind,
     pub title: String,
-    /// Title of the session that started the job, when known.
+    /// Title of the descendant session that started the job; `None` when
+    /// the active session started it.
     pub owner: Option<String>,
-    /// The root session whose tab a click activates; `None` when unknown.
-    pub root: Option<String>,
     /// Start time in ms; 0 when unknown.
     pub started: u64,
 }
 
 impl JobRow {
-    /// `<kind> · <owner> · <elapsed>`; unknown parts are left out.
+    /// `<kind> · <owner> · <elapsed>`; the owner is shown only for a job a
+    /// descendant started, and an unknown start time is left out.
     pub fn subtitle(&self, now: u64) -> String {
         let (label, elapsed) = self.subtitle_parts(now);
         match elapsed {
@@ -420,45 +421,47 @@ impl Jobs {
         }
     }
 
-    /// The rows, oldest job first. A running session shows once its info is
-    /// known and it has a parent.
-    pub fn rows(&self, roots: &[Session]) -> Vec<JobRow> {
-        let roots: HashMap<&str, &Session> = roots
-            .iter()
-            .filter(|session| session.parent_id.is_none())
-            .map(|session| (session.id.as_str(), session))
-            .collect();
-        let title_of = |id: &str| {
-            roots
-                .get(id)
-                .map(|session| session.title.clone())
-                .or_else(|| self.sessions.get(id).map(|session| session.title.clone()))
+    /// The active session's rows, oldest job first: its running child
+    /// sessions, nested ones included, and the shells it or one of those
+    /// started. A running session shows once its info is known and it has a
+    /// parent; a job whose starter does not lead up to `active` is left out.
+    pub fn rows(&self, active: Option<&str>) -> Vec<JobRow> {
+        let Some(active) = active else {
+            return Vec::new();
         };
         let mut rows = Vec::new();
         for id in &self.running {
             let Some(session) = self.sessions.get(id) else {
                 continue;
             };
-            let Some(parent) = session.parent_id.as_deref() else {
+            let Some(owner) = session
+                .parent_id
+                .as_deref()
+                .and_then(|parent| self.starter(parent, active))
+            else {
                 continue;
             };
             rows.push(JobRow {
                 id: id.clone(),
                 kind: JobKind::Subagent,
                 title: session.title.clone(),
-                owner: title_of(parent),
-                root: self.root_of(parent, &roots),
+                owner,
                 started: session.time.created,
             });
         }
         for shell in self.shells.values() {
-            let owner = shell.session_id.as_deref();
+            let Some(owner) = shell
+                .session_id
+                .as_deref()
+                .and_then(|id| self.starter(id, active))
+            else {
+                continue;
+            };
             rows.push(JobRow {
                 id: shell.id.clone(),
                 kind: JobKind::Shell,
                 title: command_title(&shell.command),
-                owner: owner.and_then(title_of),
-                root: owner.and_then(|id| self.root_of(id, &roots)),
+                owner,
                 started: shell.started,
             });
         }
@@ -466,14 +469,20 @@ impl Jobs {
         rows
     }
 
-    /// Walks `parentID` up from `id` to a listed root session.
-    fn root_of(&self, id: &str, roots: &HashMap<&str, &Session>) -> Option<String> {
-        let mut id = id;
+    /// Whether the session `id` that started a job belongs to `active`:
+    /// `Some(None)` for `active` itself, `Some(title)` for a known
+    /// descendant (walking `parentID` up), `None` otherwise.
+    fn starter(&self, id: &str, active: &str) -> Option<Option<String>> {
+        if id == active {
+            return Some(None);
+        }
+        let session = self.sessions.get(id)?;
+        let mut parent = session.parent_id.as_deref()?;
         for _ in 0..MAX_PARENT_DEPTH {
-            if roots.contains_key(id) {
-                return Some(id.to_owned());
+            if parent == active {
+                return Some(Some(session.title.clone()));
             }
-            id = self.sessions.get(id)?.parent_id.as_deref()?;
+            parent = self.sessions.get(parent)?.parent_id.as_deref()?;
         }
         None
     }
@@ -545,8 +554,8 @@ mod tests {
         job_event(&event, &kind, event.directory())
     }
 
-    /// `(id, kind, title, owner, root)`.
-    type RowSummary<'a> = (&'a str, JobKind, &'a str, Option<&'a str>, Option<&'a str>);
+    /// `(id, kind, title, owner)`.
+    type RowSummary<'a> = (&'a str, JobKind, &'a str, Option<&'a str>);
 
     fn summary(rows: &[JobRow]) -> Vec<RowSummary<'_>> {
         rows.iter()
@@ -556,14 +565,17 @@ mod tests {
                     row.kind,
                     row.title.as_str(),
                     row.owner.as_deref(),
-                    row.root.as_deref(),
                 )
             })
             .collect()
     }
 
+    fn ids(rows: Vec<JobRow>) -> Vec<String> {
+        rows.into_iter().map(|row| row.id).collect()
+    }
+
     #[test]
-    fn rows_combine_running_children_and_shells() {
+    fn rows_are_the_active_sessions_children_and_shells() {
         let roots = roots();
         let directories = vec!["/repo".to_owned()];
         let context = Context {
@@ -590,17 +602,17 @@ mod tests {
                         NOW - 60_000,
                     ),
                     shell("sh_orphan", "/repo", None, "sleep 100", NOW - 1_000),
+                    shell("sh_other", "/repo", Some("ses_b"), "make", NOW - 3_000),
                 ],
                 &["/repo"],
                 &["/repo"],
             ),
             &context,
         );
-        assert!(
-            jobs.rows(&roots)
-                .iter()
-                .all(|row| row.kind == JobKind::Shell),
-            "children show once their info is known"
+        assert_eq!(
+            ids(jobs.rows(Some("ses_a"))),
+            ["sh_dev"],
+            "children show once their info is known, and so do the shells they started"
         );
         let wanted = jobs.take_wanted(&context);
         assert_eq!(
@@ -630,46 +642,96 @@ mod tests {
             ),
         ]);
         assert!(jobs.take_wanted(&context).is_empty());
-        let rows = jobs.rows(&roots);
+        let rows = jobs.rows(Some("ses_a"));
         assert_eq!(
             summary(&rows),
             [
-                (
-                    "sh_dev",
-                    JobKind::Shell,
-                    "pnpm dev --port 5173",
-                    Some("Fix the attach clip padding"),
-                    Some("ses_a")
-                ),
-                (
-                    "ses_child",
-                    JobKind::Subagent,
-                    "Audit v1 call sites",
-                    Some("Fix the attach clip padding"),
-                    Some("ses_a")
-                ),
+                ("sh_dev", JobKind::Shell, "pnpm dev --port 5173", None),
+                ("ses_child", JobKind::Subagent, "Audit v1 call sites", None),
                 (
                     "ses_grandchild",
                     JobKind::Subagent,
                     "Nested audit",
-                    Some("Audit v1 call sites"),
-                    Some("ses_a")
+                    Some("Audit v1 call sites")
                 ),
                 (
                     "sh_test",
                     JobKind::Shell,
                     "cargo test --all-targets",
-                    Some("Nested audit"),
-                    Some("ses_a")
+                    Some("Nested audit")
                 ),
-                ("sh_orphan", JobKind::Shell, "sleep 100", None, None),
-            ]
+            ],
+            "neither another session's shell nor one without a session"
+        );
+        let subtitles: Vec<_> = rows.iter().map(|row| row.subtitle(NOW)).collect();
+        assert_eq!(
+            subtitles,
+            [
+                "shell · 22m",
+                "subagent · 4m",
+                "subagent · Audit v1 call sites · 2m",
+                "shell · Nested audit · 1m",
+            ],
+            "the owner shows only when a descendant started the job"
         );
         assert_eq!(
-            rows[0].subtitle(NOW),
-            "shell · Fix the attach clip padding · 22m"
+            summary(&jobs.rows(Some("ses_b"))),
+            [("sh_other", JobKind::Shell, "make", None)],
+            "switching sessions switches the rows"
         );
-        assert_eq!(rows[4].subtitle(NOW), "shell · <1m");
+        assert!(
+            jobs.rows(Some("ses_unknown")).is_empty(),
+            "hidden when none"
+        );
+        assert!(jobs.rows(None).is_empty(), "no active session, no rows");
+    }
+
+    #[test]
+    fn switching_the_active_session_filters_by_its_descendants() {
+        let roots = roots();
+        let context = Context {
+            roots: &roots,
+            directories: &[],
+        };
+        let mut jobs = Jobs::default();
+        for (id, parent, title) in [
+            ("ses_a1", "ses_a", "A child"),
+            ("ses_a2", "ses_a1", "A grandchild"),
+            ("ses_b1", "ses_b", "B child"),
+        ] {
+            jobs.apply_event(
+                JobEvent::ChildCreated(session(id, Some(parent), title, 10)),
+                &context,
+            );
+        }
+        for id in ["ses_a2", "ses_b1"] {
+            assert!(jobs.apply_event(JobEvent::Started(id.into()), &context));
+        }
+        for (id, owner) in [("sh_a", "ses_a1"), ("sh_b", "ses_b")] {
+            jobs.apply_event(
+                JobEvent::ShellCreated(shell(id, "/repo", Some(owner), "run", 20)),
+                &context,
+            );
+        }
+        assert_eq!(
+            summary(&jobs.rows(Some("ses_a"))),
+            [
+                ("ses_a2", JobKind::Subagent, "A grandchild", Some("A child")),
+                ("sh_a", JobKind::Shell, "run", Some("A child")),
+            ],
+            "a nested subagent and a subagent's shell, not the idle child itself"
+        );
+        assert_eq!(
+            summary(&jobs.rows(Some("ses_b"))),
+            [
+                ("ses_b1", JobKind::Subagent, "B child", None),
+                ("sh_b", JobKind::Shell, "run", None),
+            ]
+        );
+        jobs.apply_event(JobEvent::Ended("ses_b1".into()), &context);
+        jobs.apply_event(JobEvent::ShellRemoved("sh_b".into()), &context);
+        assert!(jobs.rows(Some("ses_b")).is_empty(), "hidden when none");
+        assert_eq!(jobs.rows(Some("ses_a")).len(), 2);
     }
 
     #[test]
@@ -692,9 +754,10 @@ mod tests {
         assert_eq!(jobs.take_wanted(&context), ["ses_gone"]);
         jobs.apply_session_info(vec![("ses_gone".into(), Err("Session not found".into()))]);
         assert!(jobs.take_wanted(&context).is_empty(), "no retry storm");
-        let rows = jobs.rows(&roots);
-        assert_eq!(rows[0].owner, None);
-        assert_eq!(rows[0].root, None, "not activatable");
+        assert!(
+            jobs.rows(Some("ses_a")).is_empty(),
+            "an unresolved starter belongs to no session"
+        );
         // The next refresh retries it.
         jobs.begin_refresh();
         jobs.apply_snapshot(
@@ -723,7 +786,7 @@ mod tests {
             "ses_archived".into(),
             Ok(session("ses_archived", None, "Archived", 1)),
         )]);
-        assert!(jobs.rows(&roots).is_empty());
+        assert!(jobs.rows(Some("ses_archived")).is_empty());
         assert!(!jobs.apply_event(JobEvent::Started("ses_archived".into()), &context));
         assert!(
             !jobs.apply_event(JobEvent::Started("ses_a".into()), &context),
@@ -759,16 +822,14 @@ mod tests {
             jobs.take_wanted(&context).is_empty(),
             "session.created supplied the info"
         );
-        let rows = jobs.rows(&roots);
+        assert!(
+            jobs.rows(Some("ses_a")).is_empty(),
+            "another session's child"
+        );
+        let rows = jobs.rows(Some("ses_b"));
         assert_eq!(
             summary(&rows),
-            [(
-                "ses_child",
-                JobKind::Subagent,
-                "Mock child task",
-                Some("Reflection projection retries"),
-                Some("ses_b")
-            )]
+            [("ses_child", JobKind::Subagent, "Mock child task", None)]
         );
         assert_eq!(rows[0].started, NOW - 1_000);
         let renamed = event(json!({
@@ -776,7 +837,7 @@ mod tests {
         }))
         .unwrap();
         assert!(jobs.apply_event(renamed, &context));
-        assert_eq!(jobs.rows(&roots)[0].title, "Renamed task");
+        assert_eq!(jobs.rows(Some("ses_b"))[0].title, "Renamed task");
         for (index, kind) in ["succeeded", "failed", "interrupted"]
             .into_iter()
             .enumerate()
@@ -788,7 +849,7 @@ mod tests {
             }))
             .unwrap();
             assert!(jobs.apply_event(ended, &context), "{kind}");
-            assert!(jobs.rows(&roots).is_empty(), "{kind}");
+            assert!(jobs.rows(Some("ses_b")).is_empty(), "{kind}");
             assert!(jobs.apply_event(JobEvent::Started("ses_child".into()), &context));
         }
     }
@@ -830,7 +891,8 @@ mod tests {
             ),
             "neither a listed location nor a known owner"
         );
-        assert_eq!(jobs.rows(&roots).len(), 2);
+        assert_eq!(ids(jobs.rows(Some("ses_a"))), ["sh_1"]);
+        assert_eq!(ids(jobs.rows(Some("ses_b"))), ["sh_2"]);
         let exited = event(json!({
             "id": "evt_x", "type": "shell.exited", "location": { "directory": "/repo" },
             "data": { "id": "sh_1", "exit": 0, "status": "exited" }
@@ -843,7 +905,8 @@ mod tests {
         }))
         .unwrap();
         assert!(jobs.apply_event(deleted, &context));
-        assert!(jobs.rows(&roots).is_empty(), "hidden when empty");
+        assert!(jobs.rows(Some("ses_a")).is_empty(), "hidden when empty");
+        assert!(jobs.rows(Some("ses_b")).is_empty(), "hidden when empty");
         assert!(!jobs.apply_event(JobEvent::ShellRemoved("sh_1".into()), &context));
         let exited_shell: protocol::ShellInfo = serde_json::from_value(json!({
             "id": "sh_4", "status": "exited", "command": "true", "metadata": {}
@@ -884,8 +947,7 @@ mod tests {
             ),
             &context,
         );
-        let ids: Vec<_> = jobs.rows(&roots).into_iter().map(|row| row.id).collect();
-        assert_eq!(ids, ["sh_b", "sh_a2"]);
+        assert_eq!(ids(jobs.rows(Some("ses_a"))), ["sh_b", "sh_a2"]);
     }
 
     #[test]
@@ -902,9 +964,9 @@ mod tests {
         );
         jobs.apply_event(JobEvent::Started("ses_c".into()), &context);
         jobs.apply_snapshot(None, ShellSnapshot::default(), &context);
-        assert_eq!(jobs.rows(&roots).len(), 1);
+        assert_eq!(jobs.rows(Some("ses_a")).len(), 1);
         jobs.apply_snapshot(Some(&active(&[])), ShellSnapshot::default(), &context);
-        assert!(jobs.rows(&roots).is_empty());
+        assert!(jobs.rows(Some("ses_a")).is_empty());
     }
 
     #[test]
@@ -937,8 +999,7 @@ mod tests {
             "ses_c".into(),
             Ok(session("ses_c", Some("ses_a"), "C", 1)),
         )]);
-        let ids: Vec<_> = jobs.rows(&roots).into_iter().map(|row| row.id).collect();
-        assert_eq!(ids, ["sh_2"]);
+        assert_eq!(ids(jobs.rows(Some("ses_a"))), ["sh_2"]);
         // Only one refresh is replayed.
         jobs.apply_event(JobEvent::ShellRemoved("sh_2".into()), &context);
         jobs.apply_snapshot(
@@ -950,21 +1011,20 @@ mod tests {
             ),
             &context,
         );
-        assert_eq!(jobs.rows(&roots).len(), 1);
+        assert_eq!(jobs.rows(Some("ses_a")).len(), 1);
         jobs.begin_refresh();
         jobs.apply_event(JobEvent::ShellRemoved("sh_2".into()), &context);
         jobs.abandon_refresh();
         jobs.apply_snapshot(
             None,
             snapshot(
-                vec![shell("sh_3", "/repo", None, "three", 9)],
+                vec![shell("sh_3", "/repo", Some("ses_a"), "three", 9)],
                 &["/repo"],
                 &["/repo"],
             ),
             &context,
         );
-        let ids: Vec<_> = jobs.rows(&roots).into_iter().map(|row| row.id).collect();
-        assert_eq!(ids, ["sh_3"]);
+        assert_eq!(ids(jobs.rows(Some("ses_a"))), ["sh_3"]);
     }
 
     #[test]
@@ -981,9 +1041,9 @@ mod tests {
         );
         jobs.begin_refresh();
         jobs.clear();
-        assert!(jobs.rows(&roots).is_empty());
+        assert!(jobs.rows(Some("ses_a")).is_empty());
         jobs.apply_snapshot(None, ShellSnapshot::default(), &context);
-        assert!(jobs.rows(&roots).is_empty(), "the journal went too");
+        assert!(jobs.rows(Some("ses_a")).is_empty(), "the journal went too");
     }
 
     #[test]
@@ -999,12 +1059,11 @@ mod tests {
         ] {
             assert_eq!(format_elapsed(ms), expected, "{ms}");
         }
-        let row = JobRow {
+        let mut row = JobRow {
             id: "x".into(),
             kind: JobKind::Subagent,
             title: "t".into(),
             owner: Some("Owner".into()),
-            root: None,
             started: 0,
         };
         assert_eq!(
@@ -1012,5 +1071,7 @@ mod tests {
             "subagent · Owner",
             "no elapsed time without a start"
         );
+        row.owner = None;
+        assert_eq!(row.subtitle(NOW), "subagent");
     }
 }

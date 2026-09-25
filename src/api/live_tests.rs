@@ -362,10 +362,11 @@ fn job_events(log: &[Value]) -> Vec<jobs::JobEvent> {
         .collect()
 }
 
-fn job_rows(jobs: &Jobs, roots: &[Session]) -> Vec<(String, JobKind, Option<String>)> {
-    jobs.rows(roots)
+/// The active session's rows as `(id, kind, owner)`.
+fn job_rows(jobs: &Jobs, active: &str) -> Vec<(String, JobKind, Option<String>)> {
+    jobs.rows(Some(active))
         .into_iter()
-        .map(|row| (row.id, row.kind, row.root))
+        .map(|row| (row.id, row.kind, row.owner))
         .collect()
 }
 
@@ -654,8 +655,7 @@ fn live_server_end_to_end() {
         let mut listed = false;
         for event in job_events(&live.log) {
             jobs.apply_event(event, &context);
-            listed |= job_rows(&jobs, &roots)
-                == [(child.clone(), JobKind::Subagent, Some(parent.id.clone()))];
+            listed |= job_rows(&jobs, &parent.id) == [(child.clone(), JobKind::Subagent, None)];
         }
         assert!(listed, "the running child was a subagent job of its parent");
         assert!(
@@ -663,7 +663,7 @@ fn live_server_end_to_end() {
             "session.created named it"
         );
         assert!(
-            job_rows(&jobs, &roots).is_empty(),
+            job_rows(&jobs, &parent.id).is_empty(),
             "and left when it finished"
         );
         eprintln!("PASS background subagent listed while running, gone after");
@@ -706,14 +706,17 @@ fn live_server_end_to_end() {
         infos.iter().find(|(id, _)| id == &child_id)
     );
     child_jobs.apply_session_info(infos);
-    let rows = child_jobs.rows(&roots);
+    assert!(
+        child_jobs.rows(Some(&parent.id)).is_empty(),
+        "another session's child is not listed"
+    );
+    let rows = child_jobs.rows(Some(&delegating.id));
     let row = rows
         .iter()
         .find(|row| row.id == child_id)
         .expect("the waiting child is a job");
     assert_eq!(row.kind, JobKind::Subagent);
-    assert_eq!(row.root.as_deref(), Some(delegating.id.as_str()));
-    assert_eq!(row.owner.as_deref(), Some(delegating.title.as_str()));
+    assert_eq!(row.owner, None, "started by the active session itself");
     assert!(row.started > 0);
     let after_snapshot = live.mark();
     eprintln!(
@@ -738,7 +741,10 @@ fn live_server_end_to_end() {
         child_jobs.apply_event(event, &context);
     }
     assert!(
-        child_jobs.rows(&roots).iter().all(|row| row.id != child_id),
+        child_jobs
+            .rows(Some(&delegating.id))
+            .iter()
+            .all(|row| row.id != child_id),
         "session.execution.succeeded removed the child"
     );
     assert!(!live
@@ -797,12 +803,8 @@ fn live_server_end_to_end() {
     }
     shell_jobs.apply_snapshot(None, shells, &context);
     assert_eq!(
-        job_rows(&shell_jobs, &roots),
-        [(
-            shell_id.clone(),
-            JobKind::Shell,
-            Some(shell_owner.id.clone())
-        )]
+        job_rows(&shell_jobs, &shell_owner.id),
+        [(shell_id.clone(), JobKind::Shell, None)]
     );
     let exited = live.wait_for_since(since, "shell.exited", 30, |event| {
         event["type"] == "shell.exited" && event["data"]["id"] == shell_id.as_str()
@@ -812,7 +814,7 @@ fn live_server_end_to_end() {
         shell_jobs.apply_event(event, &context);
     }
     assert!(
-        job_rows(&shell_jobs, &roots).is_empty(),
+        job_rows(&shell_jobs, &shell_owner.id).is_empty(),
         "shell.exited removed it"
     );
     let after = live.api.load_shells(std::slice::from_ref(&live.workspace));

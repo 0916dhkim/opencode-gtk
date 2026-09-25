@@ -774,14 +774,10 @@ fn build_jobs_section() -> (gtk::Box, gtk::Label, gtk::Box) {
     (section, count, list)
 }
 
-/// One job: kind icon, title, and `<kind> · <owner> · <elapsed>`. It is a
-/// button that activates the owning root session's tab, or a plain row
-/// when that session is unknown.
-fn background_job_row(
-    row: &jobs::JobRow,
-    now: u64,
-    controller: &Weak<RefCell<Controller>>,
-) -> gtk::Widget {
+/// One job of the active session: kind icon, title, and `<kind> · <owner> ·
+/// <elapsed>`. A plain row: every job shown belongs to the open session, so
+/// there is nothing to activate.
+fn background_job_row(row: &jobs::JobRow, now: u64) -> gtk::Box {
     let content = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     let icon = gtk::Label::new(Some(match row.kind {
         jobs::JobKind::Subagent => "◆",
@@ -815,29 +811,9 @@ fn background_job_row(
     text.append(&meta);
     content.append(&icon);
     content.append(&text);
-    let tooltip = format!("{}\n{subtitle}", row.title);
-    let Some(root) = row.root.clone() else {
-        content.add_css_class("background-job");
-        content.add_css_class("inert");
-        content.set_tooltip_text(Some(&tooltip));
-        return content.upcast();
-    };
-    let button = gtk::Button::new();
-    button.set_child(Some(&content));
-    // Like the tab rows: never a keyboard target, so focus that falls back
-    // when a prompt replaces the composer cannot land here and turn a stray
-    // Space/Enter into a tab switch.
-    button.set_focusable(false);
-    button.set_focus_on_click(false);
-    button.add_css_class("background-job");
-    button.set_tooltip_text(Some(&format!("{tooltip}\nOpen session")));
-    let weak = controller.clone();
-    button.connect_clicked(move |_| {
-        if let Some(controller) = weak.upgrade() {
-            Controller::open_tab(&controller, &root);
-        }
-    });
-    button.upcast()
+    content.add_css_class("background-job");
+    content.set_tooltip_text(Some(&format!("{}\n{subtitle}", row.title)));
+    content
 }
 
 fn paperclip_icon(pixel_size: i32) -> gtk::DrawingArea {
@@ -4638,19 +4614,28 @@ impl Controller {
         self.refresh_jobs();
     }
 
-    /// Rebuilds the "Background" section. While it is shown, the elapsed
-    /// times refresh every [`jobs::ELAPSED_REFRESH_SECONDS`].
+    /// Rebuilds the "Background" section from the active session's jobs;
+    /// [`Self::refresh_tabs`] calls it, so it follows every tab switch.
+    /// While it is shown, the elapsed times refresh every
+    /// [`jobs::ELAPSED_REFRESH_SECONDS`].
     fn refresh_jobs(&mut self) {
-        let rows = self.jobs.rows(&self.state.sessions);
+        let rows = self.jobs.rows(self.state.active.as_deref());
         let now = unix_millis();
         self.widgets.jobs_section.set_visible(!rows.is_empty());
         self.widgets.jobs_count.set_label(&rows.len().to_string());
         clear_box(&self.widgets.jobs_list);
         for row in &rows {
-            self.widgets
-                .jobs_list
-                .append(&background_job_row(row, now, &self.self_weak));
+            self.widgets.jobs_list.append(&background_job_row(row, now));
         }
+        debug_log(format!(
+            "jobs active={} rows={} ids={}",
+            self.state.active.as_deref().unwrap_or("-"),
+            rows.len(),
+            rows.iter()
+                .map(|row| row.id.as_str())
+                .collect::<Vec<_>>()
+                .join(",")
+        ));
         if rows.is_empty() {
             if let Some(tick) = self.jobs_tick.take() {
                 tick.remove();

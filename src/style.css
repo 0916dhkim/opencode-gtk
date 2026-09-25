@@ -260,19 +260,8 @@ button.session-id-copy.copied {
   margin-bottom: 0.3em;
 }
 
-.background-job,
-button.background-job {
-  min-height: 0;
+.background-job {
   padding: 0.44em 0.74em;
-  border: none;
-  border-radius: 0.59em;
-  background: transparent;
-  background-image: none;
-  box-shadow: none;
-}
-
-button.background-job:hover {
-  background: @oc_bg_sidebar_new_session_hover;
 }
 
 .background-job-icon {

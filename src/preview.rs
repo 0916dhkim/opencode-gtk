@@ -23,9 +23,6 @@ const OTHER_ID: &str = "ses_other";
 const RUNNING_ID: &str = "ses_running";
 /// A stopped session whose waiting messages are parked.
 const PARKED_ID: &str = "ses_parked";
-/// A root session with a running shell but no open tab: clicking its job
-/// opens it.
-const RETRIES_ID: &str = "ses_retries";
 /// A running background subagent of the active session.
 const CHILD_ID: &str = "ses_preview_child";
 const CREATED: u64 = 1_704_067_200_000;
@@ -90,7 +87,6 @@ impl State {
         let mut messages = HashMap::new();
         messages.insert(ACTIVE_ID.to_owned(), active_messages());
         messages.insert(OTHER_ID.to_owned(), other_messages());
-        messages.insert(RETRIES_ID.to_owned(), retries_messages());
         messages.insert(RUNNING_ID.to_owned(), running_messages());
         messages.insert(PARKED_ID.to_owned(), parked_messages());
         let waiting = |id: &str, text: &str, delivery, created| Waiting {
@@ -164,7 +160,6 @@ impl State {
                     CREATED - 10_800_000,
                     CREATED - 10_700_000,
                 ),
-                retries_session(),
             ],
             messages,
             next_id: 1,
@@ -664,8 +659,9 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
-/// Two running shells, as `GET /api/shell` lists them, started relative to
-/// now so the elapsed times read naturally.
+/// Running shells, as `GET /api/shell` lists them, started relative to now
+/// so the elapsed times read naturally: two of the active session (one its
+/// subagent started) and the running tab's test run.
 fn canned_shells() -> ShellSnapshot {
     let now = now_ms() as i64;
     let shell = |id: &str, command: &str, owner: &str, minutes: i64| {
@@ -684,7 +680,8 @@ fn canned_shells() -> ShellSnapshot {
     ShellSnapshot {
         shells: vec![
             shell("sh_preview_dev", "pnpm dev --port 5173", ACTIVE_ID, 22),
-            shell("sh_preview_test", "cargo test --all-targets", RETRIES_ID, 1),
+            shell("sh_preview_grep", "rg -n 'api/v1' src", CHILD_ID, 2),
+            shell("sh_preview_test", "cargo test api::", RUNNING_ID, 1),
         ],
         queried: [DIRECTORY.to_owned()].into(),
         covered: HashSet::from([DIRECTORY.to_owned()]),
@@ -793,16 +790,6 @@ fn other_session() -> Session {
         Some("SSH tunnel notes"),
         CREATED - 86_400_000,
         CREATED - 3_600_000,
-    )
-}
-
-fn retries_session() -> Session {
-    session_info(
-        RETRIES_ID,
-        DIRECTORY,
-        Some("Reflection projection retries"),
-        CREATED - 7_200_000,
-        CREATED - 1_800_000,
     )
 }
 
@@ -942,23 +929,6 @@ fn running_messages() -> Vec<protocol::SessionMessage> {
                 },
                 "time": { "created": RUNNING_CREATED + 21_000, "ran": RUNNING_CREATED + 21_100 }
             }]
-        })),
-    ]
-}
-
-fn retries_messages() -> Vec<protocol::SessionMessage> {
-    vec![
-        user_text(
-            "msg_retries_user",
-            CREATED - 7_200_000,
-            "Run the projection tests while I look at the retry backoff.",
-        ),
-        entry(json!({
-            "id": "msg_retries_assistant",
-            "type": "assistant",
-            "time": { "created": CREATED - 7_170_000, "completed": CREATED - 7_160_000 },
-            "agent": "build",
-            "content": [{ "type": "text", "text": "Started `cargo test --all-targets` in the background." }]
         })),
     ]
 }
@@ -1405,35 +1375,27 @@ mod tests {
         };
         jobs.apply_session_info(results);
         let now = now_ms();
-        let rows: Vec<_> = jobs
-            .rows(&bootstrap.sessions)
-            .into_iter()
-            .map(|row| (row.title.clone(), row.root.clone(), row.subtitle(now)))
-            .collect();
+        let rows = |active: &str| -> Vec<(String, String)> {
+            jobs.rows(Some(active))
+                .into_iter()
+                .map(|row| (row.title.clone(), row.subtitle(now)))
+                .collect()
+        };
+        let row = |title: &str, subtitle: &str| (title.to_owned(), subtitle.to_owned());
         assert_eq!(
-            rows,
+            rows(ACTIVE_ID),
             [
-                (
-                    "pnpm dev --port 5173".to_owned(),
-                    Some(ACTIVE_ID.to_owned()),
-                    "shell · Fix the attach clip padding · 22m".to_owned()
-                ),
-                (
-                    "Audit v1 call sites".to_owned(),
-                    Some(ACTIVE_ID.to_owned()),
-                    "subagent · Fix the attach clip padding · 4m".to_owned()
-                ),
-                (
-                    "cargo test --all-targets".to_owned(),
-                    Some(RETRIES_ID.to_owned()),
-                    "shell · Reflection projection retries · 1m".to_owned()
-                ),
+                row("pnpm dev --port 5173", "shell · 22m"),
+                row("Audit v1 call sites", "subagent · 4m"),
+                row("rg -n 'api/v1' src", "shell · Audit v1 call sites · 2m"),
             ]
         );
-        assert!(
-            !server_state().tabs.iter().any(|tab| tab.id == RETRIES_ID),
-            "clicking the last job opens a new tab"
+        assert_eq!(
+            rows(RUNNING_ID),
+            [row("cargo test api::", "shell · 1m")],
+            "switching tabs shows another session's job"
         );
+        assert!(rows(OTHER_ID).is_empty(), "and hides the section");
     }
 
     #[test]

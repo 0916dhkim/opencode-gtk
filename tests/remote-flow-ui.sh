@@ -45,10 +45,12 @@ SES_MAIN="ses_f90000000001ffeIntegration"
 SES_OTHER="ses_f90000000002ffeSecondSessn"
 SES_STALE="ses_0000000000v1StaleTab000001"
 SES_CHILD="ses_f90000000003ffeChildOfMain"
-# --background-jobs seeds (fake_opencode_server.py): a running child of SES_MAIN with a dev server in
-# the workspace, and a test run in OTHER_DIR started by SES_BG_OWNER, a root session without a tab.
+# --background-jobs seeds (fake_opencode_server.py): a running child of SES_MAIN with a dev server it
+# started in the workspace, and a test run in OTHER_DIR started by SES_BG_OWNER, a root session
+# without a tab (so the Background section, which lists only the active session's jobs, never shows it).
 SES_BG_CHILD="ses_f90000000004ffeBgChildTask"
 SES_BG_OWNER="ses_f90000000005ffeBgShellOwnr"
+SH_BG_DEV="sh_f90000000001ffeBgDevServer"
 BOOT_PERMISSION="per_000000000001BootPermissn1"
 WORKSPACE="/state/workspace"
 OTHER_DIR="/state/other"
@@ -451,22 +453,28 @@ if [[ -n "${window}" ]] && app_alive; then
   [[ -z "${found}" ]] || printf '     decision: %s\n' "$(field "${found}" 'r["body"]["decision"]')"
 fi
 
-# ------------------------------------------------------------ 2b. Background section: click a job, live child
+# ------------------------------------------------------------ 2b. Background section: active session only, live child
 
 if [[ -n "${window}" ]] && app_alive; then
-  geometry
+  # The sidebar "Background" section lists only the active tab's jobs; ui.rs refresh_jobs logs
+  # `jobs active=<id> rows=<n> ids=<ids>` on every rebuild. SES_MAIN: the dev server (oldest) and
+  # the child that started it; SES_BG_OWNER's test run is not counted.
+  app_line=0
+  app_expect "jobs.active-only" "jobs active=${SES_MAIN} rows=2 ids=${SH_BG_DEV},${SES_BG_CHILD}\$"
+  app_mark
+  key ctrl+2
+  app_expect "jobs.switch-changes-rows" "jobs active=${SES_OTHER} rows=0 ids=\$"
+  app_mark
+  key ctrl+1
+  app_expect "jobs.switch-back" "jobs active=${SES_MAIN} rows=2 ids=${SH_BG_DEV},${SES_BG_CHILD}\$"
   mark_now
-  # Sidebar "Background" section (ui.rs build_jobs_section), just above the Tabs/Settings nav.
-  # Rows run oldest first; the newest (the OTHER_DIR test run owned by SES_BG_OWNER) is the
-  # last one. Measured on a 1180x820 Xvfb screenshot: its centre is at ~(120, H-125).
-  click_until "jobs.click-opens-owner" \
-    "http and route == 'message.list' and p.get('sessionID') == '${SES_BG_OWNER}' and 'cursor' not in q" \
-    "120,$((HEIGHT - 125)) 120,$((HEIGHT - 118)) 120,$((HEIGHT - 132)) 120,$((HEIGHT - 140))"
-  mark_now
-  # A child the client has never seen starts running: its info is fetched once, live.
+  app_mark
+  # A child the client has never seen starts running: its info is fetched once, live, and it
+  # joins its parent's (the active session's) rows.
   control "{\"action\": \"set_running\", \"sessionID\": \"${SES_CHILD}\", \"running\": true}"
   expect "jobs.live-child-info" "http and route == 'session.get' and p.get('sessionID') == '${SES_CHILD}'" "${timeout_s}" \
     "session.execution.started of an unknown child fetches its info"
+  app_expect "jobs.live-child-row" "jobs active=${SES_MAIN} rows=3 ids=.*${SES_CHILD}"
   control "{\"action\": \"set_running\", \"sessionID\": \"${SES_CHILD}\", \"running\": false}"
 fi
 
