@@ -63,6 +63,7 @@ NO_LOCATION = {
     "session.execution.interrupted",
     "session.usage.updated",
     "session.inbox.cancelled",
+    "session.inbox.delivery.changed",
 }
 NOT_DURABLE = {
     "server.connected",
@@ -522,7 +523,11 @@ class Server:
     def broadcast(self, event):
         with self.lock:
             clients = list(self.sse_clients)
-        self.record("event", type=event.get("type"), id=event.get("id"), sessionID=_event_session(event))
+        extra = {}
+        data = event.get("data")
+        if isinstance(data, dict) and "inboxID" in data:
+            extra["inboxID"] = data["inboxID"]
+        self.record("event", type=event.get("type"), id=event.get("id"), sessionID=_event_session(event), **extra)
         for client in clients:
             client.queue.put(event)
 
@@ -759,6 +764,9 @@ class Server:
         delivery = body.get("delivery") or "steer"
         if delivery not in ("steer", "queue"):
             raise invalid_request('Expected "steer" | "queue"\n  at ["delivery"]')
+        resume = body.get("resume", True)
+        if not isinstance(resume, bool):
+            raise invalid_request('Expected boolean\n  at ["resume"]')
         payload = {"text": text}
         if files:
             payload["files"] = files
@@ -785,31 +793,79 @@ class Server:
             {"inboxID": prompt_id, "sessionID": session.id, "item": {"type": "user", "payload": payload, "delivery": delivery}},
             session=session,
         )
-        self.ensure_runner(session)
+        if resume:
+            self.ensure_runner(session)
         return record, True
 
-    def ensure_runner(self, session):
+    def ensure_runner(self, session, scope="input"):
+        """Wakes the session like the server's run coordinator: a live runner widens its scope
+        ("input" subsumes "steer"); one that is stopping is awaited, then a fresh one starts."""
+        stopping = None
         with self.lock:
-            if session.runner is not None and session.runner.is_alive():
+            runner = session.runner
+            if runner is not None and runner.is_alive():
+                if not runner.exiting:
+                    if scope == "input":
+                        runner.scope = "input"
+                    return
+                stopping = runner
+        if stopping is not None:
+            stopping.join(timeout=10)
+        with self.lock:
+            runner = session.runner
+            if runner is not None and runner.is_alive() and not runner.exiting:
+                if scope == "input":
+                    runner.scope = "input"
                 return
-            session.runner = Runner(self, session)
+            session.runner = Runner(self, session, scope)
             session.runner.start()
 
-    def interrupt(self, session):
+    def interrupt(self, session, resume=False):
+        """Without resume every waiting item stays parked. With resume the session wakes for its
+        parked steers only (queued items stay parked), even when nothing was running."""
         with self.lock:
             runner = session.runner
             active = session.running and runner is not None and runner.is_alive()
         if active:
             runner.interrupt()
+        if resume:
+            with self.lock:
+                steer = any(item.get("delivery", "steer") == "steer" for item in session.inbox)
+            if steer:
+                self.ensure_runner(session, "steer")
         return {"interrupted": bool(active)}
 
+    def update_inbox(self, session, inbox_id, body):
+        """Conditional switch to the other mode: 409 when the item is gone or already has it."""
+        delivery = body.get("delivery") if isinstance(body, dict) else None
+        if delivery not in ("steer", "queue"):
+            raise invalid_request('Expected "steer" | "queue"\n  at ["delivery"]')
+        with self.lock:
+            record = next((item for item in session.inbox if item["id"] == inbox_id), None)
+            if record is None or record.get("delivery", "steer") == delivery:
+                raise ApiError(
+                    409,
+                    {
+                        "_tag": "ConflictError",
+                        "message": f"Pending input cannot change to {delivery}: {inbox_id}",
+                        "resource": inbox_id,
+                    },
+                )
+            record["delivery"] = delivery
+        self.emit(
+            "session.inbox.delivery.changed",
+            {"sessionID": session.id, "inboxID": inbox_id, "delivery": delivery},
+            session=session,
+        )
+        if delivery == "steer":
+            self.ensure_runner(session)
+
     def cancel_inbox(self, session, inbox_id):
+        """204 even when the item is no longer waiting (the server swallows that conflict)."""
         with self.lock:
             record = next((item for item in session.inbox if item["id"] == inbox_id), None)
             if record is None:
-                raise ApiError(
-                    404, {"_tag": "MessageNotFoundError", "messageID": inbox_id, "message": f"Message not found: {inbox_id}"}
-                )
+                return
             session.inbox.remove(record)
         self.emit("session.inbox.cancelled", {"sessionID": session.id, "inboxID": inbox_id}, session=session)
 
@@ -1082,10 +1138,14 @@ class Server:
 class Runner(threading.Thread):
     """Plays one session's inbox through scripted scenarios, like the real server loop."""
 
-    def __init__(self, server, session):
+    def __init__(self, server, session, scope="input"):
         super().__init__(daemon=True)
         self.server = server
         self.session = session
+        # "steer": deliver steered items only; "input": steers first, then one queued item per turn.
+        self.scope = scope
+        # Set once the loop decided to end (or was interrupted); wakes then start a new runner.
+        self.exiting = False
         self.stop = threading.Event()
         self.silent = False
         self.assistant = None
@@ -1098,6 +1158,7 @@ class Runner(threading.Thread):
 
     def interrupt(self, silent=False):
         self.silent = silent
+        self.exiting = True
         self.stop.set()
 
     def sleep(self, ms):
@@ -1129,18 +1190,18 @@ class Runner(threading.Thread):
         executing = False
         try:
             while True:
-                with self.server.lock:
-                    if not session.inbox:
-                        break
-                    item = session.inbox[0]
+                batch = self.next_batch(session)
+                if not batch:
+                    break
                 if not executing:
                     self.set_running(session, True)
                     self.emit("session.execution.started", {"sessionID": session.id})
                     executing = True
                     self.pause()
                 self.maybe_instructions(session)
-                self.deliver(session, item)
-                text = item["payload"].get("text", "")
+                for item in batch:
+                    self.deliver(session, item)
+                text = batch[-1]["payload"].get("text", "")
                 match = SCENARIO_RE.search(text)
                 scenario = match.group(1) if match else "text"
                 if session.title is None:
@@ -1158,6 +1219,18 @@ class Runner(threading.Thread):
             self.handle_interrupt(session)
         finally:
             self.set_running(session, False)
+
+    def next_batch(self, session):
+        """Like the server's inbox promotion: every waiting steer at once; otherwise, for an
+        "input" wake, the oldest queued item. Nothing else ends the loop."""
+        with self.server.lock:
+            steers = [item for item in session.inbox if item.get("delivery", "steer") == "steer"]
+            if steers:
+                return steers
+            if self.scope == "input" and session.inbox:
+                return [session.inbox[0]]
+            self.exiting = True
+            return None
 
     def maybe_instructions(self, session):
         if session.instructions_sent:
@@ -1865,6 +1938,8 @@ def summarize_body(route, body):
                 summary[key] = body[key]
     elif route == "session.update":
         summary["title"] = body.get("title")
+    elif route == "session.inbox.update":
+        summary["delivery"] = body.get("delivery")
     elif route == "session.switchModel":
         summary["model"] = body.get("model")
     elif route == "session.permission.reply":
@@ -1938,6 +2013,7 @@ ROUTES = [
     ("POST", r"/api/session/(?P<sessionID>[^/]+)/prompt", "session.prompt"),
     ("POST", r"/api/session/(?P<sessionID>[^/]+)/interrupt", "session.interrupt"),
     ("GET", r"/api/session/(?P<sessionID>[^/]+)/inbox", "session.inbox.list"),
+    ("PATCH", r"/api/session/(?P<sessionID>[^/]+)/inbox/(?P<inboxID>[^/]+)", "session.inbox.update"),
     ("DELETE", r"/api/session/(?P<sessionID>[^/]+)/inbox/(?P<inboxID>[^/]+)", "session.inbox.cancel"),
     ("GET", r"/api/session/(?P<sessionID>[^/]+)/message", "message.list"),
     ("GET", r"/api/model", "model.list"),
@@ -2147,10 +2223,16 @@ class Handler(BaseHTTPRequestHandler):
             record, _created = app.prompt(session, body)
             return 200, {"data": record}
         if route == "session.interrupt":
-            return 200, app.interrupt(session)
+            resume = first(query, "resume")
+            if resume not in (None, "true", "false"):
+                raise invalid_request('Expected "true" | "false"\n  at ["resume"]', kind="Query")
+            return 200, app.interrupt(session, resume == "true")
         if route == "session.inbox.list":
             with app.lock:
                 return 200, {"data": json.loads(json.dumps(session.inbox))}
+        if route == "session.inbox.update":
+            app.update_inbox(session, params["inboxID"], body)
+            return 204, None
         if route == "session.inbox.cancel":
             app.cancel_inbox(session, params["inboxID"])
             return 204, None

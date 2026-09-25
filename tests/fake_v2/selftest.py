@@ -741,6 +741,8 @@ def test_scenarios(h, reader):
     status, _, value, _ = h.client.post(f"/api/session/{session_id}/interrupt")
     check((status, value) == (200, fixture("session.interrupt.idle")["response"]["body"]), "interrupt idle == fixture")
 
+    test_steer_queue(h, reader)
+
     section("history (several turns)")
     session_id = new_session(h)
     start = created_index(reader, session_id)
@@ -749,6 +751,122 @@ def test_scenarios(h, reader):
         run_prompt(h, session_id, f"History turn {turn}. [[scenario:text]]", reader)
         wait_terminal(reader, session_id, index)
     sequence_equal(types_of(events_for(reader, start, {session_id})), types_of(fixture_events("history")), "history")
+
+
+def delivered_order(reader, session_id, after):
+    return [
+        e["data"]["inboxID"]
+        for e in reader.snapshot()[after:]
+        if e["type"] == "session.inbox.delivered" and e["data"]["sessionID"] == session_id
+    ]
+
+
+def inbox_state(h, session_id):
+    _, _, inbox, _ = h.client.get(f"/api/session/{session_id}/inbox")
+    return [(item["id"], item["delivery"]) for item in inbox["data"]]
+
+
+def settle(reader, seconds=0.8):
+    """Waits until no event arrived for `seconds` (bounded)."""
+    deadline = time.monotonic() + 15
+    count = -1
+    while time.monotonic() < deadline:
+        now = len(reader.snapshot())
+        if now == count:
+            return
+        count = now
+        time.sleep(seconds)
+
+
+def busy_session(h, reader):
+    session_id = new_session(h)
+    start = created_index(reader, session_id)
+    run_prompt(h, session_id, "Stream slowly. [[scenario:slow]]", reader)
+    reader.wait(lambda e: e["type"] == "session.text.delta" and e["data"]["sessionID"] == session_id, 10, start)
+    return session_id, start
+
+
+def post(h, session_id, text, delivery=None):
+    body = {"text": text}
+    if delivery:
+        body["delivery"] = delivery
+    status, _, value, _ = h.client.post(f"/api/session/{session_id}/prompt", body)
+    check(status == 200 and value["data"]["delivery"] == (delivery or "steer"), f"prompt {text!r} delivery={delivery} -> 200")
+    return value["data"]["id"]
+
+
+def test_steer_queue(h, reader):
+    section("steer / queue (2.0.8 semantics)")
+    session_id, start = busy_session(h, reader)
+    queued = post(h, session_id, "Queue me. [[scenario:text]]", "queue")
+    steered = post(h, session_id, "Steer me. [[scenario:text]]")
+    check(wait_terminal(reader, session_id, start), "the run ends")
+    settle(reader)
+    order = delivered_order(reader, session_id, start)
+    check(order[1:] == [steered, queued], f"steers are delivered before queued items ({order})")
+
+    section("stop parks both kinds; PATCH / DELETE / resume")
+    session_id, start = busy_session(h, reader)
+    steer = post(h, session_id, "Parked steer. [[scenario:text]]")
+    queue1 = post(h, session_id, "Parked queue 1. [[scenario:text]]", "queue")
+    queue2 = post(h, session_id, "Parked queue 2. [[scenario:text]]", "queue")
+    mark = len(reader.snapshot())
+    status, _, raw_body, raw = h.client.request("PATCH", f"/api/session/{session_id}/inbox/{queue2}", body={"delivery": "steer"})
+    check(status == 204 and raw == b"", "PATCH queue -> steer -> 204")
+    event, _ = reader.wait(lambda e: e["type"] == "session.inbox.delivery.changed" and e["data"]["inboxID"] == queue2, 3, mark)
+    check(
+        event is not None and event["data"] == {"sessionID": session_id, "inboxID": queue2, "delivery": "steer"} and "location" not in event,
+        "delivery.changed {sessionID, inboxID, delivery}, no location",
+    )
+    status, _, body, _ = h.client.request("PATCH", f"/api/session/{session_id}/inbox/{queue2}", body={"delivery": "steer"})
+    check(status == 409 and body.get("_tag") == "ConflictError", "PATCH to the mode it already has -> 409 ConflictError")
+    status, _, body, _ = h.client.request("PATCH", f"/api/session/{session_id}/inbox/msg_gone000000000000000000", body={"delivery": "queue"})
+    check(status == 409, "PATCH an unknown item -> 409")
+    status, _, value, _ = h.client.post(f"/api/session/{session_id}/interrupt")
+    check(value == {"interrupted": True}, "Stop (interrupt without resume)")
+    check(wait_terminal(reader, session_id, start), "execution.interrupted")
+    settle(reader)
+    parked_at = len(reader.snapshot())
+    time.sleep(0.6)
+    check(
+        not any(e["data"].get("sessionID") == session_id for e in reader.snapshot()[parked_at:]),
+        "nothing runs after an interrupt without resume",
+    )
+    check(inbox_state(h, session_id) == [(steer, "steer"), (queue1, "queue"), (queue2, "steer")], "every waiting item stays parked")
+    mark = len(reader.snapshot())
+    status, _, _, raw = h.client.request("DELETE", f"/api/session/{session_id}/inbox/msg_gone000000000000000000")
+    check(status == 204 and raw == b"", "DELETE an item that is not waiting -> 204")
+    time.sleep(0.3)
+    check(not any(e["type"] == "session.inbox.cancelled" for e in reader.snapshot()[mark:]), "... without inbox.cancelled")
+    status, _, value, _ = h.client.post(f"/api/session/{session_id}/interrupt", query="resume=true")
+    check(status == 200 and value == {"interrupted": False}, "idle interrupt?resume=true -> {interrupted:false}")
+    check(wait_terminal(reader, session_id, mark), "resume wakes the session for its steers")
+    settle(reader)
+    check(delivered_order(reader, session_id, mark) == [steer, queue2], "resume delivers the parked steers together")
+    check(inbox_state(h, session_id) == [(queue1, "queue")], "queued items stay parked after resume")
+    mark = len(reader.snapshot())
+    status, _, value, _ = h.client.post(f"/api/session/{session_id}/interrupt", query="resume=true")
+    time.sleep(0.6)
+    check(not any(e["type"] == "session.execution.started" for e in reader.snapshot()[mark:]), "resume with only queued items parked wakes nothing")
+    h.client.request("PATCH", f"/api/session/{session_id}/inbox/{queue1}", body={"delivery": "steer"})
+    check(wait_terminal(reader, session_id, mark), "PATCH steer on a parked item wakes the session")
+    settle(reader)
+    check(delivered_order(reader, session_id, mark) == [queue1] and inbox_state(h, session_id) == [], "the switched item is delivered")
+
+    section("a new prompt delivers the parked items")
+    session_id, start = busy_session(h, reader)
+    queue = post(h, session_id, "Parked queue. [[scenario:text]]", "queue")
+    steer = post(h, session_id, "Parked steer. [[scenario:text]]")
+    h.client.post(f"/api/session/{session_id}/interrupt")
+    check(wait_terminal(reader, session_id, start), "stopped")
+    settle(reader)
+    mark = len(reader.snapshot())
+    new = post(h, session_id, "New prompt. [[scenario:text]]")
+    check(wait_terminal(reader, session_id, mark), "the new prompt wakes the session")
+    settle(reader)
+    check(delivered_order(reader, session_id, mark) == [steer, new, queue], "parked steers go with the new one, then the queue")
+    status, _, _, _ = h.client.request("DELETE", f"/api/session/{session_id}/inbox/{new}")
+    check(status == 204, "DELETE an already-delivered prompt -> 204")
 
 
 def test_forms(h, reader):

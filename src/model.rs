@@ -362,8 +362,11 @@ pub struct ChatMessage {
     context_tokens: Option<u64>,
     /// An inbox item the server has not delivered yet. Queued messages stay
     /// after every delivered one, the way the server appends the entry only
-    /// on delivery.
+    /// on delivery. Undelivered user prompts show in the tray
+    /// ([`Conversation::tray_items`]), not as transcript rows.
     queued: bool,
+    /// A waiting item's delivery mode (steer or queue).
+    delivery: Option<protocol::Delivery>,
     note: Option<NoteSource>,
 }
 
@@ -385,8 +388,14 @@ impl ChatMessage {
             error: None,
             context_tokens: None,
             queued: false,
+            delivery: None,
             note: None,
         }
+    }
+
+    /// An undelivered user prompt: a tray item, not a transcript row.
+    fn in_tray(&self) -> bool {
+        self.queued && self.role == Role::User
     }
 
     #[cfg(test)]
@@ -484,6 +493,26 @@ impl ChatMessage {
     }
 }
 
+/// One undelivered user prompt (a tray row).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TrayItem {
+    /// The inbox ID (the prompt `id`).
+    pub id: String,
+    pub delivery: protocol::Delivery,
+    pub text: String,
+    pub attachments: usize,
+}
+
+fn item_delivery(item: &protocol::InboxItem) -> Option<protocol::Delivery> {
+    match item {
+        protocol::InboxItem::User { delivery, .. }
+        | protocol::InboxItem::Synthetic { delivery, .. }
+        | protocol::InboxItem::Compaction { delivery }
+        | protocol::InboxItem::Move { delivery } => *delivery,
+        protocol::InboxItem::Unknown => None,
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Conversation {
     pub messages: Vec<ChatMessage>,
@@ -537,22 +566,54 @@ impl Conversation {
         self.loaded = true;
     }
 
-    /// Reconciles queued rows with `GET /api/session/{id}/inbox`: undelivered
-    /// user and synthetic items show as rows keyed by their inbox ID (which
-    /// becomes their message ID on delivery); rows no longer queued go away.
+    /// Reconciles queued items with `GET /api/session/{id}/inbox` (oldest
+    /// first): undelivered user and synthetic items are kept keyed by their
+    /// inbox ID (which becomes their message ID on delivery), with the
+    /// listed delivery; items no longer listed go away.
     pub fn sync_queued(&mut self, entries: &[protocol::InboxEntry]) {
         let ids: HashSet<&str> = entries.iter().map(|entry| entry.id.as_str()).collect();
         self.messages
             .retain(|message| !message.queued || ids.contains(message.id.as_str()));
         for entry in entries {
-            self.enqueue(&entry.id, &entry.item, millis(entry.time.created));
+            if !self.enqueue(&entry.id, &entry.item, millis(entry.time.created)) {
+                if let Some(delivery) = item_delivery(&entry.item) {
+                    self.change_delivery(&entry.id, delivery);
+                }
+            }
         }
+    }
+
+    /// Undelivered user prompts of this session, oldest first: the tray.
+    /// Synthetic items (subagent completions) are not in it; they keep
+    /// their transcript rows.
+    pub fn tray_items(&self) -> Vec<TrayItem> {
+        self.messages
+            .iter()
+            .filter(|message| message.in_tray())
+            .map(|message| TrayItem {
+                id: message.id.clone(),
+                delivery: message.delivery.unwrap_or(protocol::Delivery::Steer),
+                text: message
+                    .segments
+                    .iter()
+                    .filter(|segment| segment.kind == SegmentKind::Text)
+                    .map(|segment| segment.text.as_str())
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+                attachments: message
+                    .segments
+                    .iter()
+                    .filter(|segment| segment.kind == SegmentKind::File)
+                    .count(),
+            })
+            .collect()
     }
 
     #[cfg(test)]
     pub fn rendered_rows(&self) -> Vec<String> {
         self.messages
             .iter()
+            .filter(|message| !message.in_tray())
             .filter_map(|message| {
                 let content = message.render();
                 (!content.is_empty()).then(|| format!("{}\n{content}", message.role.label()))
@@ -560,19 +621,28 @@ impl Conversation {
             .collect()
     }
 
+    /// Transcript rows: every message except the tray's undelivered prompts.
     pub fn transcript_rows(&self) -> Vec<String> {
         self.messages
             .iter()
+            .filter(|message| !message.in_tray())
             .flat_map(ChatMessage::transcript_rows)
             .collect()
     }
 
     /// A prompt's `id` is its inbox ID and, once delivered, its user message
-    /// ID; queued and delivered user rows both count.
+    /// ID; waiting (tray) and delivered prompts both count.
     pub fn has_user_message(&self, id: &str) -> bool {
         self.messages
             .iter()
             .any(|message| message.role == Role::User && message.id == id)
+    }
+
+    /// The prompt with this `id` was delivered (it is a transcript row).
+    pub fn has_delivered_user_message(&self, id: &str) -> bool {
+        self.messages
+            .iter()
+            .any(|message| message.role == Role::User && !message.queued && message.id == id)
     }
 
     pub fn context_tokens(&self) -> Option<u64> {
@@ -606,6 +676,7 @@ impl Conversation {
             Kind::InboxEnqueued(data) => self.enqueue(&data.inbox_id, &data.item, created),
             Kind::InboxDelivered(data) => self.deliver(&data.inbox_id, created),
             Kind::InboxCancelled(data) => self.cancel(&data.inbox_id),
+            Kind::InboxDeliveryChanged(data) => self.change_delivery(&data.inbox_id, data.delivery),
             Kind::StepStarted(data) => {
                 let index = self.ensure_message(&data.assistant_message_id, Role::Assistant);
                 let message = &mut self.messages[index];
@@ -972,8 +1043,23 @@ impl Conversation {
             return false;
         };
         message.queued = true;
+        message.delivery = item_delivery(item);
         self.insert_message(message);
         true
+    }
+
+    /// `session.inbox.delivery.changed`: a waiting item switched mode.
+    fn change_delivery(&mut self, id: &str, delivery: protocol::Delivery) -> bool {
+        let Some(message) = self
+            .messages
+            .iter_mut()
+            .find(|message| message.queued && message.id == id)
+        else {
+            return false;
+        };
+        let changed = message.delivery != Some(delivery);
+        message.delivery = Some(delivery);
+        changed
     }
 
     /// The server appends the entry when it delivers the item, with the
@@ -3109,10 +3195,23 @@ mod tests {
             ids(&conversation),
             ["msg_1", "msg_a", "msg_b", "msg_2", "msg_3"]
         );
-        assert!(
-            conversation.has_user_message("msg_2"),
-            "a queued prompt supersedes its optimistic row"
+        assert!(conversation.has_user_message("msg_2"));
+        assert!(!conversation.has_delivered_user_message("msg_2"));
+        let bodies: Vec<String> = row_values(&conversation)
+            .iter()
+            .map(|row| row["body"].as_str().unwrap().to_owned())
+            .collect();
+        assert_eq!(
+            bodies,
+            ["first", "working"],
+            "waiting prompts are tray items, not transcript rows"
         );
+        let tray: Vec<String> = conversation
+            .tray_items()
+            .into_iter()
+            .map(|item| item.id)
+            .collect();
+        assert_eq!(tray, ["msg_2", "msg_3"]);
 
         let delivered = live("session.inbox.delivered", json!({ "inboxID": "msg_3" }));
         let delivered_at = delivered["created"].as_u64().unwrap();
@@ -3125,6 +3224,9 @@ mod tests {
             conversation.messages[3].created, delivered_at,
             "history uses the delivery time"
         );
+        assert!(conversation.has_delivered_user_message("msg_3"));
+        assert_eq!(row_values(&conversation).last().unwrap()["body"], "and me");
+        assert_eq!(conversation.tray_items().len(), 1);
 
         // Only an undelivered prompt can be cancelled.
         assert!(!conversation.apply_event(&live(
@@ -3143,6 +3245,111 @@ mod tests {
     }
 
     #[test]
+    fn the_tray_follows_enqueue_delivery_changes_cancel_and_sync() {
+        let mut conversation = Conversation::default();
+        let enqueue = |id: &str, item: Value| {
+            live(
+                "session.inbox.enqueued",
+                json!({ "inboxID": id, "item": item }),
+            )
+        };
+        let file = json!({ "data": "aGk=", "mime": "text/plain", "name": "a.txt" });
+        for payload in [
+            enqueue(
+                "msg_s",
+                json!({ "type": "user", "payload": { "text": "and keep the 30 s cap\non the backoff" }, "delivery": "steer" }),
+            ),
+            enqueue(
+                "msg_q",
+                json!({ "type": "user", "payload": { "text": "then update the changelog", "files": [file.clone(), file] }, "delivery": "queue" }),
+            ),
+            enqueue(
+                "msg_syn",
+                json!({ "type": "synthetic", "payload": { "text": "The background subagent finished." }, "delivery": "steer" }),
+            ),
+        ] {
+            assert!(conversation.apply_event(&payload));
+        }
+        let tray = conversation.tray_items();
+        assert_eq!(
+            tray,
+            [
+                TrayItem {
+                    id: "msg_s".into(),
+                    delivery: protocol::Delivery::Steer,
+                    text: "and keep the 30 s cap\non the backoff".into(),
+                    attachments: 0,
+                },
+                TrayItem {
+                    id: "msg_q".into(),
+                    delivery: protocol::Delivery::Queue,
+                    text: "then update the changelog".into(),
+                    attachments: 2,
+                },
+            ],
+            "oldest first; synthetic items are not in the tray"
+        );
+        let rows = row_values(&conversation);
+        assert_eq!(rows.len(), 1, "the synthetic item keeps its transcript row");
+        assert_eq!(rows[0]["role"], "AGENT");
+
+        let switch = |id: &str, delivery: &str| {
+            live(
+                "session.inbox.delivery.changed",
+                json!({ "inboxID": id, "delivery": delivery }),
+            )
+        };
+        assert!(conversation.apply_event(&switch("msg_q", "steer")));
+        assert!(
+            !conversation.apply_event(&switch("msg_q", "steer")),
+            "no change"
+        );
+        assert!(!conversation.apply_event(&switch("msg_unknown", "queue")));
+        assert_eq!(
+            conversation.tray_items()[1].delivery,
+            protocol::Delivery::Steer
+        );
+
+        // A reload's inbox list rebuilds the tray, deliveries included.
+        let listed: protocol::InboxListResponse = serde_json::from_value(json!({ "data": [
+            { "id": "msg_s", "sessionID": "ses_1", "time": { "created": 1 }, "type": "user",
+              "payload": { "text": "and keep the 30 s cap\non the backoff" }, "delivery": "queue" },
+            { "id": "msg_new", "sessionID": "ses_1", "time": { "created": 2 }, "type": "user",
+              "payload": { "text": "from another client" }, "delivery": "steer" }
+        ] }))
+        .unwrap();
+        conversation.sync_queued(&listed.data);
+        let tray: Vec<_> = conversation
+            .tray_items()
+            .into_iter()
+            .map(|item| (item.id, item.delivery))
+            .collect();
+        assert_eq!(
+            tray,
+            [
+                ("msg_s".to_owned(), protocol::Delivery::Queue),
+                ("msg_new".to_owned(), protocol::Delivery::Steer)
+            ]
+        );
+        assert!(row_values(&conversation).is_empty(), "msg_syn is gone too");
+
+        assert!(conversation.apply_event(&live(
+            "session.inbox.delivered",
+            json!({ "inboxID": "msg_new" })
+        )));
+        assert!(conversation.apply_event(&live(
+            "session.inbox.cancelled",
+            json!({ "inboxID": "msg_s" })
+        )));
+        assert!(conversation.tray_items().is_empty());
+        assert_eq!(
+            row_values(&conversation)[0]["body"],
+            "from another client",
+            "a delivered prompt moves into the transcript"
+        );
+    }
+
+    #[test]
     fn a_reload_keeps_parked_prompts_from_the_inbox() {
         // After an interrupt the steered follow-up stays in the inbox.
         let inbox: protocol::InboxListResponse =
@@ -3150,21 +3357,31 @@ mod tests {
         let mut conversation = history("session.messages.interrupt");
         conversation.sync_queued(&inbox.data);
         let rows = row_values(&conversation);
-        assert_eq!(rows.len(), 3);
-        assert_eq!(rows[2]["role"], "YOU");
         assert_eq!(
-            rows[2]["body"],
-            "Follow-up sent while busy. [[scenario:text]]"
+            rows,
+            row_values(&history("session.messages.interrupt")),
+            "a parked prompt is a tray item, not a row"
         );
         let parked = inbox.data[0].id.clone();
+        assert_eq!(
+            conversation.tray_items(),
+            [TrayItem {
+                id: parked.clone(),
+                delivery: protocol::Delivery::Steer,
+                text: "Follow-up sent while busy. [[scenario:text]]".into(),
+                attachments: 0,
+            }]
+        );
         assert!(conversation.has_user_message(&parked));
 
-        // A plain reload keeps the local queued row; the inbox list settles it.
+        // A plain reload keeps the local queued item; the inbox list settles it.
         let mut reloaded = conversation.clone();
         reloaded.replace_from_api(&fixture_entries("session.messages.interrupt"), None);
         assert_eq!(row_values(&reloaded), rows);
+        assert_eq!(reloaded.tray_items(), conversation.tray_items());
         reloaded.sync_queued(&[]);
         assert!(!reloaded.has_user_message(&parked));
+        assert!(reloaded.tray_items().is_empty());
 
         // The captured cancellation removes it live.
         let session_id = scenario_session("interrupt");

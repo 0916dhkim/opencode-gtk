@@ -15,8 +15,8 @@ use serde::Deserialize;
 
 use crate::{
     api::{
-        self, ApiConfig, ApiHandle, Bootstrap, Command, MessageLoadError, MessagePage,
-        ServerEnvelope, Settled, UiEvent,
+        self, ApiConfig, ApiHandle, Bootstrap, Command, InboxRequest, MessageLoadError,
+        MessagePage, ServerEnvelope, Settled, UiEvent,
     },
     credentials::{self, CloudflareAccessCredentials},
     markdown,
@@ -29,6 +29,7 @@ use crate::{
     pending::{self, PendingChange, PendingRequest, PendingSnapshot},
     persist::{default_path, ConnectionSettings, PersistedState, PersistedTab, ServerState},
     protocol,
+    tray::{self, RowAction, SendMode, TrayRow},
 };
 
 const STREAM_FRAME: Duration = Duration::from_millis(33);
@@ -141,12 +142,15 @@ struct PendingPrompt {
     draft: Draft,
 }
 
-/// The local YOU row shown until the conversation holds the user row whose
-/// ID is the prompt `id` (queued rows from `session.inbox.enqueued` or the
-/// inbox list count). It goes away only when that row appears, the send
-/// fails, the session goes away, or a full reload after acceptance shows the
-/// prompt is neither delivered nor queued (cancelled elsewhere) while the
-/// session is idle; the end of a run alone never drops it.
+/// The local stand-in for a prompt being sent, until the conversation holds
+/// the user message whose ID is the prompt `id`. A prompt sent while idle is
+/// a YOU row ([`OptimisticTarget::Transcript`]) until it is delivered, or
+/// parked (waiting on an idle session, e.g. after Stop), when the tray takes
+/// it. A prompt steered or queued into a run is a tray entry until the
+/// server echoes it. Either goes away when superseded, when the send fails,
+/// when the session goes away, or when a full reload after acceptance shows
+/// the prompt is neither delivered nor waiting (cancelled elsewhere) while
+/// the session is idle; the end of a run alone never drops it.
 #[derive(Clone, Debug)]
 struct OptimisticPrompt {
     row: String,
@@ -154,6 +158,16 @@ struct OptimisticPrompt {
     request_id: u64,
     /// The server accepted the prompt into the session inbox.
     accepted: bool,
+    target: OptimisticTarget,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum OptimisticTarget {
+    Transcript,
+    Tray {
+        delivery: protocol::Delivery,
+        summary: String,
+    },
 }
 
 /// What settling a prompt send changed ([`State::settle_prompt`]).
@@ -231,6 +245,8 @@ struct State {
     abort_requested: HashSet<String>,
     loading_messages: HashSet<String>,
     loading_models: HashSet<String>,
+    /// Inbox IDs with a tray request (switch, cancel, send now) in flight.
+    inbox_requests: HashSet<String>,
 }
 
 impl State {
@@ -457,6 +473,10 @@ struct Widgets {
     form_notice_label: gtk::Label,
     form_notice_cancel: gtk::Button,
     form_notice_open: gtk::Button,
+    tray: gtk::Box,
+    tray_header: gtk::Label,
+    tray_clear: gtk::Button,
+    tray_rows: gtk::Box,
     composer_stack: gtk::Stack,
     prompt_host: gtk::Box,
     composer: gtk::TextView,
@@ -482,6 +502,12 @@ struct Widgets {
     new_session_filtered_paths: Rc<RefCell<Vec<String>>>,
     context_usage: gtk::Label,
     send_button: gtk::Button,
+    stop_button: gtk::Button,
+    steer_split: gtk::Box,
+    steer_button: gtk::Button,
+    steer_menu: gtk::MenuButton,
+    steer_menu_steer: gtk::Button,
+    steer_menu_queue: gtk::Button,
     transcript_user_scrolling: Rc<Cell<bool>>,
     tab_dnd: Rc<RefCell<TabDnd>>,
 }
@@ -578,6 +604,8 @@ struct Controller {
     connected_once: bool,
     event_connected: bool,
     tab_shortcut_hint: bool,
+    /// What the tray widgets show (session, parked, rows); rebuilt on change.
+    tray_shown: Option<(String, bool, Vec<TrayRow>)>,
 }
 
 fn register_icons() {
@@ -600,6 +628,38 @@ fn icon_image(name: &str, pixel_size: i32) -> gtk::Image {
 fn icon_button(name: &str, pixel_size: i32) -> gtk::Button {
     let button = gtk::Button::new();
     button.set_child(Some(&icon_image(name, pixel_size)));
+    button
+}
+
+/// One row of the Steer menu: a title, what it does, and its key chips.
+fn send_option_button(title: &str, description: &str, keys: &[&str]) -> gtk::Button {
+    let button = gtk::Button::new();
+    button.add_css_class("flat");
+    button.add_css_class("steer-option");
+    let row = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+    let text = gtk::Box::new(gtk::Orientation::Vertical, 2);
+    text.set_hexpand(true);
+    let heading = gtk::Label::new(Some(title));
+    heading.set_xalign(0.0);
+    heading.add_css_class("steer-option-title");
+    let detail = gtk::Label::new(Some(description));
+    detail.set_xalign(0.0);
+    detail.add_css_class("steer-option-detail");
+    text.append(&heading);
+    text.append(&detail);
+    let chips = gtk::Box::new(gtk::Orientation::Horizontal, 3);
+    chips.set_valign(gtk::Align::Start);
+    for (index, key) in keys.iter().enumerate() {
+        if index > 0 {
+            chips.append(&gtk::Label::new(Some("+")));
+        }
+        let chip = gtk::Label::new(Some(key));
+        chip.add_css_class("key-chip");
+        chips.append(&chip);
+    }
+    row.append(&text);
+    row.append(&chips);
+    button.set_child(Some(&row));
     button
 }
 
@@ -873,19 +933,6 @@ fn fuzzy_score(query: &str, target: &str) -> Option<i64> {
     Some(score)
 }
 
-fn set_button_icon(button: &gtk::Button, name: &str, pixel_size: i32) {
-    if let Some(image) = button.child().and_downcast::<gtk::Image>() {
-        image.set_icon_name(Some(name));
-        if pixel_size > 0 {
-            image.set_pixel_size(pixel_size);
-        } else {
-            image.set_icon_size(gtk::IconSize::Inherit);
-        }
-        return;
-    }
-    button.set_child(Some(&icon_image(name, pixel_size)));
-}
-
 pub fn launch(
     application: &gtk::Application,
     server: Option<String>,
@@ -1054,6 +1101,7 @@ pub fn launch(
         connected_once: false,
         event_connected: false,
         tab_shortcut_hint: false,
+        tray_shown: None,
     }));
     controller.borrow_mut().self_weak = Rc::downgrade(&controller);
     if (zoom_level - 1.0).abs() > 0.001 {
@@ -1584,11 +1632,62 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
     context_usage.set_ellipsize(pango::EllipsizeMode::End);
     context_usage.set_valign(gtk::Align::Center);
     context_usage.set_visible(false);
-    let send_button = icon_button(ICON_SEND, -1);
+    let send_button = icon_button(ICON_SEND, COMPOSER_ICON_PX);
     send_button.add_css_class("suggested-action");
     send_button.add_css_class("composer-action");
     send_button.set_tooltip_text(Some("Send prompt"));
     send_button.set_sensitive(false);
+
+    // While a run is active: Stop, then a split button whose main part
+    // steers (Enter) and whose menu also queues (Ctrl+Enter).
+    let stop_button = icon_button(ICON_STOP, -1);
+    stop_button.add_css_class("composer-action");
+    stop_button.add_css_class("composer-stop");
+    stop_button.set_tooltip_text(Some(
+        "Stop the run; waiting messages stay parked until you send them",
+    ));
+    stop_button.set_visible(false);
+    let steer_button = gtk::Button::new();
+    let steer_content = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    steer_content.append(&icon_image(ICON_SEND, -1));
+    steer_content.append(&gtk::Label::new(Some("Steer")));
+    steer_button.set_child(Some(&steer_content));
+    steer_button.add_css_class("steer-main");
+    steer_button.set_tooltip_text(Some(
+        "Steer into this run (Enter): the agent reads it at its next step",
+    ));
+    let steer_menu = gtk::MenuButton::new();
+    let steer_chevron = chevron_down_icon(10);
+    steer_chevron.set_valign(gtk::Align::Center);
+    steer_menu.set_child(Some(&steer_chevron));
+    steer_menu.add_css_class("steer-chevron");
+    steer_menu.set_tooltip_text(Some("Steer or queue"));
+    let steer_popover = gtk::Popover::new();
+    steer_popover.set_position(gtk::PositionType::Top);
+    steer_popover.set_offset(0, -6);
+    steer_popover.add_css_class("model-picker-popover");
+    steer_popover.add_css_class("steer-popover");
+    let steer_options = gtk::Box::new(gtk::Orientation::Vertical, 2);
+    let steer_menu_steer = send_option_button(
+        "Steer into this run",
+        "The agent reads it at its next step,\nwithout stopping.",
+        &["Enter"],
+    );
+    let steer_menu_queue = send_option_button(
+        "Queue for after",
+        "Sent as a new turn once\nthis run finishes.",
+        &["Ctrl", "Enter"],
+    );
+    steer_options.append(&steer_menu_steer);
+    steer_options.append(&steer_menu_queue);
+    steer_popover.set_child(Some(&steer_options));
+    steer_menu.set_popover(Some(&steer_popover));
+    let steer_split = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    steer_split.add_css_class("steer-split");
+    steer_split.set_valign(gtk::Align::Center);
+    steer_split.append(&steer_button);
+    steer_split.append(&steer_menu);
+    steer_split.set_visible(false);
 
     let composer_controls = gtk::Box::new(gtk::Orientation::Horizontal, 6);
     composer_controls.set_overflow(gtk::Overflow::Hidden);
@@ -1597,6 +1696,8 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
     composer_controls.append(&variant_button);
     composer_controls.append(&context_usage);
     composer_controls.append(&send_button);
+    composer_controls.append(&stop_button);
+    composer_controls.append(&steer_split);
 
     let composer_box = gtk::Box::new(gtk::Orientation::Vertical, 8);
     composer_box.set_margin_start(14);
@@ -1655,7 +1756,33 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
     form_notice.append(&form_notice_label);
     form_notice.append(&form_notice_open);
     form_notice.append(&form_notice_cancel);
+
+    // Undelivered prompts of the active session (steered and queued), right
+    // above the composer; see `Controller::refresh_tray`.
+    let tray = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    tray.add_css_class("queue-tray");
+    tray.set_margin_start(18);
+    tray.set_margin_end(18);
+    tray.set_margin_bottom(8);
+    tray.set_visible(false);
+    let tray_head = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    tray_head.add_css_class("queue-tray-header");
+    let tray_header = gtk::Label::new(None);
+    tray_header.set_xalign(0.0);
+    tray_header.set_hexpand(true);
+    tray_header.add_css_class("queue-tray-title");
+    let tray_clear = gtk::Button::with_label("Clear");
+    tray_clear.add_css_class("queue-tray-button");
+    tray_clear.set_valign(gtk::Align::Center);
+    tray_clear.set_tooltip_text(Some("Cancel every waiting message"));
+    tray_head.append(&tray_header);
+    tray_head.append(&tray_clear);
+    let tray_rows = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    tray.append(&tray_head);
+    tray.append(&tray_rows);
+
     main.append(&form_notice);
+    main.append(&tray);
     main.append(&composer_stack);
     root.set_end_child(Some(&main));
 
@@ -1772,6 +1899,10 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
         form_notice_label,
         form_notice_cancel,
         form_notice_open,
+        tray,
+        tray_header,
+        tray_clear,
+        tray_rows,
         composer_stack,
         prompt_host,
         composer,
@@ -1797,6 +1928,12 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
         new_session_filtered_paths,
         context_usage,
         send_button,
+        stop_button,
+        steer_split,
+        steer_button,
+        steer_menu,
+        steer_menu_steer,
+        steer_menu_queue,
         transcript_user_scrolling,
         tab_dnd: Rc::new(RefCell::new(TabDnd::default())),
     }
@@ -2362,9 +2499,54 @@ fn wire_callbacks(controller: &Rc<RefCell<Controller>>) {
         .send_button
         .connect_clicked(move |_| {
             if let Some(controller) = weak.upgrade() {
-                Controller::send_or_abort(&controller);
+                Controller::send_prompt(&controller, SendMode::Send);
             }
         });
+    let weak = Rc::downgrade(controller);
+    controller
+        .borrow()
+        .widgets
+        .stop_button
+        .connect_clicked(move |_| {
+            if let Some(controller) = weak.upgrade() {
+                Controller::stop(&controller);
+            }
+        });
+    let (steer_button, steer_menu, steer_option, queue_option, tray_clear) = {
+        let this = controller.borrow();
+        (
+            this.widgets.steer_button.clone(),
+            this.widgets.steer_menu.clone(),
+            this.widgets.steer_menu_steer.clone(),
+            this.widgets.steer_menu_queue.clone(),
+            this.widgets.tray_clear.clone(),
+        )
+    };
+    let weak = Rc::downgrade(controller);
+    steer_button.connect_clicked(move |_| {
+        if let Some(controller) = weak.upgrade() {
+            Controller::send_prompt(&controller, SendMode::Steer);
+        }
+    });
+    for (option, mode) in [
+        (steer_option, SendMode::Steer),
+        (queue_option, SendMode::Queue),
+    ] {
+        let weak = Rc::downgrade(controller);
+        let menu = steer_menu.clone();
+        option.connect_clicked(move |_| {
+            menu.popdown();
+            if let Some(controller) = weak.upgrade() {
+                Controller::send_prompt(&controller, mode);
+            }
+        });
+    }
+    let weak = Rc::downgrade(controller);
+    tray_clear.connect_clicked(move |_| {
+        if let Some(controller) = weak.upgrade() {
+            Controller::clear_tray(&controller);
+        }
+    });
 
     let weak = Rc::downgrade(controller);
     controller
@@ -2435,7 +2617,10 @@ fn wire_callbacks(controller: &Rc<RefCell<Controller>>) {
             && !modifiers.contains(gdk::ModifierType::SHIFT_MASK)
         {
             if let Some(controller) = weak.upgrade() {
-                Controller::send_if_idle(&controller);
+                Controller::send_from_keyboard(
+                    &controller,
+                    modifiers.contains(gdk::ModifierType::CONTROL_MASK),
+                );
             }
             return glib::Propagation::Stop;
         }
@@ -3152,6 +3337,26 @@ impl Controller {
                         this.refresh_send_button();
                     }
                     Err(error) => this.show_error(&error),
+                }
+            }
+            UiEvent::InboxSettled {
+                session_id,
+                inbox_id,
+                request,
+                result,
+            } => {
+                let command = controller.borrow_mut().apply_inbox_settled(
+                    &session_id,
+                    &inbox_id,
+                    request,
+                    result,
+                );
+                if let Some(command) = command {
+                    let mut this = controller.borrow_mut();
+                    if this.state.active.as_deref() == Some(session_id.as_str()) {
+                        this.refresh_transcript(TranscriptUpdate::Content);
+                    }
+                    this.api.send(command);
                 }
             }
             UiEvent::PermissionReplied { request_id, result } => {
@@ -3904,9 +4109,8 @@ impl Controller {
             self.status_events_during_bootstrap
                 .insert(session_id.clone(), status.clone());
         }
-        // On Idle the optimistic row stays: a prompt steered into a run that
-        // then ends is still queued (its row comes with
-        // `session.inbox.enqueued`, which supersedes it). See
+        // Idle alone never drops an optimistic prompt: one still waiting is
+        // parked and moves to the tray (`optimistic_superseded`); see also
         // `Controller::settle_optimistic_prompt`.
         if self.state.apply_server_status(&session_id, &status)
             && self.session(&session_id).is_some()
@@ -4431,6 +4635,226 @@ impl Controller {
         self.widgets.form_notice.set_visible(true);
     }
 
+    /// The active session's tray rows, and whether the session is parked
+    /// (idle with messages left).
+    fn active_tray(&self) -> Option<(String, bool, Vec<TrayRow>)> {
+        let active = self.state.active.clone()?;
+        let rows = session_tray_rows(
+            self.state.conversations.get(&active),
+            self.state.optimistic_prompts.get(&active),
+            &self.state.inbox_requests,
+        );
+        let parked = !self.active_is_busy();
+        Some((active, parked, rows))
+    }
+
+    /// The tray above the composer: "N waiting" while the session runs, "N
+    /// parked" when it is idle with items left. Rows switch mode (or "Send
+    /// now" when parked) and cancel; hidden when empty. Rebuilt only when
+    /// what it shows changed.
+    fn refresh_tray(&mut self) {
+        let shown = self.active_tray().filter(|(_, _, rows)| !rows.is_empty());
+        if shown == self.tray_shown {
+            return;
+        }
+        self.tray_shown = shown.clone();
+        clear_box(&self.widgets.tray_rows);
+        let Some((_, parked, rows)) = shown else {
+            self.widgets.tray.set_visible(false);
+            return;
+        };
+        self.widgets
+            .tray_header
+            .set_label(&tray::header_text(rows.len(), parked));
+        self.widgets
+            .tray_clear
+            .set_sensitive(rows.iter().any(|row| !row.sending && !row.in_flight));
+        if parked {
+            self.widgets.tray.add_css_class("parked");
+        } else {
+            self.widgets.tray.remove_css_class("parked");
+        }
+        for row in &rows {
+            let widget = self.tray_row_widget(row, parked);
+            self.widgets.tray_rows.append(&widget);
+        }
+        self.widgets.tray.set_visible(true);
+    }
+
+    fn tray_row_widget(&self, row: &TrayRow, parked: bool) -> gtk::Box {
+        let widget = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        widget.add_css_class("queue-tray-row");
+        if row.sending {
+            widget.add_css_class("sending");
+        }
+        let badge = gtk::Label::new(Some(tray::badge_text(row.delivery)));
+        badge.add_css_class("queue-badge");
+        badge.add_css_class(if row.delivery == protocol::Delivery::Queue {
+            "queue"
+        } else {
+            "steer"
+        });
+        badge.set_valign(gtk::Align::Center);
+        let text = gtk::Label::new(Some(&row.summary));
+        text.set_xalign(0.0);
+        text.set_hexpand(true);
+        text.set_ellipsize(pango::EllipsizeMode::End);
+        text.set_single_line_mode(true);
+        text.add_css_class("queue-tray-text");
+        text.set_tooltip_text(Some(if row.sending {
+            "Sending…"
+        } else {
+            row.summary.as_str()
+        }));
+        widget.append(&badge);
+        widget.append(&text);
+        let (label, tooltip, action) = if parked {
+            (
+                "Send now",
+                tray::send_now_tooltip(row.delivery),
+                RowAction::SendNow,
+            )
+        } else {
+            (
+                tray::switch_label(row.delivery),
+                tray::switch_tooltip(row.delivery),
+                RowAction::Switch,
+            )
+        };
+        let switch = gtk::Button::with_label(label);
+        switch.add_css_class("queue-tray-button");
+        switch.set_valign(gtk::Align::Center);
+        switch.set_tooltip_text(Some(tooltip));
+        let cancel = icon_button(ICON_CLOSE, -1);
+        cancel.add_css_class("queue-tray-cancel");
+        cancel.set_valign(gtk::Align::Center);
+        cancel.set_tooltip_text(Some("Cancel this message"));
+        let enabled = tray::row_request(row, action).is_some();
+        switch.set_sensitive(enabled);
+        cancel.set_sensitive(enabled);
+        for (button, action) in [(&switch, action), (&cancel, RowAction::Cancel)] {
+            let weak = self.self_weak.clone();
+            let id = row.id.clone();
+            button.connect_clicked(move |_| {
+                if let Some(controller) = weak.upgrade() {
+                    Self::tray_action(&controller, &id, action);
+                }
+            });
+        }
+        widget.append(&switch);
+        widget.append(&cancel);
+        widget
+    }
+
+    /// A tray row's button: one inbox request per item at a time, through
+    /// the API worker; its row stays inert until the answer.
+    fn tray_action(controller: &Rc<RefCell<Self>>, inbox_id: &str, action: RowAction) {
+        let command = {
+            let mut this = controller.borrow_mut();
+            let Some((session_id, parked, rows)) = this.active_tray() else {
+                return;
+            };
+            let Some(row) = rows.iter().find(|row| row.id == inbox_id) else {
+                return;
+            };
+            let Some(request) = tray::row_request(row, action) else {
+                return;
+            };
+            // Resuming is for a parked session only: on a running one it
+            // would interrupt the run.
+            if request == InboxRequest::Resume && !parked {
+                return;
+            }
+            this.state.inbox_requests.insert(inbox_id.to_owned());
+            Self::refresh_tray_later(&this.self_weak);
+            Command::Inbox {
+                session_id,
+                inbox_id: inbox_id.to_owned(),
+                request,
+            }
+        };
+        controller.borrow().api.send(command);
+    }
+
+    /// Rebuilds the tray once the clicked row button's handler has returned
+    /// (removing a button inside its own click leaves GTK's pressed state
+    /// dangling).
+    fn refresh_tray_later(weak: &Weak<RefCell<Self>>) {
+        let weak = weak.clone();
+        glib::idle_add_local_once(move || {
+            if let Some(controller) = weak.upgrade() {
+                controller.borrow_mut().refresh_tray();
+            }
+        });
+    }
+
+    /// Clear: cancels every waiting message that can act.
+    fn clear_tray(controller: &Rc<RefCell<Self>>) {
+        let commands = {
+            let mut this = controller.borrow_mut();
+            let Some((session_id, _, rows)) = this.active_tray() else {
+                return;
+            };
+            let mut commands = Vec::new();
+            for row in &rows {
+                if tray::row_request(row, RowAction::Cancel).is_some() {
+                    this.state.inbox_requests.insert(row.id.clone());
+                    commands.push(Command::Inbox {
+                        session_id: session_id.clone(),
+                        inbox_id: row.id.clone(),
+                        request: InboxRequest::Cancel,
+                    });
+                }
+            }
+            Self::refresh_tray_later(&this.self_weak);
+            commands
+        };
+        for command in commands {
+            controller.borrow().api.send(command);
+        }
+    }
+
+    /// A tray request's answer. Success changes nothing here: the inbox
+    /// events move the row. An item that was no longer waiting in that mode
+    /// (409/404) counts as resolved and the transcript is reloaded, inbox
+    /// first, to reconcile. Other errors keep the row and show the error.
+    fn apply_inbox_settled(
+        &mut self,
+        session_id: &str,
+        inbox_id: &str,
+        request: InboxRequest,
+        result: Result<Settled, String>,
+    ) -> Option<Command> {
+        self.state.inbox_requests.remove(inbox_id);
+        let command = match tray::settlement(request, result) {
+            tray::Settlement::Done => None,
+            tray::Settlement::Reconcile => self.reload_messages_command(session_id),
+            tray::Settlement::Failed(error) => {
+                self.show_error(&error);
+                None
+            }
+        };
+        self.refresh_tray();
+        command
+    }
+
+    /// A full reload of an open session's newest page (inbox first), or a
+    /// reload queued behind one in flight.
+    fn reload_messages_command(&mut self, session_id: &str) -> Option<Command> {
+        if !self.state.tabs.iter().any(|id| id == session_id) {
+            return None;
+        }
+        if !self.state.loading_messages.insert(session_id.to_owned()) {
+            self.message_reload_pending.insert(session_id.to_owned());
+            return None;
+        }
+        self.replacing_messages.insert(session_id.to_owned());
+        Some(Command::LoadMessages {
+            session_id: session_id.to_owned(),
+            cursor: None,
+        })
+    }
+
     /// Cancels the form the notice shows. Never answers it.
     fn cancel_shown_form(controller: &Rc<RefCell<Self>>) {
         let command = {
@@ -4811,9 +5235,13 @@ impl Controller {
         }
     }
 
+    /// Idle: the round Send. Running: Stop plus the Steer split button, which
+    /// (like Send) needs input, a usable model and no prompt POST in flight.
     fn refresh_send_button(&mut self) {
         let Some(active) = self.state.active.as_ref() else {
-            set_button_icon(&self.widgets.send_button, ICON_SEND, COMPOSER_ICON_PX);
+            self.widgets.send_button.set_visible(true);
+            self.widgets.stop_button.set_visible(false);
+            self.widgets.steer_split.set_visible(false);
             self.widgets
                 .send_button
                 .set_tooltip_text(Some("Send prompt"));
@@ -4822,17 +5250,16 @@ impl Controller {
         };
         let busy = self.state.statuses.get(active).is_some_and(|s| s.is_busy());
         let sending = self.state.pending_prompts.contains_key(active);
-        set_button_icon(
-            &self.widgets.send_button,
-            if busy { ICON_STOP } else { ICON_SEND },
-            COMPOSER_ICON_PX,
-        );
-        self.widgets.send_button.set_tooltip_text(Some(if busy {
-            "Stop generation"
-        } else if sending {
+        self.widgets.send_button.set_visible(!busy);
+        self.widgets.stop_button.set_visible(busy);
+        self.widgets.steer_split.set_visible(busy);
+        if !busy {
+            self.widgets.steer_menu.popdown();
+        }
+        self.widgets.send_button.set_tooltip_text(Some(if sending {
             "Sending the previous prompt…"
         } else {
-            "Send prompt"
+            "Send prompt (Enter)"
         }));
         let draft = self.state.drafts.get(active);
         let has_input = draft
@@ -4851,9 +5278,10 @@ impl Controller {
                         .is_some_and(|catalog| catalog.find(selection).is_some())
                 })
         });
-        self.widgets
-            .send_button
-            .set_sensitive(busy || (!sending && has_input && attachments_valid && model_ready));
+        let can_send = !sending && has_input && attachments_valid && model_ready;
+        self.widgets.send_button.set_sensitive(can_send);
+        self.widgets.steer_button.set_sensitive(can_send);
+        self.widgets.steer_menu.set_sensitive(can_send);
     }
 
     fn selected_model_supports_attachments(&self) -> bool {
@@ -5069,12 +5497,14 @@ impl Controller {
         if let Some(session_id) = active.as_ref() {
             let optimistic = self.state.optimistic_prompts.get(session_id);
             let conversation = self.state.conversations.get(session_id);
-            let (next, superseded) = apply_optimistic_row(rows, optimistic, conversation);
+            let idle = !self.active_is_busy();
+            let (next, superseded) = apply_optimistic_row(rows, optimistic, conversation, idle);
             rows = next;
             if superseded {
                 self.state.optimistic_prompts.remove(session_id);
             }
         }
+        self.refresh_tray();
         let adjustment = self.widgets.transcript_scroll.vadjustment();
         let old_upper = adjustment.upper();
         let old_value = adjustment.value();
@@ -5553,21 +5983,52 @@ impl Controller {
         }
     }
 
-    fn send_if_idle(controller: &Rc<RefCell<Self>>) {
-        let running = {
-            let this = controller.borrow();
-            this.state
-                .active
-                .as_ref()
-                .and_then(|active| this.state.statuses.get(active))
-                .is_some_and(|status| status.is_busy())
+    fn active_is_busy(&self) -> bool {
+        self.state
+            .active
+            .as_ref()
+            .and_then(|active| self.state.statuses.get(active))
+            .is_some_and(RunStatus::is_busy)
+    }
+
+    /// Enter in the composer (Ctrl+Enter with `ctrl`); see [`tray::enter_mode`].
+    fn send_from_keyboard(controller: &Rc<RefCell<Self>>, ctrl: bool) {
+        let busy = controller.borrow().active_is_busy();
+        Self::send_prompt(controller, tray::enter_mode(busy, ctrl));
+    }
+
+    /// Stop: `POST /interrupt` without `resume`, so every waiting message
+    /// stays parked (the tray then offers Send now). A stop pressed while an
+    /// idle session's first send is still unanswered waits for it.
+    fn stop(controller: &Rc<RefCell<Self>>) {
+        let command = {
+            let mut this = controller.borrow_mut();
+            let Some(active) = this.state.active.clone() else {
+                return;
+            };
+            if this.session(&active).is_none() || !this.active_is_busy() {
+                return;
+            }
+            if this.state.pending_prompts.contains_key(&active)
+                && !this.state.server_busy.contains(&active)
+            {
+                this.state.abort_requested.insert(active);
+                None
+            } else {
+                this.state.abort_requested.remove(&active);
+                Some(Command::Abort { session_id: active })
+            }
         };
-        if !running {
-            Self::send_or_abort(controller);
+        if let Some(command) = command {
+            controller.borrow().api.send(command);
         }
     }
 
-    fn send_or_abort(controller: &Rc<RefCell<Self>>) {
+    /// Sends the draft. On an idle session it is a plain prompt shown as an
+    /// optimistic YOU row; while the session runs it is steered (no
+    /// `delivery`) or queued (`delivery: "queue"`) and shows in the tray at
+    /// once. Only one prompt POST per session is in flight at a time.
+    fn send_prompt(controller: &Rc<RefCell<Self>>, mode: SendMode) {
         let command = {
             let mut this = controller.borrow_mut();
             let Some(active) = this.state.active.clone() else {
@@ -5576,96 +6037,95 @@ impl Controller {
             if this.session(&active).is_none() {
                 return;
             }
-            if this
-                .state
-                .statuses
-                .get(&active)
-                .is_some_and(|status| status.is_busy())
-            {
-                if this.state.pending_prompts.contains_key(&active)
-                    && !this.state.server_busy.contains(&active)
-                {
-                    this.state.abort_requested.insert(active);
-                    None
-                } else {
-                    this.state.abort_requested.remove(&active);
-                    Some(Command::Abort { session_id: active })
-                }
-            } else if this.state.pending_prompts.contains_key(&active) {
+            if this.state.pending_prompts.contains_key(&active) {
                 // The previous send has not been answered yet; it may still
                 // fail and come back into the draft.
-                None
-            } else {
-                let supports_attachments = this.selected_model_supports_attachments();
-                let draft = this.state.drafts.entry(active.clone()).or_default();
-                if let Some(debug) = DebugCommand::parse(&draft.text) {
-                    draft.text.clear();
-                    this.widgets.composer.buffer().set_text("");
-                    for event in debug.events(&active, unix_millis()) {
-                        this.state
-                            .conversations
-                            .entry(active.clone())
-                            .or_default()
-                            .apply_event(&event);
-                        if let Some((_, status)) = event_run_status(&event) {
-                            this.update_session_status(&active, status);
-                        }
-                    }
-                    let weak = this.self_weak.clone();
-                    this.refresh_tabs(&weak);
-                    this.refresh_transcript(TranscriptUpdate::Content);
-                    return;
-                }
-                if draft.text.trim().is_empty() && draft.attachments.is_empty() {
-                    return;
-                }
-                if !draft.attachments.is_empty() && !supports_attachments {
-                    this.show_error("The selected model does not accept attachments");
-                    return;
-                }
-                if let Err(error) = api::check_attachments(&draft.attachments) {
-                    this.show_error(&format!("{error:#}"));
-                    return;
-                }
-                let message_id = prompt_id_for(draft);
-                let pending = std::mem::take(draft);
-                this.next_prompt_request_id += 1;
-                let request_id = this.next_prompt_request_id;
-                let command = Command::SendPrompt {
-                    request_id,
-                    message_id: message_id.clone(),
-                    session_id: active.clone(),
-                    text: pending.text.clone(),
-                    attachments: pending.attachments.clone(),
-                };
-                this.state.optimistic_prompts.insert(
-                    active.clone(),
-                    OptimisticPrompt {
-                        row: optimistic_transcript_row(&pending, unix_millis()),
-                        message_id: message_id.clone(),
-                        request_id,
-                        accepted: false,
-                    },
-                );
-                this.state.pending_prompts.insert(
-                    active.clone(),
-                    PendingPrompt {
-                        request_id,
-                        message_id,
-                        draft: pending,
-                    },
-                );
-                let unread_changed = this.clear_session_unread(&active);
-                let status_changed = this.update_session_status(&active, RunStatus::Busy);
-                if status_changed || unread_changed {
-                    let weak = this.self_weak.clone();
-                    this.refresh_tabs(&weak);
-                }
-                this.refresh_composer();
-                this.pin_transcript_to_bottom();
-                this.refresh_transcript(TranscriptUpdate::Content);
-                Some(command)
+                return;
             }
+            let busy = this.active_is_busy();
+            let supports_attachments = this.selected_model_supports_attachments();
+            let draft = this.state.drafts.entry(active.clone()).or_default();
+            if let Some(debug) = DebugCommand::parse(&draft.text) {
+                draft.text.clear();
+                this.widgets.composer.buffer().set_text("");
+                for event in debug.events(&active, unix_millis()) {
+                    this.state
+                        .conversations
+                        .entry(active.clone())
+                        .or_default()
+                        .apply_event(&event);
+                    if let Some((_, status)) = event_run_status(&event) {
+                        this.update_session_status(&active, status);
+                    }
+                }
+                let weak = this.self_weak.clone();
+                this.refresh_tabs(&weak);
+                this.refresh_transcript(TranscriptUpdate::Content);
+                this.refresh_send_button();
+                return;
+            }
+            if draft.text.trim().is_empty() && draft.attachments.is_empty() {
+                return;
+            }
+            if !draft.attachments.is_empty() && !supports_attachments {
+                this.show_error("The selected model does not accept attachments");
+                return;
+            }
+            if let Err(error) = api::check_attachments(&draft.attachments) {
+                this.show_error(&format!("{error:#}"));
+                return;
+            }
+            let message_id = prompt_id_for(draft);
+            let pending = std::mem::take(draft);
+            this.next_prompt_request_id += 1;
+            let request_id = this.next_prompt_request_id;
+            let delivery = mode.delivery();
+            let target = if busy {
+                OptimisticTarget::Tray {
+                    delivery: delivery.unwrap_or(protocol::Delivery::Steer),
+                    summary: tray::summary(&pending.text, pending.attachments.len()),
+                }
+            } else {
+                OptimisticTarget::Transcript
+            };
+            let command = Command::SendPrompt {
+                request_id,
+                message_id: message_id.clone(),
+                session_id: active.clone(),
+                text: pending.text.clone(),
+                attachments: pending.attachments.clone(),
+                delivery,
+            };
+            this.state.optimistic_prompts.insert(
+                active.clone(),
+                OptimisticPrompt {
+                    row: optimistic_transcript_row(&pending, unix_millis()),
+                    message_id: message_id.clone(),
+                    request_id,
+                    accepted: false,
+                    target,
+                },
+            );
+            this.state.pending_prompts.insert(
+                active.clone(),
+                PendingPrompt {
+                    request_id,
+                    message_id,
+                    draft: pending,
+                },
+            );
+            let unread_changed = this.clear_session_unread(&active);
+            let status_changed = !busy && this.update_session_status(&active, RunStatus::Busy);
+            if status_changed || unread_changed {
+                let weak = this.self_weak.clone();
+                this.refresh_tabs(&weak);
+            }
+            this.refresh_composer();
+            if !busy {
+                this.pin_transcript_to_bottom();
+            }
+            this.refresh_transcript(TranscriptUpdate::Content);
+            Some(command)
         };
         if let Some(command) = command {
             controller.borrow().api.send(command);
@@ -8158,25 +8618,76 @@ fn transcript_row_is_user(row: &str) -> bool {
     serde_json::from_str::<TranscriptRow>(row).is_ok_and(|row| row.role == "YOU")
 }
 
-/// Appends the optimistic row to `rows` (the conversation's rows) until the
-/// conversation holds the user message with the prompt's `id`. Returns
-/// whether that message has arrived, superseding the optimistic row.
+/// Whether the conversation now shows the optimistic prompt itself. A YOU
+/// row gives way once the prompt is delivered, or once it waits on an idle
+/// session (parked: the tray shows it); while its run is starting, the
+/// server's waiting item does not replace it, so it never flickers through
+/// the tray. A tray entry gives way to the server's item or message.
+fn optimistic_superseded(
+    optimistic: &OptimisticPrompt,
+    conversation: Option<&Conversation>,
+    idle: bool,
+) -> bool {
+    let Some(conversation) = conversation else {
+        return false;
+    };
+    let id = &optimistic.message_id;
+    match optimistic.target {
+        OptimisticTarget::Transcript => {
+            conversation.has_delivered_user_message(id)
+                || (idle && conversation.has_user_message(id))
+        }
+        OptimisticTarget::Tray { .. } => conversation.has_user_message(id),
+    }
+}
+
+/// Appends the optimistic YOU row to `rows` (the conversation's rows) until
+/// it is superseded ([`optimistic_superseded`]); a tray entry adds no row.
+/// Returns whether the optimistic prompt is superseded.
 fn apply_optimistic_row(
     mut rows: Vec<String>,
     optimistic: Option<&OptimisticPrompt>,
     conversation: Option<&Conversation>,
+    idle: bool,
 ) -> (Vec<String>, bool) {
     let Some(optimistic) = optimistic else {
         return (rows, false);
     };
-    if conversation
-        .is_some_and(|conversation| conversation.has_user_message(&optimistic.message_id))
-    {
-        (rows, true)
-    } else {
-        rows.push(optimistic.row.clone());
-        (rows, false)
+    if optimistic_superseded(optimistic, conversation, idle) {
+        return (rows, true);
     }
+    if optimistic.target == OptimisticTarget::Transcript {
+        rows.push(optimistic.row.clone());
+    }
+    (rows, false)
+}
+
+/// The tray rows for a session: its waiting prompts plus a prompt being sent
+/// into its run, minus a prompt still shown as the optimistic YOU row.
+fn session_tray_rows(
+    conversation: Option<&Conversation>,
+    optimistic: Option<&OptimisticPrompt>,
+    in_flight: &HashSet<String>,
+) -> Vec<TrayRow> {
+    let items = conversation
+        .map(Conversation::tray_items)
+        .unwrap_or_default();
+    let (hidden, pending) = match optimistic.map(|optimistic| (optimistic, &optimistic.target)) {
+        Some((optimistic, OptimisticTarget::Transcript)) => {
+            (Some(optimistic.message_id.as_str()), None)
+        }
+        Some((optimistic, OptimisticTarget::Tray { delivery, summary })) => (
+            None,
+            Some(tray::PendingEntry {
+                id: optimistic.message_id.clone(),
+                delivery: *delivery,
+                summary: summary.clone(),
+                accepted: optimistic.accepted,
+            }),
+        ),
+        None => (None, None),
+    };
+    tray::tray_rows(&items, hidden, pending.as_ref(), in_flight)
 }
 
 fn optimistic_transcript_row(draft: &Draft, created: u64) -> String {
@@ -9648,10 +10159,15 @@ mod tests {
             message_id: "msg_new".into(),
             request_id: 1,
             accepted: false,
+            target: OptimisticTarget::Transcript,
         };
         let before = conversation(&[user_entry("msg_old", "old")]);
-        let (rows, superseded) =
-            apply_optimistic_row(before.transcript_rows(), Some(&pending), Some(&before));
+        let (rows, superseded) = apply_optimistic_row(
+            before.transcript_rows(),
+            Some(&pending),
+            Some(&before),
+            false,
+        );
         assert!(!superseded);
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[1], pending.row);
@@ -9662,7 +10178,7 @@ mod tests {
             user_entry("msg_other", "from the web UI"),
         ]);
         let (rows, superseded) =
-            apply_optimistic_row(other.transcript_rows(), Some(&pending), Some(&other));
+            apply_optimistic_row(other.transcript_rows(), Some(&pending), Some(&other), false);
         assert!(!superseded);
         assert_eq!(rows.len(), 3);
 
@@ -9671,23 +10187,36 @@ mod tests {
             user_entry("msg_other", "from the web UI"),
             user_entry("msg_new", "new"),
         ]);
-        let (rows, superseded) =
-            apply_optimistic_row(arrived.transcript_rows(), Some(&pending), Some(&arrived));
+        let (rows, superseded) = apply_optimistic_row(
+            arrived.transcript_rows(),
+            Some(&pending),
+            Some(&arrived),
+            false,
+        );
         assert!(superseded);
         assert_eq!(rows, arrived.transcript_rows());
 
-        let (rows, superseded) = apply_optimistic_row(Vec::new(), Some(&pending), None);
+        let (rows, superseded) = apply_optimistic_row(Vec::new(), Some(&pending), None, false);
         assert!(!superseded, "no conversation loaded yet");
         assert_eq!(rows, [pending.row.clone()]);
     }
 
+    fn enqueued(id: &str, text: &str, delivery: &str) -> serde_json::Value {
+        serde_json::json!({
+            "id": format!("evt_{id}"), "created": 4, "type": "session.inbox.enqueued",
+            "data": { "sessionID": "ses_1", "inboxID": id,
+                      "item": { "type": "user", "payload": { "text": text }, "delivery": delivery } }
+        })
+    }
+
     #[test]
-    fn the_inbox_echo_supersedes_the_optimistic_row_before_delivery() {
+    fn an_idle_send_stays_a_you_row_until_delivered_or_parked() {
         let pending = OptimisticPrompt {
             row: optimistic_transcript_row(&draft("steer"), 2),
             message_id: "msg_steer".into(),
             request_id: 1,
             accepted: true,
+            target: OptimisticTarget::Transcript,
         };
         let mut live = conversation(&[user_entry("msg_old", "old")]);
         // The run ends before the prompt is delivered: nothing changes.
@@ -9696,20 +10225,124 @@ mod tests {
             "data": { "sessionID": "ses_1" }
         }));
         let (_, superseded) =
-            apply_optimistic_row(live.transcript_rows(), Some(&pending), Some(&live));
+            apply_optimistic_row(live.transcript_rows(), Some(&pending), Some(&live), false);
         assert!(!superseded);
+        live.apply_event(&enqueued("msg_steer", "steer", "steer"));
+        let (rows, superseded) =
+            apply_optimistic_row(live.transcript_rows(), Some(&pending), Some(&live), false);
+        assert!(
+            !superseded,
+            "while its run starts, the waiting echo does not take over the row"
+        );
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[1], pending.row);
+        assert!(
+            session_tray_rows(Some(&live), Some(&pending), &HashSet::new()).is_empty(),
+            "nor does it show twice, in the tray"
+        );
+
+        // Stopped before delivery: parked, so the tray takes it.
+        let (rows, superseded) =
+            apply_optimistic_row(live.transcript_rows(), Some(&pending), Some(&live), true);
+        assert!(superseded);
+        assert_eq!(rows.len(), 1);
+        let tray = session_tray_rows(Some(&live), None, &HashSet::new());
+        assert_eq!(tray.len(), 1);
+        assert_eq!(tray[0].id, "msg_steer");
+
+        // Delivered: the conversation's own row.
         live.apply_event(&serde_json::json!({
-            "id": "evt_2", "created": 4, "type": "session.inbox.enqueued",
-            "data": { "sessionID": "ses_1", "inboxID": "msg_steer",
-                      "item": { "type": "user", "payload": { "text": "steer" }, "delivery": "steer" } }
+            "id": "evt_3", "created": 5, "type": "session.inbox.delivered",
+            "data": { "sessionID": "ses_1", "inboxID": "msg_steer" }
         }));
         let (rows, superseded) =
-            apply_optimistic_row(live.transcript_rows(), Some(&pending), Some(&live));
-        assert!(superseded, "the queued row is the prompt's row");
-        assert_eq!(rows.len(), 2);
+            apply_optimistic_row(live.transcript_rows(), Some(&pending), Some(&live), false);
+        assert!(superseded);
         assert_eq!(
             serde_json::from_str::<serde_json::Value>(&rows[1]).unwrap()["body"],
             "steer"
+        );
+    }
+
+    #[test]
+    fn a_send_into_a_run_is_a_tray_entry_until_the_server_echoes_it() {
+        let pending = OptimisticPrompt {
+            row: optimistic_transcript_row(&draft("then the changelog"), 2),
+            message_id: "msg_q".into(),
+            request_id: 1,
+            accepted: false,
+            target: OptimisticTarget::Tray {
+                delivery: protocol::Delivery::Queue,
+                summary: "then the changelog".into(),
+            },
+        };
+        let mut live = conversation(&[user_entry("msg_old", "old")]);
+        live.apply_event(&enqueued("msg_s", "keep the cap", "steer"));
+        let (rows, superseded) =
+            apply_optimistic_row(live.transcript_rows(), Some(&pending), Some(&live), false);
+        assert!(!superseded);
+        assert_eq!(rows.len(), 1, "no YOU row for a prompt sent into a run");
+        let tray = session_tray_rows(Some(&live), Some(&pending), &HashSet::new());
+        let view: Vec<_> = tray
+            .iter()
+            .map(|row| (row.id.as_str(), row.delivery, row.sending))
+            .collect();
+        assert_eq!(
+            view,
+            [
+                ("msg_s", protocol::Delivery::Steer, false),
+                ("msg_q", protocol::Delivery::Queue, true)
+            ]
+        );
+
+        live.apply_event(&enqueued("msg_q", "then the changelog", "queue"));
+        let (_, superseded) =
+            apply_optimistic_row(live.transcript_rows(), Some(&pending), Some(&live), false);
+        assert!(superseded, "the echo replaces the pending entry");
+        let tray = session_tray_rows(Some(&live), None, &HashSet::new());
+        assert_eq!(tray.len(), 2);
+        assert!(!tray[1].sending && !tray[1].in_flight);
+    }
+
+    #[test]
+    fn a_failed_send_into_a_run_leaves_the_tray_and_returns_to_the_draft() {
+        let mut state = State::default();
+        state.statuses.insert("ses_a".into(), RunStatus::Busy);
+        state.server_busy.insert("ses_a".into());
+        state.optimistic_prompts.insert(
+            "ses_a".into(),
+            OptimisticPrompt {
+                row: optimistic_transcript_row(&draft("later"), 1),
+                message_id: "msg_9".into(),
+                request_id: 9,
+                accepted: false,
+                target: OptimisticTarget::Tray {
+                    delivery: protocol::Delivery::Queue,
+                    summary: "later".into(),
+                },
+            },
+        );
+        state.pending_prompts.insert(
+            "ses_a".into(),
+            PendingPrompt {
+                request_id: 9,
+                message_id: "msg_9".into(),
+                draft: draft("later"),
+            },
+        );
+        assert_eq!(
+            session_tray_rows(None, state.optimistic_prompts.get("ses_a"), &HashSet::new()).len(),
+            1
+        );
+        let settled = state.settle_prompt(9, "ses_a", Err("boom".into()));
+        assert!(settled.restored);
+        assert_eq!(settled.error.as_deref(), Some("boom"));
+        assert!(!settled.status_changed, "the run is the server's own");
+        assert_eq!(state.statuses["ses_a"], RunStatus::Busy);
+        assert_eq!(state.drafts["ses_a"].text, "later");
+        assert!(
+            session_tray_rows(None, state.optimistic_prompts.get("ses_a"), &HashSet::new())
+                .is_empty()
         );
     }
 
@@ -9720,6 +10353,7 @@ mod tests {
             message_id: "msg_hello".into(),
             request_id: 1,
             accepted: false,
+            target: OptimisticTarget::Transcript,
         };
         let loaded = conversation(&[
             user_entry("msg_old", "old"),
@@ -9732,7 +10366,7 @@ mod tests {
         ]);
         let rows = loaded.transcript_rows();
         assert_eq!(rows.len(), 2);
-        let (rows, superseded) = apply_optimistic_row(rows, Some(&pending), Some(&loaded));
+        let (rows, superseded) = apply_optimistic_row(rows, Some(&pending), Some(&loaded), false);
         assert!(!superseded, "only a user entry with the prompt id counts");
         assert_eq!(rows.len(), 3);
     }
@@ -9805,6 +10439,7 @@ mod tests {
                 message_id: format!("msg_{request_id}"),
                 request_id,
                 accepted: false,
+                target: OptimisticTarget::Transcript,
             },
         );
         state.pending_prompts.insert(

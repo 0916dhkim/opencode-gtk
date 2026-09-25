@@ -89,8 +89,9 @@ pub enum Command {
         session_id: String,
         model: protocol::ModelRef,
     },
-    /// Carries no model, agent or delivery: the session's saved model, the
-    /// server's default agent and default delivery apply. `message_id` is the
+    /// Carries no model or agent: the session's saved model and the server's
+    /// default agent apply. `delivery` is `Some(Queue)` only for a queued
+    /// prompt; a steered one uses the server default. `message_id` is the
     /// client-generated prompt `id` (`msg_…`), which also becomes the user
     /// message ID.
     SendPrompt {
@@ -99,9 +100,18 @@ pub enum Command {
         session_id: String,
         text: String,
         attachments: Vec<PathBuf>,
+        delivery: Option<protocol::Delivery>,
     },
+    /// Stop: `POST /interrupt` without `resume`, which parks every waiting
+    /// inbox item.
     Abort {
         session_id: String,
+    },
+    /// Acts on one waiting inbox item (a tray row).
+    Inbox {
+        session_id: String,
+        inbox_id: String,
+        request: InboxRequest,
     },
     /// `session_id` is the request's own session, possibly a child session.
     ReplyPermission {
@@ -118,11 +128,27 @@ pub enum Command {
 }
 
 /// A permission reply or form cancel the server accepted, or found already
-/// settled (by another client or an earlier attempt).
+/// settled (by another client or an earlier attempt). For inbox requests,
+/// `AlreadyResolved` means the item was no longer waiting in that mode
+/// (delivered, cancelled or switched meanwhile), so the client reconciles.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Settled {
     Done,
     AlreadyResolved,
+}
+
+/// What a tray row asks of the server for one waiting inbox item.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InboxRequest {
+    /// `PATCH .../inbox/{inboxID}` `{delivery}`; switching to steer wakes
+    /// an idle session.
+    SetDelivery(protocol::Delivery),
+    /// `DELETE .../inbox/{inboxID}`.
+    Cancel,
+    /// `POST .../interrupt?resume=true` on an idle session: wakes it for its
+    /// parked steers only (queued items stay parked). "Send now" on a parked
+    /// steer is the only sender of `resume=true`.
+    Resume,
 }
 
 #[derive(Debug)]
@@ -229,6 +255,12 @@ pub enum UiEvent {
     Aborted {
         session_id: String,
         result: Result<(), String>,
+    },
+    InboxSettled {
+        session_id: String,
+        inbox_id: String,
+        request: InboxRequest,
+        result: Result<Settled, String>,
     },
     PendingLoaded(PendingSnapshot),
     PermissionReplied {
@@ -338,7 +370,9 @@ impl ApiHandle {
             | Command::SelectModel { .. }
             | Command::SendPrompt { .. } => &self.interaction_commands,
             Command::Abort { .. } => &self.abort_commands,
-            Command::ReplyPermission { .. } | Command::CancelForm { .. } => &self.urgent_commands,
+            Command::ReplyPermission { .. }
+            | Command::CancelForm { .. }
+            | Command::Inbox { .. } => &self.urgent_commands,
         };
         let _ = sender.send_blocking(command);
     }
@@ -866,11 +900,13 @@ impl Api {
         message_id: String,
         text: String,
         attachments: &[PathBuf],
+        delivery: Option<protocol::Delivery>,
     ) -> Result<protocol::InboxUser> {
         let body = protocol::PromptBody {
             id: message_id,
             text,
             files: encode_attachments(attachments)?,
+            delivery: delivery.filter(|delivery| *delivery == protocol::Delivery::Queue),
         };
         let path = protocol::session_prompt_path(session_id);
         let timeout = prompt_timeout(
@@ -896,6 +932,48 @@ impl Api {
             .context("request failed")?;
         let interrupted: protocol::InterruptResponse = decode_json(response)?;
         Ok(interrupted.interrupted)
+    }
+
+    /// One tray action on a waiting inbox item. A declared 409 (the item is
+    /// no longer waiting in the other mode) or 404 is
+    /// [`Settled::AlreadyResolved`]; the caller reconciles with the inbox.
+    fn inbox_request(
+        &self,
+        session_id: &str,
+        inbox_id: &str,
+        request: InboxRequest,
+    ) -> Result<Settled> {
+        let item = protocol::session_inbox_item_path(session_id, inbox_id);
+        let result = match request {
+            InboxRequest::SetDelivery(delivery) => self.send_empty(
+                Method::PATCH,
+                &item,
+                &protocol::InboxUpdateBody { delivery },
+            ),
+            InboxRequest::Cancel => self
+                .request(Method::DELETE, self.url(&item, &[])?)
+                .send()
+                .context("request failed")
+                .and_then(expect_success)
+                .map(|_| ()),
+            InboxRequest::Resume => self
+                .request(
+                    Method::POST,
+                    self.url(
+                        &protocol::session_interrupt_path(session_id),
+                        &[("resume".to_owned(), "true".to_owned())],
+                    )?,
+                )
+                .send()
+                .context("request failed")
+                .and_then(decode_json::<protocol::InterruptResponse>)
+                .map(|_| ()),
+        };
+        match result {
+            Ok(()) => Ok(Settled::Done),
+            Err(error) if is_stale_inbox_item(&error) => Ok(Settled::AlreadyResolved),
+            Err(error) => Err(error),
+        }
     }
 
     fn reply_permission(
@@ -1024,9 +1102,10 @@ fn spawn_command_worker(api: Api, commands: Receiver<Command>, ui: Sender<UiEven
                     session_id,
                     text,
                     attachments,
+                    delivery,
                 } => {
                     let result = api
-                        .send_prompt(&session_id, message_id, text, &attachments)
+                        .send_prompt(&session_id, message_id, text, &attachments, delivery)
                         .map(|_| ())
                         .map_err(format_error);
                     UiEvent::PromptAccepted {
@@ -1039,6 +1118,18 @@ fn spawn_command_worker(api: Api, commands: Receiver<Command>, ui: Sender<UiEven
                     let result = api.abort(&session_id).map(|_| ()).map_err(format_error);
                     UiEvent::Aborted { session_id, result }
                 }
+                Command::Inbox {
+                    session_id,
+                    inbox_id,
+                    request,
+                } => UiEvent::InboxSettled {
+                    result: api
+                        .inbox_request(&session_id, &inbox_id, request)
+                        .map_err(format_error),
+                    session_id,
+                    inbox_id,
+                    request,
+                },
                 Command::ReplyPermission {
                     request_id,
                     session_id,
@@ -1310,6 +1401,18 @@ fn is_already_resolved(error: &anyhow::Error) -> bool {
                 .error
                 .as_ref()
                 .is_some_and(protocol::ApiError::is_already_resolved)
+        })
+}
+
+/// A declared 409 or 404 on an inbox item: it was delivered, cancelled or
+/// switched meanwhile. A bare 404 (a proxy, a missing route) is an error.
+fn is_stale_inbox_item(error: &anyhow::Error) -> bool {
+    error
+        .chain()
+        .filter_map(|cause| cause.downcast_ref::<ApiFailure>())
+        .any(|failure| {
+            failure.error.is_some()
+                && matches!(failure.status, StatusCode::CONFLICT | StatusCode::NOT_FOUND)
         })
 }
 
@@ -1663,7 +1766,7 @@ mod tests {
     fn prompt_posts_the_id_text_and_data_files_only() {
         let captured = fixture("session.prompt.attachment");
         let message_id = captured["data"]["id"].as_str().unwrap().to_owned();
-        let (base, requests, server) = serve(2, move |request| {
+        let (base, requests, server) = serve(3, move |request| {
             assert_eq!(request.path(), "/api/session/ses_a/prompt");
             if request.json().get("files").is_some() {
                 ok(captured.clone())
@@ -1682,6 +1785,7 @@ mod tests {
                 message_id.clone(),
                 "Describe the attached image.".into(),
                 &[image],
+                Some(protocol::Delivery::Steer),
             )
             .unwrap();
         let text_only = api
@@ -1690,8 +1794,17 @@ mod tests {
                 "msg_0d58b846f00123EB3tzqlo6tYt".into(),
                 "Say hello.".into(),
                 &[],
+                None,
             )
             .unwrap();
+        api.send_prompt(
+            "ses_a",
+            "msg_0d58b846f00123EB3tzqlo6tYt".into(),
+            "Then this.".into(),
+            &[],
+            Some(protocol::Delivery::Queue),
+        )
+        .unwrap();
         server.join().unwrap();
 
         assert_eq!(accepted.id, message_id);
@@ -1707,12 +1820,92 @@ mod tests {
                 "text": "Describe the attached image.",
                 "files": [{ "uri": format!("data:image/png;base64,{PIXEL}"), "name": "a.png" }]
             }),
-            "no agent, model, delivery or resume"
+            "no agent, model or resume; a steer omits delivery"
         );
         assert_eq!(
             requests[1].json(),
             json!({ "id": "msg_0d58b846f00123EB3tzqlo6tYt", "text": "Say hello." })
         );
+        assert_eq!(
+            requests[2].json(),
+            json!({ "id": "msg_0d58b846f00123EB3tzqlo6tYt", "text": "Then this.", "delivery": "queue" }),
+            "only a queued prompt carries delivery"
+        );
+    }
+
+    #[test]
+    fn inbox_requests_use_their_routes_and_treat_conflicts_as_resolved() {
+        let (base, requests, server) = serve(6, |request| {
+            match (request.line.split(' ').next().unwrap(), request.target()) {
+                ("PATCH", "/api/session/ses_a/inbox/msg_gone") => (
+                    409,
+                    json!({
+                        "_tag": "ConflictError",
+                        "message": "Pending input cannot change to steer: msg_gone",
+                        "resource": "msg_gone"
+                    })
+                    .to_string(),
+                ),
+                ("DELETE", "/api/session/ses_a/inbox/msg_proxy") => (404, String::new()),
+                ("POST", _) => ok(json!({ "interrupted": false })),
+                _ => (204, String::new()),
+            }
+        });
+        let api = Api::new(config(base, None)).unwrap();
+        let steer = InboxRequest::SetDelivery(protocol::Delivery::Steer);
+        assert_eq!(
+            api.inbox_request("ses_a", "msg_1", steer).unwrap(),
+            Settled::Done
+        );
+        assert_eq!(
+            api.inbox_request(
+                "ses_a",
+                "msg_1",
+                InboxRequest::SetDelivery(protocol::Delivery::Queue)
+            )
+            .unwrap(),
+            Settled::Done
+        );
+        assert_eq!(
+            api.inbox_request("ses_a", "msg_gone", steer).unwrap(),
+            Settled::AlreadyResolved,
+            "delivered, cancelled or switched meanwhile"
+        );
+        assert_eq!(
+            api.inbox_request("ses_a", "msg_1", InboxRequest::Cancel)
+                .unwrap(),
+            Settled::Done
+        );
+        assert!(
+            api.inbox_request("ses_a", "msg_proxy", InboxRequest::Cancel)
+                .is_err(),
+            "a bare 404 is an error, not a resolved item"
+        );
+        assert_eq!(
+            api.inbox_request("ses_a", "msg_1", InboxRequest::Resume)
+                .unwrap(),
+            Settled::Done
+        );
+        server.join().unwrap();
+        let requests = requests.lock().unwrap();
+        let lines: Vec<&str> = requests
+            .iter()
+            .map(|request| request.line.as_str())
+            .collect();
+        assert_eq!(
+            lines,
+            [
+                "PATCH /api/session/ses_a/inbox/msg_1 HTTP/1.1",
+                "PATCH /api/session/ses_a/inbox/msg_1 HTTP/1.1",
+                "PATCH /api/session/ses_a/inbox/msg_gone HTTP/1.1",
+                "DELETE /api/session/ses_a/inbox/msg_1 HTTP/1.1",
+                "DELETE /api/session/ses_a/inbox/msg_proxy HTTP/1.1",
+                "POST /api/session/ses_a/interrupt?resume=true HTTP/1.1",
+            ]
+        );
+        assert_eq!(requests[0].json(), json!({ "delivery": "steer" }));
+        assert_eq!(requests[1].json(), json!({ "delivery": "queue" }));
+        assert!(requests[3].body.is_empty() && requests[5].body.is_empty());
     }
 
     /// Accepts `hang_ups` connections and closes each after reading the whole
@@ -1764,7 +1957,7 @@ mod tests {
         let (base, server) = hang_up_server(1, Some(inbox_user(id)));
         let api = Api::new(config(base, None)).unwrap();
         let accepted = api
-            .send_prompt("ses_a", id.into(), "hello".into(), &[])
+            .send_prompt("ses_a", id.into(), "hello".into(), &[], None)
             .unwrap();
         let (bodies, _) = server.join().unwrap();
         assert_eq!(accepted.id, id);
@@ -1781,7 +1974,7 @@ mod tests {
         let (base, server) = hang_up_server(2, None);
         let api = Api::new(config(base, None)).unwrap();
         let error = api
-            .send_prompt("ses_a", "msg_x".into(), "hello".into(), &[])
+            .send_prompt("ses_a", "msg_x".into(), "hello".into(), &[], None)
             .unwrap_err();
         let (bodies, listener) = server.join().unwrap();
         assert_eq!(bodies.len(), 2);
@@ -1823,10 +2016,10 @@ mod tests {
         let api = Api::new(config(base, None)).unwrap();
 
         let files_error = api
-            .send_prompt("ses_a", "msg_a".into(), "look".into(), &[image])
+            .send_prompt("ses_a", "msg_a".into(), "look".into(), &[image], None)
             .unwrap_err();
         let conflict = api
-            .send_prompt("ses_a", "msg_a".into(), "reuse".into(), &[])
+            .send_prompt("ses_a", "msg_a".into(), "reuse".into(), &[], None)
             .unwrap_err();
         server.join().unwrap();
 

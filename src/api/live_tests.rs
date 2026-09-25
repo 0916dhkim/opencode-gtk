@@ -184,12 +184,26 @@ impl Live {
     }
 
     fn prompt(&self, session_id: &str, text: &str, attachments: &[PathBuf]) -> String {
+        self.prompt_with(session_id, text, attachments, None)
+    }
+
+    fn prompt_with(
+        &self,
+        session_id: &str,
+        text: &str,
+        attachments: &[PathBuf],
+        delivery: Option<protocol::Delivery>,
+    ) -> String {
         let id = protocol::new_message_id();
         let accepted = self
             .api
-            .send_prompt(session_id, id.clone(), text.into(), attachments)
+            .send_prompt(session_id, id.clone(), text.into(), attachments, delivery)
             .expect("prompt");
         assert_eq!(accepted.id, id, "the prompt id is the inbox id");
+        assert_eq!(
+            accepted.delivery,
+            Some(delivery.unwrap_or(protocol::Delivery::Steer))
+        );
         id
     }
 
@@ -259,6 +273,11 @@ impl Live {
             "{label}: live rows differ from history"
         );
         assert_eq!(shape(&live), shape(&reloaded), "{label}: message shape");
+        assert_eq!(
+            live.tray_items(),
+            reloaded.tray_items(),
+            "{label}: waiting (tray) items"
+        );
         assert_eq!(
             live.context_tokens(),
             reloaded.context_tokens(),
@@ -453,6 +472,7 @@ fn live_server_end_to_end() {
             protocol::new_message_id(),
             "too big".into(),
             &[big],
+            None,
         )
         .unwrap_err();
     assert!(format_error(refused).contains("larger than 20 MiB"));
@@ -615,6 +635,215 @@ fn live_server_end_to_end() {
         assert!(!live.api.abort(&slow.id).expect("idle interrupt"));
         eprintln!("PASS idle interrupt reports false");
     }
+
+    step("steer mid-run, queue after");
+    let steering = live.create();
+    let since = live.mark();
+    live.prompt(&steering.id, "Run a command. [[scenario:permission]]", &[]);
+    let asked = live.wait_for_since(since, "permission.asked", 30, |event| {
+        is_type(event, "permission.asked", Some(&steering.id))
+    });
+    let steer = live.prompt(&steering.id, "Steer mid-run.", &[]);
+    let queue = live.prompt_with(
+        &steering.id,
+        "Queued for after. [[scenario:text]]",
+        &[],
+        Some(protocol::Delivery::Queue),
+    );
+    {
+        let (waiting, _) = live.reload(&steering.id);
+        let tray: Vec<_> = waiting
+            .tray_items()
+            .into_iter()
+            .map(|item| (item.id, item.delivery))
+            .collect();
+        assert_eq!(
+            tray,
+            [
+                (steer.clone(), protocol::Delivery::Steer),
+                (queue.clone(), protocol::Delivery::Queue)
+            ]
+        );
+    }
+    live.api
+        .reply_permission(
+            &steering.id,
+            asked["data"]["id"].as_str().unwrap(),
+            protocol::PermissionDecision::Once,
+        )
+        .expect("reply");
+    live.wait_done(&steering.id, 1, 90);
+    let timeline: Vec<String> = live.log[since..]
+        .iter()
+        .filter(|event| event["data"]["sessionID"] == steering.id.as_str())
+        .filter_map(|event| {
+            let kind = event["type"].as_str()?;
+            match kind {
+                "session.inbox.delivered" => {
+                    let id = event["data"]["inboxID"].as_str()?;
+                    Some(if id == steer {
+                        "delivered:steer".into()
+                    } else if id == queue {
+                        "delivered:queue".into()
+                    } else {
+                        "delivered:first".into()
+                    })
+                }
+                "session.step.started" | "session.step.ended" | "session.execution.succeeded" => {
+                    Some(kind.trim_start_matches("session.").into())
+                }
+                _ => None,
+            }
+        })
+        .collect();
+    eprintln!("steer/queue timeline: {timeline:?}");
+    let at = |what: &str| timeline.iter().position(|kind| kind == what).unwrap();
+    assert!(
+        timeline[..at("delivered:steer")].contains(&"step.ended".to_owned()),
+        "the steer waits for a step boundary"
+    );
+    assert!(
+        timeline[at("delivered:steer")..at("delivered:queue")]
+            .iter()
+            .any(|kind| kind == "step.ended"),
+        "the queued prompt waits until the steered turn has ended"
+    );
+    assert_eq!(
+        timeline
+            .iter()
+            .filter(|kind| *kind == "execution.succeeded")
+            .count(),
+        1,
+        "both run within one execution"
+    );
+    let rows = live.assert_live_matches_history("steer + queue", &steering.id);
+    assert_eq!(count_kind(&rows, "YOU", ""), 3);
+    eprintln!("PASS steer mid-run, queue after");
+
+    step("stop parks; switch, cancel, send now");
+    let parking = live.create();
+    live.prompt(&parking.id, "Stream slowly. [[scenario:slow]]", &[]);
+    live.wait_for("parking text delta", 30, |event| {
+        is_type(event, "session.text.delta", Some(&parking.id))
+    });
+    let steer = live.prompt(&parking.id, "Parked steer. [[scenario:text]]", &[]);
+    let queued =
+        |text: &str| live.prompt_with(&parking.id, text, &[], Some(protocol::Delivery::Queue));
+    let queue1 = queued("Parked queue 1. [[scenario:text]]");
+    let queue2 = queued("Parked queue 2. [[scenario:text]]");
+    let queue3 = queued("Cancel me. [[scenario:text]]");
+    let to_steer = InboxRequest::SetDelivery(protocol::Delivery::Steer);
+    assert_eq!(
+        live.api
+            .inbox_request(&parking.id, &queue2, to_steer)
+            .unwrap(),
+        Settled::Done
+    );
+    assert_eq!(
+        live.api
+            .inbox_request(&parking.id, &queue2, to_steer)
+            .unwrap(),
+        Settled::AlreadyResolved,
+        "a switch to the mode it already has is a 409"
+    );
+    assert!(live.api.abort(&parking.id).expect("stop"), "was running");
+    live.wait_for("parking interrupted", 30, |event| {
+        is_type(event, "session.execution.interrupted", Some(&parking.id))
+    });
+    live.wait_quiet(Duration::from_secs(3), Duration::from_secs(30));
+    let parked_at = live.mark();
+    let tray = |live: &Live| -> Vec<(String, protocol::Delivery)> {
+        live.reload(&parking.id)
+            .0
+            .tray_items()
+            .into_iter()
+            .map(|item| (item.id, item.delivery))
+            .collect()
+    };
+    assert_eq!(
+        tray(&live),
+        [
+            (steer.clone(), protocol::Delivery::Steer),
+            (queue1.clone(), protocol::Delivery::Queue),
+            (queue2.clone(), protocol::Delivery::Steer),
+            (queue3.clone(), protocol::Delivery::Queue),
+        ],
+        "Stop parks every waiting message"
+    );
+    assert_eq!(
+        live.live(&parking.id).tray_items(),
+        live.reload(&parking.id).0.tray_items(),
+        "live tray == reloaded tray"
+    );
+    assert_eq!(
+        live.api
+            .inbox_request(&parking.id, &queue3, InboxRequest::Cancel)
+            .unwrap(),
+        Settled::Done
+    );
+    live.wait_for_since(parked_at, "inbox.cancelled", 10, |event| {
+        is_type(event, "session.inbox.cancelled", Some(&parking.id))
+            && event["data"]["inboxID"] == queue3.as_str()
+    });
+    assert_eq!(
+        live.api
+            .inbox_request(&parking.id, &queue3, InboxRequest::Cancel)
+            .unwrap(),
+        Settled::Done,
+        "cancelling again is still 204"
+    );
+    assert!(
+        !live.log[parked_at..].iter().any(|event| is_type(
+            event,
+            "session.execution.started",
+            Some(&parking.id)
+        )),
+        "nothing ran while parked"
+    );
+    // Send now on the parked steer resumes the session for its steers.
+    assert_eq!(
+        live.api
+            .inbox_request(
+                &parking.id,
+                &steer,
+                crate::tray::send_now_request(protocol::Delivery::Steer)
+            )
+            .unwrap(),
+        Settled::Done
+    );
+    live.wait_done(&parking.id, 2, 60);
+    assert_eq!(
+        tray(&live),
+        [(queue1.clone(), protocol::Delivery::Queue)],
+        "resume delivers the parked steers; queued ones stay parked"
+    );
+    // Send now on the parked queued prompt switches it to steer, which wakes the session.
+    assert_eq!(
+        live.api
+            .inbox_request(
+                &parking.id,
+                &queue1,
+                crate::tray::send_now_request(protocol::Delivery::Queue)
+            )
+            .unwrap(),
+        Settled::Done
+    );
+    live.wait_done(&parking.id, 3, 60);
+    assert!(tray(&live).is_empty());
+    assert_eq!(
+        live.api
+            .inbox_request(
+                &parking.id,
+                &queue1,
+                InboxRequest::SetDelivery(protocol::Delivery::Queue)
+            )
+            .unwrap(),
+        Settled::AlreadyResolved,
+        "a delivered item is resolved"
+    );
+    let rows = live.assert_live_matches_history("stop + send now", &parking.id);
+    assert_eq!(count_kind(&rows, "YOU", ""), 4);
+    eprintln!("PASS stop parks; switch, cancel, send now");
 
     step("form notice data + cancel");
     let form_owner = live.create();

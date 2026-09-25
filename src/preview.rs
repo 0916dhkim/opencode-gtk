@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use serde_json::{json, Value};
 
 use crate::{
-    api::{Bootstrap, Command, MessagePage, ServerEnvelope, Settled, UiEvent},
+    api::{Bootstrap, Command, InboxRequest, MessagePage, ServerEnvelope, Settled, UiEvent},
     model::{ModelCatalog, Project, RunStatus, Session, SessionModel},
     pending::{PendingForm, PendingRequest, PendingSnapshot},
     persist::{PersistedTab, ServerState},
@@ -15,6 +15,10 @@ pub const SERVER_KEY: &str = "preview://opencode-gtk";
 const DIRECTORY: &str = "/repo";
 const ACTIVE_ID: &str = "ses_preview";
 const OTHER_ID: &str = "ses_other";
+/// A running session with a steered and a queued message waiting.
+const RUNNING_ID: &str = "ses_running";
+/// A stopped session whose waiting messages are parked.
+const PARKED_ID: &str = "ses_parked";
 const CREATED: u64 = 1_704_067_200_000;
 
 pub fn server_state() -> ServerState {
@@ -29,6 +33,16 @@ pub fn server_state() -> ServerState {
                 id: OTHER_ID.into(),
                 directory: DIRECTORY.into(),
                 title: "SSH tunnel notes".into(),
+            },
+            PersistedTab {
+                id: RUNNING_ID.into(),
+                directory: DIRECTORY.into(),
+                title: "Refactor the retry logic".into(),
+            },
+            PersistedTab {
+                id: PARKED_ID.into(),
+                directory: DIRECTORY.into(),
+                title: "Stopped with parked messages".into(),
             },
         ],
         active: Some(ACTIVE_ID.into()),
@@ -47,6 +61,27 @@ pub struct State {
     server_events: Vec<Value>,
     /// Pending permissions and forms, until answered or cancelled.
     pending: Vec<PendingRequest>,
+    /// Undelivered prompts per session, oldest first.
+    inbox: HashMap<String, Vec<Waiting>>,
+    /// Sessions with a (canned, never ending) run.
+    busy: HashSet<String>,
+}
+
+/// One undelivered prompt.
+#[derive(Clone, Debug)]
+struct Waiting {
+    id: String,
+    text: String,
+    delivery: protocol::Delivery,
+    created: u64,
+}
+
+/// Which waiting prompts a wake may deliver (like the server's inbox):
+/// steers only, or steers first and then the queue, one turn at a time.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Wake {
+    Steers,
+    Input,
 }
 
 impl State {
@@ -54,12 +89,74 @@ impl State {
         let mut messages = HashMap::new();
         messages.insert(ACTIVE_ID.to_owned(), active_messages());
         messages.insert(OTHER_ID.to_owned(), other_messages());
+        messages.insert(RUNNING_ID.to_owned(), running_messages());
+        messages.insert(PARKED_ID.to_owned(), parked_messages());
+        let waiting = |id: &str, text: &str, delivery, created| Waiting {
+            id: id.into(),
+            text: text.into(),
+            delivery,
+            created,
+        };
+        let mut inbox = HashMap::new();
+        inbox.insert(
+            RUNNING_ID.to_owned(),
+            vec![
+                waiting(
+                    "msg_running_steer",
+                    "and keep the 30 s cap on the backoff",
+                    protocol::Delivery::Steer,
+                    CREATED + 70_000,
+                ),
+                waiting(
+                    "msg_running_queue",
+                    "then update the changelog",
+                    protocol::Delivery::Queue,
+                    CREATED + 75_000,
+                ),
+            ],
+        );
+        inbox.insert(
+            PARKED_ID.to_owned(),
+            vec![
+                waiting(
+                    "msg_parked_steer",
+                    "and keep the 30 s cap on the backoff",
+                    protocol::Delivery::Steer,
+                    CREATED + 70_000,
+                ),
+                waiting(
+                    "msg_parked_queue",
+                    "then update the changelog",
+                    protocol::Delivery::Queue,
+                    CREATED + 75_000,
+                ),
+            ],
+        );
         Self {
-            sessions: vec![active_session(), other_session()],
+            sessions: vec![
+                active_session(),
+                other_session(),
+                session_info(
+                    RUNNING_ID,
+                    DIRECTORY,
+                    Some("Refactor the retry logic"),
+                    CREATED - 7_200_000,
+                    CREATED - 7_100_000,
+                ),
+                session_info(
+                    PARKED_ID,
+                    DIRECTORY,
+                    Some("Stopped with parked messages"),
+                    CREATED - 10_800_000,
+                    CREATED - 10_700_000,
+                ),
+            ],
             messages,
             next_id: 1,
             server_events: Vec::new(),
             pending: canned_pending(),
+            inbox,
+            busy: HashSet::from([RUNNING_ID.to_owned()]),
         }
     }
 
@@ -122,18 +219,39 @@ impl State {
                 message_id,
                 session_id,
                 text,
+                delivery,
                 ..
             } => {
-                self.append_user_message(&session_id, message_id, text);
+                self.prompt(&session_id, message_id, text, delivery);
                 UiEvent::PromptAccepted {
                     request_id,
                     session_id,
                     result: Ok(()),
                 }
             }
-            Command::Abort { session_id } => UiEvent::Aborted {
+            Command::Abort { session_id } => {
+                if self.busy.remove(&session_id) {
+                    self.push_event(
+                        &session_id,
+                        CREATED + 80_000,
+                        "session.execution.interrupted",
+                        json!({ "reason": "user" }),
+                    );
+                }
+                UiEvent::Aborted {
+                    session_id,
+                    result: Ok(()),
+                }
+            }
+            Command::Inbox {
                 session_id,
-                result: Ok(()),
+                inbox_id,
+                request,
+            } => UiEvent::InboxSettled {
+                result: Ok(self.inbox_request(&session_id, &inbox_id, request)),
+                session_id,
+                inbox_id,
+                request,
             },
             Command::ReplyPermission { request_id, .. } => UiEvent::PermissionReplied {
                 result: Ok(self.settle(&request_id)),
@@ -150,7 +268,14 @@ impl State {
         let statuses = self
             .sessions
             .iter()
-            .map(|session| (session.id.clone(), RunStatus::Idle))
+            .map(|session| {
+                let status = if self.busy.contains(&session.id) {
+                    RunStatus::Busy
+                } else {
+                    RunStatus::Idle
+                };
+                (session.id.clone(), status)
+            })
             .collect();
         Bootstrap {
             version: "preview".into(),
@@ -191,10 +316,26 @@ impl State {
                 queued: None,
             };
         }
+        let queued = self
+            .inbox
+            .get(session_id)
+            .into_iter()
+            .flatten()
+            .map(|waiting| {
+                decode(json!({
+                    "id": waiting.id,
+                    "sessionID": session_id,
+                    "time": { "created": waiting.created },
+                    "type": "user",
+                    "payload": { "text": waiting.text },
+                    "delivery": waiting.delivery
+                }))
+            })
+            .collect();
         MessagePage {
             messages: self.messages.get(session_id).cloned().unwrap_or_default(),
             next_cursor: None,
-            queued: Some(Vec::new()),
+            queued: Some(queued),
         }
     }
 
@@ -244,21 +385,147 @@ impl State {
         Ok(())
     }
 
-    /// Like the server, the prompt `id` becomes the user message ID, and a
-    /// canned reply streams back as v2 events that match the stored entries.
-    fn append_user_message(&mut self, session_id: &str, message_id: String, text: String) {
+    /// Like the server: the prompt waits in the inbox (its `id` is the
+    /// inbox ID and becomes the user message ID) and wakes an idle session;
+    /// a running (canned) session keeps it waiting.
+    fn prompt(
+        &mut self,
+        session_id: &str,
+        message_id: String,
+        text: String,
+        delivery: Option<protocol::Delivery>,
+    ) {
         self.next_id += 1;
-        let delivered = CREATED + self.next_id * 1_000;
+        let delivery = delivery.unwrap_or(protocol::Delivery::Steer);
+        let created = CREATED + self.next_id * 1_000;
+        self.push_event(
+            session_id,
+            created,
+            "session.inbox.enqueued",
+            json!({ "inboxID": message_id,
+                "item": { "type": "user", "payload": { "text": text }, "delivery": delivery } }),
+        );
+        self.inbox
+            .entry(session_id.to_owned())
+            .or_default()
+            .push(Waiting {
+                id: message_id,
+                text,
+                delivery,
+                created,
+            });
+        if !self.busy.contains(session_id) {
+            self.run(session_id, Wake::Input);
+        }
+    }
+
+    /// A tray request: switch (a steer wakes an idle session), cancel, or
+    /// resume an idle session for its steers. Mirrors the server's 409 for
+    /// an item that is gone or already in that mode.
+    fn inbox_request(
+        &mut self,
+        session_id: &str,
+        inbox_id: &str,
+        request: InboxRequest,
+    ) -> Settled {
+        let busy = self.busy.contains(session_id);
+        let waiting = self.inbox.entry(session_id.to_owned()).or_default();
+        let index = waiting.iter().position(|item| item.id == inbox_id);
+        match request {
+            InboxRequest::SetDelivery(delivery) => {
+                let Some(index) = index.filter(|index| waiting[*index].delivery != delivery) else {
+                    return Settled::AlreadyResolved;
+                };
+                waiting[index].delivery = delivery;
+                self.push_event(
+                    session_id,
+                    CREATED + 85_000,
+                    "session.inbox.delivery.changed",
+                    json!({ "inboxID": inbox_id, "delivery": delivery }),
+                );
+                if delivery == protocol::Delivery::Steer && !busy {
+                    self.run(session_id, Wake::Input);
+                }
+            }
+            InboxRequest::Cancel => {
+                if let Some(index) = index {
+                    waiting.remove(index);
+                    self.push_event(
+                        session_id,
+                        CREATED + 85_000,
+                        "session.inbox.cancelled",
+                        json!({ "inboxID": inbox_id }),
+                    );
+                }
+            }
+            InboxRequest::Resume => {
+                if !busy {
+                    self.run(session_id, Wake::Steers);
+                }
+            }
+        }
+        Settled::Done
+    }
+
+    /// Delivers waiting prompts like the server's runner: every steer at
+    /// once, then (for an input wake) one queued prompt per turn, each with
+    /// a canned reply streamed as v2 events that match the stored entries.
+    fn run(&mut self, session_id: &str, wake: Wake) {
+        let mut started = false;
+        loop {
+            let waiting = self.inbox.entry(session_id.to_owned()).or_default();
+            let steers: Vec<Waiting> = waiting
+                .iter()
+                .filter(|item| item.delivery != protocol::Delivery::Queue)
+                .cloned()
+                .collect();
+            let batch = if !steers.is_empty() {
+                steers
+            } else if wake == Wake::Input && !waiting.is_empty() {
+                vec![waiting[0].clone()]
+            } else {
+                break;
+            };
+            waiting.retain(|item| !batch.iter().any(|sent| sent.id == item.id));
+            self.next_id += 1;
+            let delivered = CREATED + self.next_id * 1_000;
+            if !started {
+                started = true;
+                self.push_event(
+                    session_id,
+                    delivered,
+                    "session.execution.started",
+                    json!({}),
+                );
+            }
+            self.reply(session_id, &batch, delivered);
+        }
+        if started {
+            self.next_id += 1;
+            let finished = CREATED + self.next_id * 1_000;
+            self.push_event(
+                session_id,
+                finished,
+                "session.execution.succeeded",
+                json!({}),
+            );
+        }
+    }
+
+    fn reply(&mut self, session_id: &str, batch: &[Waiting], delivered: u64) {
         let assistant_id = format!("msg_preview_reply_{}", self.next_id);
-        let reply = format!("(preview) You said: {text}");
+        let said: Vec<&str> = batch.iter().map(|item| item.text.as_str()).collect();
+        let reply = format!("(preview) You said: {}", said.join(" / "));
         let tokens = json!({ "input": 1200, "output": 40, "reasoning": 0, "cache": { "read": 0, "write": 0 } });
         let messages = self.messages.entry(session_id.to_owned()).or_default();
-        messages.push(entry(json!({
-            "id": message_id,
-            "type": "user",
-            "time": { "created": delivered },
-            "text": text
-        })));
+        for item in batch {
+            messages.push(entry(json!({
+                "id": item.id,
+                "type": "user",
+                "time": { "created": delivered },
+                "text": item.text
+            })));
+        }
         messages.push(entry(json!({
             "id": assistant_id,
             "type": "assistant",
@@ -268,20 +535,15 @@ impl State {
             "finish": "stop",
             "tokens": tokens
         })));
-        let session = json!(session_id);
-        let events = [
-            (
-                0,
-                "session.inbox.enqueued",
-                json!({ "inboxID": message_id,
-                "item": { "type": "user", "payload": { "text": text }, "delivery": "steer" } }),
-            ),
-            (0, "session.execution.started", json!({})),
-            (
-                0,
+        for item in batch {
+            self.push_event(
+                session_id,
+                delivered,
                 "session.inbox.delivered",
-                json!({ "inboxID": message_id }),
-            ),
+                json!({ "inboxID": item.id }),
+            );
+        }
+        let events = [
             (
                 100,
                 "session.step.started",
@@ -311,19 +573,22 @@ impl State {
                 json!({ "assistantMessageID": assistant_id,
                 "finish": "stop", "cost": 0, "tokens": tokens }),
             ),
-            (200, "session.execution.succeeded", json!({})),
         ];
-        for (offset, kind, mut data) in events {
-            self.next_id += 1;
-            data["sessionID"] = session.clone();
-            self.server_events.push(json!({
-                "id": format!("evt_preview_{:06}", self.next_id),
-                "created": delivered + offset,
-                "type": kind,
-                "location": { "directory": DIRECTORY },
-                "data": data
-            }));
+        for (offset, kind, data) in events {
+            self.push_event(session_id, delivered + offset, kind, data);
         }
+    }
+
+    fn push_event(&mut self, session_id: &str, created: u64, kind: &str, mut data: Value) {
+        self.next_id += 1;
+        data["sessionID"] = json!(session_id);
+        self.server_events.push(json!({
+            "id": format!("evt_preview_{:06}", self.next_id),
+            "created": created,
+            "type": kind,
+            "location": { "directory": DIRECTORY },
+            "data": data
+        }));
     }
 
     /// Events of the last command, as the event stream would deliver them.
@@ -542,6 +807,67 @@ fn other_messages() -> Vec<protocol::SessionMessage> {
     ]
 }
 
+const RUNNING_CREATED: u64 = CREATED - 7_200_000;
+
+fn running_messages() -> Vec<protocol::SessionMessage> {
+    vec![
+        user_text(
+            "msg_running_user",
+            RUNNING_CREATED,
+            "Refactor the retry logic in the event worker into its own function.",
+        ),
+        entry(json!({
+            "id": "msg_running_assistant",
+            "type": "assistant",
+            "time": { "created": RUNNING_CREATED + 20_000 },
+            "agent": "build",
+            "content": [{
+                "type": "tool",
+                "id": "call_running_shell",
+                "name": "shell",
+                "state": {
+                    "status": "running",
+                    "input": { "command": "cargo test api::", "description": "Run the API tests" }
+                },
+                "time": { "created": RUNNING_CREATED + 21_000, "ran": RUNNING_CREATED + 21_100 }
+            }]
+        })),
+    ]
+}
+
+const PARKED_CREATED: u64 = CREATED - 10_800_000;
+
+fn parked_messages() -> Vec<protocol::SessionMessage> {
+    vec![
+        user_text(
+            "msg_parked_user",
+            PARKED_CREATED,
+            "Refactor the retry logic in the event worker into its own function.",
+        ),
+        entry(json!({
+            "id": "msg_parked_assistant",
+            "type": "assistant",
+            "time": { "created": PARKED_CREATED + 20_000, "completed": PARKED_CREATED + 60_000 },
+            "agent": "build",
+            "content": [{
+                "type": "tool",
+                "id": "call_parked_shell",
+                "name": "shell",
+                "state": {
+                    "status": "error",
+                    "input": { "command": "cargo test api::", "description": "Run the API tests" },
+                    "error": { "type": "aborted", "message": "Tool execution interrupted" }
+                },
+                "time": { "created": PARKED_CREATED + 21_000, "ran": PARKED_CREATED + 21_100, "completed": PARKED_CREATED + 60_000 }
+            }],
+            "finish": "error",
+            "error": { "type": "aborted", "message": "Step interrupted" }
+        })),
+        entry(json!({ "id": "msg_parked_idle", "type": "idle",
+            "time": { "created": PARKED_CREATED + 60_000 }, "outcome": "interrupted" })),
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -640,6 +966,7 @@ mod tests {
             session_id: ACTIVE_ID.into(),
             text: "Ship it".into(),
             attachments: Vec::new(),
+            delivery: None,
         });
         assert!(matches!(
             event,
@@ -684,6 +1011,141 @@ mod tests {
             Some(&RunStatus::Idle)
         );
         assert!(state.take_server_events().is_empty());
+    }
+
+    fn replay(state: &mut State, conversation: &mut Conversation) -> Vec<String> {
+        let mut types = Vec::new();
+        for event in state.take_server_events() {
+            let UiEvent::ServerEvent(envelope) = event else {
+                panic!("unexpected {event:?}");
+            };
+            conversation.apply_event(&envelope.payload);
+            types.push(envelope.payload["type"].as_str().unwrap().to_owned());
+        }
+        types
+    }
+
+    fn tray(conversation: &Conversation) -> Vec<(String, protocol::Delivery)> {
+        conversation
+            .tray_items()
+            .into_iter()
+            .map(|item| (item.id, item.delivery))
+            .collect()
+    }
+
+    #[test]
+    fn the_running_session_keeps_prompts_waiting_until_stopped_and_sent() {
+        let mut state = State::new();
+        assert_eq!(state.bootstrap().statuses[RUNNING_ID], RunStatus::Busy);
+        assert_eq!(state.bootstrap().statuses[PARKED_ID], RunStatus::Idle);
+        let page = state.message_page(RUNNING_ID, None);
+        let mut live = Conversation::default();
+        live.replace_from_api(&page.messages, None);
+        live.sync_queued(page.queued.as_deref().unwrap());
+        assert_eq!(
+            tray(&live),
+            [
+                ("msg_running_steer".to_owned(), protocol::Delivery::Steer),
+                ("msg_running_queue".to_owned(), protocol::Delivery::Queue)
+            ]
+        );
+        let rows = render(&page.messages);
+        assert_eq!(
+            rows.last().unwrap()["body"],
+            "shell · running — cargo test api::"
+        );
+
+        // A prompt sent into the run waits too; so does a queued one.
+        state.handle(Command::SendPrompt {
+            request_id: 1,
+            message_id: "msg_more".into(),
+            session_id: RUNNING_ID.into(),
+            text: "one more thing".into(),
+            attachments: Vec::new(),
+            delivery: Some(protocol::Delivery::Queue),
+        });
+        assert_eq!(replay(&mut state, &mut live), ["session.inbox.enqueued"]);
+        assert_eq!(live.tray_items().len(), 3);
+
+        // Switch, and a switch to the mode it already has.
+        let switch = |state: &mut State, id: &str, delivery| {
+            state.handle(Command::Inbox {
+                session_id: RUNNING_ID.into(),
+                inbox_id: id.into(),
+                request: InboxRequest::SetDelivery(delivery),
+            })
+        };
+        assert!(matches!(
+            switch(&mut state, "msg_running_steer", protocol::Delivery::Queue),
+            UiEvent::InboxSettled {
+                result: Ok(Settled::Done),
+                ..
+            }
+        ));
+        assert!(matches!(
+            switch(&mut state, "msg_running_steer", protocol::Delivery::Queue),
+            UiEvent::InboxSettled {
+                result: Ok(Settled::AlreadyResolved),
+                ..
+            }
+        ));
+        assert_eq!(
+            replay(&mut state, &mut live),
+            ["session.inbox.delivery.changed"]
+        );
+        assert_eq!(live.tray_items()[0].delivery, protocol::Delivery::Queue);
+
+        // Stop parks everything; switching one to steer delivers it, then the rest in turn.
+        state.handle(Command::Abort {
+            session_id: RUNNING_ID.into(),
+        });
+        assert_eq!(
+            replay(&mut state, &mut live),
+            ["session.execution.interrupted"]
+        );
+        assert_eq!(live.tray_items().len(), 3);
+        switch(&mut state, "msg_more", protocol::Delivery::Steer);
+        let types = replay(&mut state, &mut live);
+        let delivered: Vec<_> = types
+            .iter()
+            .filter(|kind| *kind == "session.inbox.delivered")
+            .collect();
+        assert_eq!(delivered.len(), 3);
+        assert_eq!(types.last().unwrap(), "session.execution.succeeded");
+        assert!(live.tray_items().is_empty());
+        let mut reloaded = Conversation::default();
+        reloaded.replace_from_api(&state.message_page(RUNNING_ID, None).messages, None);
+        assert_eq!(
+            live.transcript_rows().len(),
+            reloaded.transcript_rows().len()
+        );
+    }
+
+    #[test]
+    fn resuming_a_parked_session_sends_its_steers_only() {
+        let mut state = State::new();
+        let page = state.message_page(PARKED_ID, None);
+        let mut live = Conversation::default();
+        live.replace_from_api(&page.messages, None);
+        live.sync_queued(page.queued.as_deref().unwrap());
+        assert_eq!(live.tray_items().len(), 2);
+        state.handle(Command::Inbox {
+            session_id: PARKED_ID.into(),
+            inbox_id: "msg_parked_steer".into(),
+            request: InboxRequest::Resume,
+        });
+        replay(&mut state, &mut live);
+        assert_eq!(
+            tray(&live),
+            [("msg_parked_queue".to_owned(), protocol::Delivery::Queue)]
+        );
+        state.handle(Command::Inbox {
+            session_id: PARKED_ID.into(),
+            inbox_id: "msg_parked_queue".into(),
+            request: InboxRequest::Cancel,
+        });
+        assert_eq!(replay(&mut state, &mut live), ["session.inbox.cancelled"]);
+        assert!(live.tray_items().is_empty());
     }
 
     #[test]

@@ -14,9 +14,18 @@ A lightweight GTK 4 desktop client for a remote [OpenCode](https://opencode.ai) 
 - Creates and renames sessions in server-side project directories
 - Sends file attachments (up to 20 MiB each) with prompts
 - Answers permission requests, including those of subagent sessions, in place of the composer
+- Sends messages while the agent works: steer them into the current run or queue them for after it
 - Loads long conversations in pages
 
 Prompts always use the server's default agent; there is no agent picker. Forms (input requests from tools, MCP servers or plugins) are not filled in here: a one-line notice above the composer names the waiting form and offers **Open web UI** and **Cancel** (`Ctrl+Shift+X`). The client never answers a form on its own.
+
+### Steer and queue
+
+The composer stays usable while a session runs. It then shows **Stop** and a **Steer** button: `Enter` (or **Steer**) steers the message into the current run, and the agent reads it at its next step without stopping; `Ctrl+Enter` (or **Queue for after** in the button's menu) queues it as a new turn once the run finishes. On an idle session both keys simply send.
+
+Messages the server has not delivered yet wait in a tray above the composer, oldest first, with their mode. Each row can switch mode (**→ Queue** / **→ Steer**) or be cancelled (✕); **Clear** cancels them all. Delivered messages move into the transcript.
+
+**Stop** ends the run and parks every waiting message, steered or queued; nothing runs until you act. The tray then reads "N parked" and offers **Send now** per row. As the server works, Send now on a steered message resumes the session with all parked steered messages (queued ones stay parked), and on a queued message it switches that message to steer, after which the other parked messages follow (steered first, then queued, one turn each). Sending a new message to a stopped session also delivers the parked ones.
 
 The client stores non-secret UI state under `${XDG_CONFIG_HOME:-~/.config}/opencode-gtk/state.json`. OpenCode Basic Auth passwords stay in memory. Tabs saved for sessions the server does not know (for example from an OpenCode 1.x server) are dropped quietly. Cloudflare Access service tokens are stored by the desktop's Secret Service provider, such as GNOME Keyring or KWallet, and are never added to the state file.
 
@@ -117,7 +126,8 @@ Cloudflare Access credentials can also be supplied for one run with `OPENCODE_CF
 
 | Shortcut | Action |
 | --- | --- |
-| `Enter` | Send prompt |
+| `Enter` | Send prompt; steer it into the run while the session works |
+| `Ctrl+Enter` | Queue the prompt for after the run (sends normally when idle) |
 | `Shift+Enter` | Insert a newline |
 | `Ctrl+T` | Create a session |
 | `Ctrl+W` | Close the active tab |
@@ -146,7 +156,7 @@ cargo clippy --all-targets -- -D warnings
 cargo test --all-targets
 ```
 
-`--preview` opens the real connected UI with canned OpenCode 2.x sessions, a permission request and a form, and no network:
+`--preview` opens the real connected UI with canned OpenCode 2.x sessions, a permission request, a form, a running session with a steered and a queued message waiting, and a stopped one with parked messages, and no network:
 
 ```bash
 cargo run -- --preview
@@ -155,7 +165,7 @@ cargo run -- --preview
 UI tests run only headless (Xvfb and D-Bus, for example in Docker), never on a live desktop:
 
 - `tests/smoke-ui.sh`: the window opens and survives the everyday shortcuts, in preview mode and against an unreachable server.
-- `tests/remote-flow-ui.sh`: a full flow (bootstrap, paging, rename, create, prompt with an attachment, interrupt, permissions, form cancel, reconnects) against `tests/fake_opencode_server.py`, a fake 2.x server built from real 2.0.8 captures. `python3 tests/fake_v2/selftest.py` checks the fake server itself.
+- `tests/remote-flow-ui.sh`: a full flow (bootstrap, paging, rename, create, prompt with an attachment, steer, queue, tray switch/cancel, Stop and Send now, permissions, form cancel, reconnects) against `tests/fake_opencode_server.py`, a fake 2.x server built from real 2.0.8 captures. `python3 tests/fake_v2/selftest.py` checks the fake server itself.
 - `tests/v2/e2e.sh --state DIR`: runs against a real, isolated OpenCode 2.0.8 server with a scripted mock model provider in Docker (`tests/v2/README.md`). It runs the ignored live API test (`cargo test live_server_end_to_end -- --ignored`) and a GUI smoke test, then takes the server down. It builds its Docker image from the published CLI, so CI does not run it.
 
 The included `Dockerfile` provides a reproducible Debian build environment when GTK development libraries are not installed locally:
@@ -169,7 +179,7 @@ The container's default command runs the complete Rust test suite.
 
 ## Scope
 
-OpenCode GTK deliberately uses the public OpenCode HTTP API instead of embedding the CLI or terminal UI. It focuses on the everyday chat loop. Sharing, reverting, forking, compaction, the steer/queue delivery choice, cancelling queued prompts, and a viewer for background subagent sessions are not exposed yet.
+OpenCode GTK deliberately uses the public OpenCode HTTP API instead of embedding the CLI or terminal UI. It focuses on the everyday chat loop. Sharing, reverting, forking, compaction, and a viewer for background subagent sessions are not exposed yet.
 
 ## License
 

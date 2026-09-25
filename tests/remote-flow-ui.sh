@@ -229,6 +229,98 @@ OPENCODE_SERVER_PASSWORD="${password}" \
 "${binary}" --server "${address}" --username opencode >"${app_log}" 2>&1 &
 app_pid=$!
 
+# ------------------------------------------------------------ steer / queue while running (step 6)
+#
+# While a run is active the composer shows Stop and the split Steer button (ui.rs refresh_send_button):
+# Enter steers (no `delivery`), Ctrl+Enter queues (`delivery: "queue"`). Waiting messages sit in the
+# tray right above the composer (ui.rs refresh_tray), oldest first; each row has a switch button
+# ("→ Queue" / "→ Steer", or "Send now" once parked) and ✕. Layout estimates, measured on a
+# 1180x820 Xvfb screenshot: Stop ~ W-165,H-51; the last tray row's centre ~ H-191, rows 34 px apart;
+# a row's switch/Send now button ~ W-93, its ✕ ~ W-41.
+tray_row_y() { echo $((HEIGHT - 191 - ($2 - $1) * 34)); }  # tray_row_y ROW COUNT (1-based)
+tray_points() {  # tray_points X ROW COUNT -> a few candidate points around the estimate
+  local x="$1" y
+  y="$(tray_row_y "$2" "$3")"
+  echo "${x},${y} $((x + 6)),${y} $((x - 6)),$((y + 3)) ${x},$((y - 4))"
+}
+
+steer_queue_flow() {
+  local steer_id="" queue_id="" extra_id=""
+  geometry
+  mark_now
+  key ctrl+g
+  type_text "Steer flow note [[scenario:text]]"
+  key Return
+  if expect "steer.post" "http and route == 'session.prompt' and p.get('sessionID') == '${new_session}' and 'Steer flow note' in (b.get('text') or '') and 'delivery' not in b['keys'] and r['status'] == 200" \
+    "${timeout_s}" "Enter while running steers: POST without delivery"; then
+    steer_id="$(field "${found}" 'r["body"]["id"]')"
+  fi
+  sleep 0.8
+  mark_now
+  type_text "Queue flow note [[scenario:text]]"
+  key ctrl+Return
+  if expect "queue.post" "http and route == 'session.prompt' and p.get('sessionID') == '${new_session}' and 'Queue flow note' in (b.get('text') or '') and b.get('delivery') == 'queue' and r['status'] == 200" \
+    "${timeout_s}" "Ctrl+Enter while running queues: POST with delivery queue"; then
+    queue_id="$(field "${found}" 'r["body"]["id"]')"
+  fi
+  sleep 1
+  mark_now
+  click_until "tray.switch-to-queue" \
+    "http and route == 'session.inbox.update' and p.get('inboxID') == '${steer_id}' and b.get('delivery') == 'queue' and r['status'] == 204" \
+    "$(tray_points $((WIDTH - 95)) 1 2)"
+  sleep 0.8
+  mark_now
+  click_until "tray.switch-to-steer" \
+    "http and route == 'session.inbox.update' and p.get('inboxID') == '${steer_id}' and b.get('delivery') == 'steer' and r['status'] == 204" \
+    "$(tray_points $((WIDTH - 92)) 1 2)"
+  sleep 0.5
+  mark_now
+  key ctrl+g
+  type_text "Extra queued note [[scenario:text]]"
+  key ctrl+Return
+  if expect "queue.post-extra" "http and route == 'session.prompt' and 'Extra queued note' in (b.get('text') or '') and b.get('delivery') == 'queue'"; then
+    extra_id="$(field "${found}" 'r["body"]["id"]')"
+  fi
+  sleep 1
+  mark_now
+  click_until "tray.cancel" \
+    "http and route == 'session.inbox.cancel' and p.get('inboxID') == '${extra_id}' and r['status'] == 204" \
+    "$(tray_points $((WIDTH - 41)) 3 3)"
+  sleep 0.8
+  mark_now
+  click_until "stop.parks" \
+    "http and route == 'session.interrupt' and p.get('sessionID') == '${new_session}' and 'resume' not in q" \
+    "$((WIDTH - 165)),$((HEIGHT - 51)) $((WIDTH - 160)),$((HEIGHT - 46)) $((WIDTH - 170)),$((HEIGHT - 56))"
+  expect "stop.interrupted" "ev == 'session.execution.interrupted' and r.get('sessionID') == '${new_session}'"
+  mark_now
+  if stray="$(logq wait "${log}" --after "${mark}" --timeout 2 --expr "ev in ('session.inbox.delivered', 'session.execution.started') and r.get('sessionID') == '${new_session}'")"; then
+    fail "stop.nothing-runs" "a parked message ran after Stop: ${stray}"
+  else
+    pass "stop.nothing-runs"
+  fi
+  mark_now
+  # Parked: row 1 (the steer) offers Send now, which resumes the session for its steers.
+  click_until "tray.send-now-steer" \
+    "http and route == 'session.interrupt' and p.get('sessionID') == '${new_session}' and q.get('resume') == 'true'" \
+    "$(tray_points $((WIDTH - 93)) 1 2)"
+  expect "send-now.steer-delivered" "ev == 'session.inbox.delivered' and r.get('inboxID') == '${steer_id}'"
+  if expect "send-now.queue-stays" "ev == 'session.execution.succeeded' and r.get('sessionID') == '${new_session}'" "${timeout_s}"; then
+    if logq wait "${log}" --after "${mark}" --timeout 0.5 --expr "ev == 'session.inbox.delivered' and r.get('inboxID') == '${queue_id}'" >/dev/null; then
+      fail "send-now.queue-parked" "resume delivered the queued message too"
+    else
+      pass "send-now.queue-parked"
+    fi
+  fi
+  sleep 1
+  mark_now
+  # Parked again with the queued message alone: Send now switches it to steer, which wakes the session.
+  click_until "tray.send-now-queue" \
+    "http and route == 'session.inbox.update' and p.get('inboxID') == '${queue_id}' and b.get('delivery') == 'steer' and r['status'] == 204" \
+    "$(tray_points $((WIDTH - 93)) 1 1)"
+  expect "send-now.queue-delivered" "ev == 'session.inbox.delivered' and r.get('inboxID') == '${queue_id}'"
+  expect "send-now.queue-ran" "ev == 'session.execution.succeeded' and r.get('sessionID') == '${new_session}'" "${timeout_s}"
+}
+
 # ------------------------------------------------------------ 1. bootstrap
 
 if wait_for_window; then
@@ -335,12 +427,9 @@ if [[ -n "${window}" ]] && app_alive && [[ -n "${new_session}" ]]; then
   fi
   mark_now
   if expect "prompt.streaming" "ev == 'session.text.delta' and r.get('sessionID') == '${new_session}'" "${timeout_s}"; then
-    geometry
-    # While busy the send button becomes Stop (send_or_abort); it is the rightmost composer control.
-    click_until "interrupt" "http and route == 'session.interrupt' and p.get('sessionID') == '${new_session}'" \
-      "$((WIDTH - 55)),$((HEIGHT - 51)) $((WIDTH - 50)),$((HEIGHT - 46)) $((WIDTH - 60)),$((HEIGHT - 56))"
+    steer_queue_flow
   else
-    fail "interrupt" "never saw the prompt stream, so Stop was not tried"
+    fail "steer.post" "never saw the prompt stream, so steer/queue/Stop were not tried"
   fi
 elif [[ -n "${window}" ]]; then
   fail "prompt" "skipped: no session was created"
@@ -428,6 +517,8 @@ expect_none "no.plain-directory" 'http and route in ("model.list", "model.defaul
 expect_none "no.form-answer" 'http and route == "session.form.reply"' "never auto-answer forms (R8)"
 expect_none "no.blank-rename" 'http and route == "session.update" and not (b.get("title") or "").strip()' "R2.7"
 expect_none "no.server-errors" 'http and r["status"] >= 500'
+expect_none "no.prompt-resume" 'http and route == "session.prompt" and "resume" in b["keys"]' "prompts never carry resume"
+expect_none "no.steer-delivery" 'http and route == "session.prompt" and b.get("delivery") not in (None, "queue")' "a steer omits delivery"
 
 # ------------------------------------------------------------ 11. persisted state
 

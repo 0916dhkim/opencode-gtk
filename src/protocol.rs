@@ -19,6 +19,7 @@
 //! | `POST /api/session/{id}/prompt` | 200 | [`Data`]`<`[`InboxUser`]`>` |
 //! | `POST /api/session/{id}/interrupt` | 200 | bare [`Interrupted`] |
 //! | `GET /api/session/{id}/inbox` | 200 | [`Data`]`<Vec<`[`InboxEntry`]`>>` |
+//! | `PATCH /api/session/{id}/inbox/{inboxID}` | 204 | — |
 //! | `DELETE /api/session/{id}/inbox/{inboxID}` | 204 | — |
 //! | `GET /api/session/{id}/message` | 200 | [`Page`]`<`[`SessionMessage`]`>` |
 //! | `GET /api/model` | 200 | [`Located`]`<Vec<`[`ModelInfo`]`>>` |
@@ -271,7 +272,10 @@ pub enum Outcome {
     Unknown,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+/// How a waiting inbox item is delivered: `steer` (the server default) joins
+/// the running turn at its next step; `queue` waits for the run to end and
+/// starts a new turn. The client only ever sends `Steer` or `Queue`.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "lowercase")]
 pub enum Delivery {
     Steer,
@@ -2110,16 +2114,27 @@ impl PromptFile {
     }
 }
 
-/// `POST /api/session/{id}/prompt`. Never carries `agent`, `agents`, `delivery` or `resume`.
+/// `POST /api/session/{id}/prompt`. Never carries `agent`, `agents` or `resume`.
 ///
 /// `id` must start with `msg_`. Re-posting the same `id` reconciles with the
-/// already-admitted input instead of duplicating it.
+/// already-admitted input instead of duplicating it. `delivery` is only ever
+/// `"queue"`; a steered prompt omits it (the server default).
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 pub struct PromptBody {
     pub id: String,
     pub text: String,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub files: Vec<PromptFile>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub delivery: Option<Delivery>,
+}
+
+/// `PATCH /api/session/{id}/inbox/{inboxID}` (204). A conditional switch to
+/// the other mode: 409 when the item is no longer waiting or already has
+/// this mode. Switching to `steer` wakes the session.
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+pub struct InboxUpdateBody {
+    pub delivery: Delivery,
 }
 
 /// `POST /api/session/{id}/model`.
@@ -2258,6 +2273,12 @@ pub const ENDPOINTS: &[EndpointSpec] = &[
         200,
     ),
     endpoint(
+        "session.inbox.update",
+        "PATCH",
+        "/api/session/{sessionID}/inbox/{inboxID}",
+        204,
+    ),
+    endpoint(
         "session.inbox.cancel",
         "DELETE",
         "/api/session/{sessionID}/inbox/{inboxID}",
@@ -2370,8 +2391,8 @@ pub fn session_inbox_path(session_id: &str) -> String {
     format!("{}/inbox", session_path(session_id))
 }
 
-/// Cancels one queued prompt; kept for the deferred queued-prompt cancel (R4.4).
-#[allow(dead_code)]
+/// One waiting inbox item: `PATCH` switches its delivery, `DELETE` cancels it
+/// (204 even when it was delivered meanwhile).
 pub fn session_inbox_item_path(session_id: &str, inbox_id: &str) -> String {
     format!(
         "{}/inbox/{}",
@@ -3528,9 +3549,32 @@ mod tests {
             body(&PromptBody {
                 id: "msg_1".into(),
                 text: "hi".into(),
-                files: vec![]
+                files: vec![],
+                delivery: None,
             }),
-            json!({ "id": "msg_1", "text": "hi" })
+            json!({ "id": "msg_1", "text": "hi" }),
+            "a steered prompt omits delivery (the server default)"
+        );
+        assert_eq!(
+            body(&PromptBody {
+                id: "msg_1".into(),
+                text: "later".into(),
+                files: vec![],
+                delivery: Some(Delivery::Queue),
+            }),
+            json!({ "id": "msg_1", "text": "later", "delivery": "queue" })
+        );
+        assert_eq!(
+            body(&InboxUpdateBody {
+                delivery: Delivery::Steer
+            }),
+            json!({ "delivery": "steer" })
+        );
+        assert_eq!(
+            body(&InboxUpdateBody {
+                delivery: Delivery::Queue
+            }),
+            json!({ "delivery": "queue" })
         );
         assert_eq!(
             body(&PromptBody {
@@ -3539,7 +3583,8 @@ mod tests {
                 files: vec![
                     PromptFile::from_bytes(b"hi", "text/plain", Some("a.txt".into())),
                     PromptFile::from_bytes(&[0xff, 0xfe], "application/octet-stream", None),
-                ]
+                ],
+                delivery: None,
             }),
             json!({
                 "id": "msg_1",
@@ -3622,6 +3667,7 @@ mod tests {
             [
                 "session.update",
                 "session.switchModel",
+                "session.inbox.update",
                 "session.inbox.cancel",
                 "session.permission.reply",
                 "session.form.cancel"

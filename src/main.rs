@@ -6,6 +6,7 @@ mod pending;
 mod persist;
 mod preview;
 mod protocol;
+mod tray;
 mod ui;
 
 use clap::Parser;
