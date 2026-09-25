@@ -368,6 +368,14 @@ pub struct ChatMessage {
 }
 
 impl ChatMessage {
+    #[cfg(test)]
+    pub fn segment_keys(&self) -> Vec<String> {
+        self.segments
+            .iter()
+            .map(|segment| segment.key.clone())
+            .collect()
+    }
+
     fn placeholder(id: impl Into<String>, role: Role) -> Self {
         Self {
             id: id.into(),
@@ -1449,8 +1457,8 @@ fn assistant_segments(content: &[protocol::AssistantContent]) -> Vec<Segment> {
     segments
 }
 
-/// An interrupted step fails with `type: "aborted"`; like v1 "Aborted" it is
-/// not an error worth showing.
+/// An interrupted step fails with `type: "aborted"`, which is not an error
+/// worth showing.
 fn is_interrupt(error: &protocol::StructuredError) -> bool {
     error.kind == "aborted"
 }

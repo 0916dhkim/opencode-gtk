@@ -16,8 +16,8 @@
 #                                            (set FLOW_FORM_CANCEL_KEYS= to use it)
 #
 # Every step asserts markers in the fake server's request log (tests/fake_v2/logwait.py) and
-# reports PASS/FAIL per marker; nothing waits forever. This is the CP-012 acceptance test: it is
-# expected to fail while the client is only partly ported to v2.
+# reports PASS/FAIL per marker; nothing waits forever. The whole-run `no.*` checks guard against
+# v1 or unknown routes, missing auth, agents, blank renames and form answers.
 set -uo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."

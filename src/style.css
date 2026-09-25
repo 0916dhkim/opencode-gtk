@@ -895,12 +895,12 @@ button.model-picker-row {
 }
 
 .form-notice-label {
-  color: @oc_fg_question_header;
+  color: @oc_fg_prompt_subheading;
   font-weight: 600;
 }
 
-.question-header {
-  color: @oc_fg_question_header;
+.prompt-subheading {
+  color: @oc_fg_prompt_subheading;
   font-weight: 700;
   letter-spacing: 0.04em;
 }

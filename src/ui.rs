@@ -235,6 +235,13 @@ impl State {
         }
     }
 
+    /// Drops every draft, deleting their clipboard files.
+    fn remove_drafts(&mut self) {
+        for (_, draft) in self.drafts.drain() {
+            remove_clipboard_attachments(&draft.attachments);
+        }
+    }
+
     /// The model shown for a session; see [`displayed_model`].
     fn displayed_model(&self, session_id: &str) -> Option<ModelSelection> {
         let session = self
@@ -993,6 +1000,7 @@ pub fn launch(
                 controller.persist_state();
                 controller.events.close();
             }
+            remove_clipboard_attachment_dir();
             glib::Propagation::Proceed
         });
     start_event_loop(&controller, events, 1);
@@ -1899,6 +1907,13 @@ fn remove_clipboard_attachment(path: &PathBuf) {
 /// user's own.
 fn remove_clipboard_attachments(paths: &[PathBuf]) {
     paths.iter().for_each(remove_clipboard_attachment);
+}
+
+/// Deletes every clipboard file of this process when the window closes,
+/// including those of prompts whose send was still in flight when the
+/// connection was switched (their reply never reaches the new connection).
+fn remove_clipboard_attachment_dir() {
+    let _ = fs::remove_dir_all(clipboard_attachment_dir());
 }
 
 fn wire_callbacks(controller: &Rc<RefCell<Controller>>) {
@@ -3011,9 +3026,8 @@ impl Controller {
                                 remove_clipboard_attachments(&pending.draft.attachments);
                             }
                             this.state.abort_requested.remove(&session_id).then(|| {
-                                this.session(&session_id).map(|session| Command::Abort {
+                                this.session(&session_id).map(|_| Command::Abort {
                                     session_id: session_id.clone(),
-                                    directory: session.directory.clone(),
                                 })
                             })
                         }
@@ -3384,13 +3398,12 @@ impl Controller {
                     RunStatus::Busy | RunStatus::Retry { .. } => {
                         this.state.server_busy.insert(session_id.clone());
                         this.state.detach_pending_prompt(&session_id);
-                        if this.state.abort_requested.remove(&session_id) {
-                            if let Some(session) = this.session(&session_id) {
-                                api_commands.push(Command::Abort {
-                                    session_id: session_id.clone(),
-                                    directory: session.directory.clone(),
-                                });
-                            }
+                        if this.state.abort_requested.remove(&session_id)
+                            && this.session(&session_id).is_some()
+                        {
+                            api_commands.push(Command::Abort {
+                                session_id: session_id.clone(),
+                            });
                         }
                     }
                     RunStatus::Idle => {
@@ -3798,13 +3811,12 @@ impl Controller {
             RunStatus::Busy | RunStatus::Retry { .. } => {
                 self.state.server_busy.insert(session_id.clone());
                 self.state.detach_pending_prompt(&session_id);
-                if self.state.abort_requested.remove(&session_id) {
-                    if let Some(session) = self.session(&session_id) {
-                        effects.api_commands.push(Command::Abort {
-                            session_id: session_id.clone(),
-                            directory: session.directory.clone(),
-                        });
-                    }
+                if self.state.abort_requested.remove(&session_id)
+                    && self.session(&session_id).is_some()
+                {
+                    effects.api_commands.push(Command::Abort {
+                        session_id: session_id.clone(),
+                    });
                 }
             }
             RunStatus::Idle => {
@@ -5467,9 +5479,9 @@ impl Controller {
             let Some(active) = this.state.active.clone() else {
                 return;
             };
-            let Some(session) = this.session(&active).cloned() else {
+            if this.session(&active).is_none() {
                 return;
-            };
+            }
             if this
                 .state
                 .statuses
@@ -5483,10 +5495,7 @@ impl Controller {
                     None
                 } else {
                     this.state.abort_requested.remove(&active);
-                    Some(Command::Abort {
-                        session_id: active,
-                        directory: session.directory,
-                    })
+                    Some(Command::Abort { session_id: active })
                 }
             } else {
                 let supports_attachments = this.selected_model_supports_attachments();
@@ -6793,6 +6802,10 @@ impl Controller {
                 cloudflare_access: config.cloudflare_access.is_some(),
             };
             this.credential_warning = None;
+            // Drafts are never in flight, so their pasted files go now. The
+            // old workers may still read in-flight prompts' files, which are
+            // left for `remove_clipboard_attachment_dir` at exit.
+            this.state.remove_drafts();
             this.state = restored_state(server_state);
             this.rendered_session = None;
             this.rendered_rows.clear();
@@ -7127,7 +7140,6 @@ impl Controller {
                         Command::RenameSession {
                             request_id,
                             session_id: session.id.clone(),
-                            directory: session.directory.clone(),
                             title: value,
                         }
                     };
@@ -7206,10 +7218,14 @@ impl Controller {
         heading.set_xalign(0.0);
         heading.add_css_class("prompt-heading");
         root.append(&heading);
+        // The texts stay mouse-selectable but never take focus: a focused
+        // selectable label selects all of its text, and GTK would focus the
+        // first one when the prompt is shown.
         let context = gtk::Label::new(Some(&context));
         context.set_xalign(0.0);
         context.set_wrap(true);
         context.set_selectable(true);
+        context.set_focusable(false);
         context.add_css_class("session-picker-path");
         root.append(&context);
         let details = gtk::Box::new(gtk::Orientation::Vertical, 12);
@@ -7223,6 +7239,7 @@ impl Controller {
             label.set_xalign(0.0);
             label.set_wrap(true);
             label.set_selectable(true);
+            label.set_focusable(false);
             details.append(&label);
         }
         if !request.resources.is_empty() {
@@ -7230,6 +7247,7 @@ impl Controller {
             label.set_xalign(0.0);
             label.set_wrap(true);
             label.set_selectable(true);
+            label.set_focusable(false);
             label.add_css_class("prompt-detail");
             details.append(&label);
         }
@@ -7238,6 +7256,7 @@ impl Controller {
             label.set_xalign(0.0);
             label.set_wrap(true);
             label.set_selectable(true);
+            label.set_focusable(false);
             label.set_max_width_chars(90);
             label.add_css_class("prompt-metadata");
             details.append(&label);
@@ -7245,12 +7264,13 @@ impl Controller {
         if let Some(patterns) = &always_patterns {
             let heading = gtk::Label::new(Some("Always allow would remember:"));
             heading.set_xalign(0.0);
-            heading.add_css_class("question-header");
+            heading.add_css_class("prompt-subheading");
             details.append(&heading);
             let label = gtk::Label::new(Some(patterns));
             label.set_xalign(0.0);
             label.set_wrap(true);
             label.set_selectable(true);
+            label.set_focusable(false);
             label.add_css_class("prompt-detail");
             details.append(&label);
         }
@@ -9648,6 +9668,21 @@ mod tests {
         let paths = state.detached_attachments.remove(&7).unwrap();
         remove_clipboard_attachments(&paths);
         assert!(!pasted.exists());
+
+        // Switching connections drops the drafts and their pasted files.
+        fs::create_dir_all(&directory).unwrap();
+        let drafted = directory.join("clipboard-draft-switch-test.png");
+        fs::write(&drafted, b"png").unwrap();
+        state.drafts.insert(
+            "ses_c".into(),
+            Draft {
+                attachments: vec![drafted.clone()],
+                ..Draft::default()
+            },
+        );
+        state.remove_drafts();
+        assert!(state.drafts.is_empty());
+        assert!(!drafted.exists());
 
         let picked = tempfile::NamedTempFile::new().unwrap();
         state.drafts.insert(

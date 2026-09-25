@@ -36,6 +36,11 @@ const MAX_ATTACHMENT_BYTES: u64 = protocol::MAX_ATTACHMENT_BYTES as u64;
 /// Client cap: the `session.inbox.enqueued` echo carries every file as base64.
 const MAX_TOTAL_ATTACHMENT_BYTES: u64 = 40 * 1024 * 1024;
 const UI_EVENT_CAPACITY: usize = 4_096;
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+/// Prompt uploads get [`REQUEST_TIMEOUT`] plus one second per this many
+/// bytes (about 1 Mbit/s), up to [`MAX_PROMPT_TIMEOUT`].
+const PROMPT_UPLOAD_BYTES_PER_SECOND: usize = 128 * 1024;
+const MAX_PROMPT_TIMEOUT: Duration = Duration::from_secs(300);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ApiConfig {
@@ -73,7 +78,6 @@ pub enum Command {
     RenameSession {
         request_id: u64,
         session_id: String,
-        directory: String,
         title: String,
     },
     /// Saves an explicit model pick on the session. Never sent for a
@@ -96,7 +100,6 @@ pub enum Command {
     },
     Abort {
         session_id: String,
-        directory: String,
     },
     /// `session_id` is the request's own session, possibly a child session.
     ReplyPermission {
@@ -404,7 +407,7 @@ impl Api {
             .transpose()?;
         let client = Client::builder()
             .connect_timeout(Duration::from_secs(5))
-            .timeout(Duration::from_secs(30))
+            .timeout(REQUEST_TIMEOUT)
             .redirect(reqwest::redirect::Policy::none())
             .user_agent(concat!("opencode-gtk/", env!("CARGO_PKG_VERSION")))
             .build()
@@ -476,8 +479,19 @@ impl Api {
         path: &str,
         body: &impl Serialize,
     ) -> Result<T> {
+        self.send_json_within(method, path, body, REQUEST_TIMEOUT)
+    }
+
+    fn send_json_within<T: DeserializeOwned>(
+        &self,
+        method: Method,
+        path: &str,
+        body: &impl Serialize,
+        timeout: Duration,
+    ) -> Result<T> {
         let response = self
             .request(method, self.url(path, &[])?)
+            .timeout(timeout)
             .json(body)
             .send()
             .context("request failed")?;
@@ -796,7 +810,7 @@ impl Api {
     }
 
     /// A blank title would make the server regenerate one, so it is refused.
-    fn rename_session(&self, session_id: &str, _directory: &str, title: &str) -> Result<Session> {
+    fn rename_session(&self, session_id: &str, title: &str) -> Result<Session> {
         let body =
             protocol::RenameSessionBody::new(title).context("session title cannot be blank")?;
         let path = protocol::session_path(session_id);
@@ -808,6 +822,9 @@ impl Api {
     }
 
     /// The response only confirms the prompt entered the session inbox.
+    ///
+    /// The timeout grows with the upload ([`prompt_timeout`]), so a large
+    /// attachment is not cut off and sent again.
     ///
     /// A transport failure after the request may have reached the server is
     /// retried once with the identical body: the server treats a repeated
@@ -826,16 +843,20 @@ impl Api {
             files: encode_attachments(attachments)?,
         };
         let path = protocol::session_prompt_path(session_id);
-        let accepted: protocol::PromptResponse = match self.send_json(Method::POST, &path, &body) {
-            Err(error) if is_ambiguous_transport_failure(&error) => self
-                .send_json(Method::POST, &path, &body)
-                .context("retried after an interrupted send")?,
+        let timeout = prompt_timeout(
+            body.text.len() + body.files.iter().map(|file| file.uri.len()).sum::<usize>(),
+        );
+        let send = || self.send_json_within(Method::POST, &path, &body, timeout);
+        let accepted: protocol::PromptResponse = match send() {
+            Err(error) if is_ambiguous_transport_failure(&error) => {
+                send().context("retried after an interrupted send")?
+            }
             result => result?,
         };
         Ok(accepted.data)
     }
 
-    fn abort(&self, session_id: &str, _directory: &str) -> Result<bool> {
+    fn abort(&self, session_id: &str) -> Result<bool> {
         let response = self
             .request(
                 Method::POST,
@@ -946,12 +967,11 @@ fn spawn_command_worker(api: Api, commands: Receiver<Command>, ui: Sender<UiEven
                 Command::RenameSession {
                     request_id,
                     session_id,
-                    directory,
                     title,
                 } => UiEvent::SessionRenamed {
                     request_id,
                     result: api
-                        .rename_session(&session_id, &directory, &title)
+                        .rename_session(&session_id, &title)
                         .map_err(format_error),
                     session_id,
                 },
@@ -982,14 +1002,8 @@ fn spawn_command_worker(api: Api, commands: Receiver<Command>, ui: Sender<UiEven
                         result,
                     }
                 }
-                Command::Abort {
-                    session_id,
-                    directory,
-                } => {
-                    let result = api
-                        .abort(&session_id, &directory)
-                        .map(|_| ())
-                        .map_err(format_error);
+                Command::Abort { session_id } => {
+                    let result = api.abort(&session_id).map(|_| ()).map_err(format_error);
                     UiEvent::Aborted { session_id, result }
                 }
                 Command::ReplyPermission {
@@ -1209,6 +1223,12 @@ fn encode_attachments(paths: &[PathBuf]) -> Result<Vec<protocol::PromptFile>> {
         .collect()
 }
 
+/// Time allowed for a prompt request whose body is about `payload_bytes`.
+fn prompt_timeout(payload_bytes: usize) -> Duration {
+    let upload = (payload_bytes / PROMPT_UPLOAD_BYTES_PER_SECOND) as u64;
+    (REQUEST_TIMEOUT + Duration::from_secs(upload)).min(MAX_PROMPT_TIMEOUT)
+}
+
 /// The request may have reached the server but no complete response came
 /// back (timeout, reset, truncated body). A failure to connect is not
 /// ambiguous, and neither is any HTTP error response.
@@ -1301,6 +1321,9 @@ fn decode_json<T: DeserializeOwned>(response: Response) -> Result<T> {
 fn format_error(error: impl std::fmt::Display) -> String {
     format!("{error:#}")
 }
+
+#[cfg(test)]
+mod live_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1690,6 +1713,18 @@ mod tests {
     }
 
     #[test]
+    fn prompt_timeout_grows_with_the_upload_up_to_five_minutes() {
+        assert_eq!(prompt_timeout(0), REQUEST_TIMEOUT);
+        assert_eq!(prompt_timeout(10_000), REQUEST_TIMEOUT);
+        assert_eq!(
+            prompt_timeout(4 * 1024 * 1024),
+            REQUEST_TIMEOUT + Duration::from_secs(32)
+        );
+        // 40 MiB of files is about 54 MiB of base64.
+        assert_eq!(prompt_timeout(54 * 1024 * 1024), MAX_PROMPT_TIMEOUT);
+    }
+
+    #[test]
     fn an_interrupted_prompt_is_retried_once_with_the_same_body() {
         let id = "msg_0d58b846f00123EB3tzqlo6tYt";
         let (base, server) = hang_up_server(1, Some(inbox_user(id)));
@@ -1787,8 +1822,8 @@ mod tests {
             _ => ok(idle.clone()),
         });
         let api = Api::new(config(base, None)).unwrap();
-        assert!(api.abort("ses_run", "/repo").unwrap());
-        assert!(!api.abort("ses_idle", "/repo").unwrap());
+        assert!(api.abort("ses_run").unwrap());
+        assert!(!api.abort("ses_idle").unwrap());
         server.join().unwrap();
         let requests = requests.lock().unwrap();
         assert_eq!(
@@ -2444,7 +2479,7 @@ mod tests {
             _ => panic!("unexpected request: {}", request.line),
         });
         let api = Api::new(config(base, None)).unwrap();
-        let session = api.rename_session("ses_a", "/a", " New title ").unwrap();
+        let session = api.rename_session("ses_a", " New title ").unwrap();
         server.join().unwrap();
 
         assert_eq!(session.title, "New title");
@@ -2457,7 +2492,7 @@ mod tests {
     #[test]
     fn blank_rename_is_refused_before_any_request() {
         let api = Api::new(config("http://127.0.0.1:9".into(), None)).unwrap();
-        let error = api.rename_session("ses_a", "/a", "   ").unwrap_err();
+        let error = api.rename_session("ses_a", "   ").unwrap_err();
         assert_eq!(format_error(error), "session title cannot be blank");
     }
 
@@ -2476,7 +2511,7 @@ mod tests {
             _ => (502, "bad gateway".into()),
         });
         let api = Api::new(config(base, None)).unwrap();
-        let error = api.rename_session("ses_gone", "/a", "Title").unwrap_err();
+        let error = api.rename_session("ses_gone", "Title").unwrap_err();
         let failure = error.downcast_ref::<ApiFailure>().unwrap();
         assert_eq!(failure.status, StatusCode::NOT_FOUND);
         assert_eq!(

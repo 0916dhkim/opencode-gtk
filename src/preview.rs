@@ -95,7 +95,6 @@ impl State {
                 request_id,
                 session_id,
                 title,
-                ..
             } => {
                 let result = self.rename_session(&session_id, title);
                 UiEvent::SessionRenamed {
@@ -131,7 +130,7 @@ impl State {
                     result: Ok(()),
                 }
             }
-            Command::Abort { session_id, .. } => UiEvent::Aborted {
+            Command::Abort { session_id } => UiEvent::Aborted {
                 session_id,
                 result: Ok(()),
             },

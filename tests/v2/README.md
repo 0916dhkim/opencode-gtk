@@ -19,6 +19,23 @@ tests/v2/harness.sh down --state /path/outside/repo
   `opencode` provider plugin removed, `websearch: false`, `shell` asks, `question` denied last).
 - `capture --out DIR` writes elsewhere (for example to diff two runs).
 
+## End-to-end run
+
+```sh
+tests/v2/e2e.sh --state /path/outside/repo [--shots DIR] [--build] [--skip-gui]
+```
+
+Brings the harness up, runs the ignored live API test (`src/api/live_tests.rs`, through the
+client's own `Api` and transcript reducer: bootstrap, models, create/rename, the text, reasoning,
+tools, error, retry, attachment, model-switch, permission, subagent, child-permission and
+slow+interrupt scenarios, form pending/cancel, history paging; each checks that the live
+transcript equals a reload) in the builder image, then restarts the harness and runs
+`gui_smoke.sh` (the app under Xvfb sends one `[[scenario:text]]` prompt by keyboard; the server
+must then hold the user prompt and a reply; screenshot in `--shots`). The harness is always taken
+down at the end. Both run on `ocgtk-v2h-net` behind `loopback.py`, because the client accepts plain
+HTTP only on loopback. `E2E_CARGO_VOLUME`/`E2E_TARGET_VOLUME` pick the builder's cache volumes.
+Not part of CI: the harness image downloads the pinned CLI when it is built.
+
 ## Mock provider scenarios
 
 `mock_provider.py` serves `POST /v1/chat/completions` (streaming). Put a marker in the prompt:

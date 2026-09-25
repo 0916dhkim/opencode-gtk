@@ -2,24 +2,27 @@
 
 A lightweight GTK 4 desktop client for a remote [OpenCode](https://opencode.ai) server. It is designed for Linux users who want a native window while keeping OpenCode and its projects on another machine.
 
+**Requires OpenCode 2.x (2.0.8 or later).** The client speaks only the 2.x `/api/...` protocol and refuses 1.x servers with a clear error.
+
 ## Features
 
 - Connects to `opencode serve` over HTTPS or loopback HTTP through an SSH tunnel
 - Authenticates to Cloudflare Access with a service token stored in the Linux system keyring
-- Opens multiple OpenCode sessions as persistent tabs
-- Restores open tabs and per-session model choices after restart
-- Streams assistant text, reasoning, and tool activity over server-sent events
-- Selects any provider, model, and reasoning variant exposed by the server
-- Creates sessions in server-side project directories
-- Sends file attachments with prompts
-- Handles permission requests and agent questions in native dialogs
-- Loads long conversations in pages and reconnects the event stream automatically
+- Opens multiple OpenCode sessions as persistent tabs and restores them after restart
+- Streams assistant text, reasoning, and tool activity over server-sent events, and resyncs after a reconnect
+- Selects any model and reasoning variant exposed by the server; the choice is saved on the session by the server
+- Creates and renames sessions in server-side project directories
+- Sends file attachments (up to 20 MiB each) with prompts
+- Answers permission requests, including those of subagent sessions, in place of the composer
+- Loads long conversations in pages
 
-The client stores non-secret UI state under `${XDG_CONFIG_HOME:-~/.config}/opencode-gtk/state.json`. OpenCode Basic Auth passwords stay in memory. Cloudflare Access service tokens are stored by the desktop's Secret Service provider, such as GNOME Keyring or KWallet, and are never added to the state file.
+Prompts always use the server's default agent; there is no agent picker. Forms (input requests from tools, MCP servers or plugins) are not filled in here: a one-line notice above the composer names the waiting form and offers **Open web UI** and **Cancel** (`Ctrl+Shift+X`). The client never answers a form on its own.
+
+The client stores non-secret UI state under `${XDG_CONFIG_HOME:-~/.config}/opencode-gtk/state.json`. OpenCode Basic Auth passwords stay in memory. Tabs saved for sessions the server does not know (for example from an OpenCode 1.x server) are dropped quietly. Cloudflare Access service tokens are stored by the desktop's Secret Service provider, such as GNOME Keyring or KWallet, and are never added to the state file.
 
 ## Server Setup
 
-Run OpenCode on the remote machine. The simplest secure setup keeps it on loopback and reaches it through SSH:
+Run OpenCode 2.x on the remote machine. OpenCode 2.x always requires HTTP Basic auth with the username `opencode`; set its password with `OPENCODE_SERVER_PASSWORD`. The simplest secure setup keeps the server on loopback and reaches it through SSH:
 
 ```bash
 OPENCODE_SERVER_PASSWORD='choose-a-password' opencode serve \
@@ -46,7 +49,7 @@ For an OpenCode server published through Cloudflare Tunnel:
 3. Add a **Service Auth** policy to the application that includes that token.
 4. In OpenCode GTK, open **Settings**, enter the HTTPS server URL, and paste the service token's Client ID and Client Secret.
 
-The client adds `CF-Access-Client-Id` and `CF-Access-Client-Secret` to both API and event-stream requests. Redirects remain disabled so credentials cannot be forwarded to another origin.
+The client adds `CF-Access-Client-Id` and `CF-Access-Client-Secret` to both API and event-stream requests, next to the OpenCode Basic auth header. Redirects remain disabled so credentials cannot be forwarded to another origin.
 
 ## Linux Dependencies
 
@@ -125,6 +128,12 @@ Cloudflare Access credentials can also be supplied for one run with `OPENCODE_CF
 | `Ctrl+Q` | Quit |
 | `F2` | Rename the active session |
 | `Ctrl+U` | Attach files |
+| `Ctrl+G` | Focus the composer |
+| `Ctrl+M` | Choose a model |
+| `Ctrl+/` | Choose a reasoning variant |
+| `Ctrl+Shift+X` | Cancel the form shown in the notice |
+| `Ctrl+B` | Toggle the sidebar |
+| `Ctrl+,` | Open settings |
 | `Escape` | Close the active modal |
 
 Closing a tab does not delete or archive the server session. Reopen it at any time from **Sessions**.
@@ -137,11 +146,17 @@ cargo clippy --all-targets -- -D warnings
 cargo test --all-targets
 ```
 
-`--preview` opens the real connected UI with canned sessions and no network:
+`--preview` opens the real connected UI with canned OpenCode 2.x sessions, a permission request and a form, and no network:
 
 ```bash
 cargo run -- --preview
 ```
+
+UI tests run only headless (Xvfb and D-Bus, for example in Docker), never on a live desktop:
+
+- `tests/smoke-ui.sh`: the window opens and survives the everyday shortcuts, in preview mode and against an unreachable server.
+- `tests/remote-flow-ui.sh`: a full flow (bootstrap, paging, rename, create, prompt with an attachment, interrupt, permissions, form cancel, reconnects) against `tests/fake_opencode_server.py`, a fake 2.x server built from real 2.0.8 captures. `python3 tests/fake_v2/selftest.py` checks the fake server itself.
+- `tests/v2/e2e.sh --state DIR`: runs against a real, isolated OpenCode 2.0.8 server with a scripted mock model provider in Docker (`tests/v2/README.md`). It runs the ignored live API test (`cargo test live_server_end_to_end -- --ignored`) and a GUI smoke test, then takes the server down. It builds its Docker image from the published CLI, so CI does not run it.
 
 The included `Dockerfile` provides a reproducible Debian build environment when GTK development libraries are not installed locally:
 
@@ -154,7 +169,7 @@ The container's default command runs the complete Rust test suite.
 
 ## Scope
 
-OpenCode GTK deliberately uses the public OpenCode HTTP API instead of embedding the CLI or terminal UI. The first release focuses on the everyday chat loop. Advanced TUI operations such as sharing, reverting, forking, and compaction are not yet exposed.
+OpenCode GTK deliberately uses the public OpenCode HTTP API instead of embedding the CLI or terminal UI. It focuses on the everyday chat loop. Sharing, reverting, forking, compaction, the steer/queue delivery choice, cancelling queued prompts, and a viewer for background subagent sessions are not exposed yet.
 
 ## License
 

@@ -1,0 +1,55 @@
+#!/usr/bin/env python3
+"""Forward 127.0.0.1:PORT to HOST:TARGET_PORT inside a test container.
+
+The client only allows plain HTTP to loopback (P1), while the harness server
+is plain HTTP on the Docker network, so tests point the client at this
+forwarder instead:
+
+  loopback.py 4096 ocgtk-v2h-server 4096 &
+"""
+import socket
+import sys
+import threading
+
+
+def pipe(source, destination):
+    try:
+        while True:
+            chunk = source.recv(65536)
+            if not chunk:
+                break
+            destination.sendall(chunk)
+    except OSError:
+        pass
+    finally:
+        for sock in (source, destination):
+            try:
+                sock.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+
+
+def handle(client, host, port):
+    try:
+        upstream = socket.create_connection((host, port), timeout=10)
+    except OSError:
+        client.close()
+        return
+    upstream.settimeout(None)
+    threading.Thread(target=pipe, args=(client, upstream), daemon=True).start()
+    threading.Thread(target=pipe, args=(upstream, client), daemon=True).start()
+
+
+def main():
+    listen_port, host, port = int(sys.argv[1]), sys.argv[2], int(sys.argv[3])
+    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    server.bind(("127.0.0.1", listen_port))
+    server.listen(64)
+    while True:
+        client, _ = server.accept()
+        handle(client, host, port)
+
+
+if __name__ == "__main__":
+    main()

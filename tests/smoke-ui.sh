@@ -1,37 +1,97 @@
 #!/usr/bin/env bash
+# Headless GTK smoke test: the window opens and survives the everyday
+# shortcuts, both in --preview mode (canned v2 data, no network) and against
+# an unreachable server. Run it only headless:
+#   CI:     xvfb-run --auto-servernum bash tests/smoke-ui.sh
+#   Docker: docker run --rm --platform linux/amd64 -v "$PWD":/app -w /app \
+#             opencode-gtk-ui-test-amd64-v4:latest bash tests/smoke-ui.sh
+# Without DISPLAY it starts its own Xvfb. SMOKE_BINARY=path skips the build;
+# SMOKE_SHOTS=dir saves a screenshot of each run.
 set -euo pipefail
 
-cargo build --locked
-binary="${CARGO_TARGET_DIR:-target}/debug/opencode-gtk"
-GDK_BACKEND=x11 "${binary}" \
-  --server http://127.0.0.1:9 \
-  --username smoke-test &
-pid=$!
-trap 'kill "${pid}" 2>/dev/null || true; wait "${pid}" 2>/dev/null || true' EXIT
+cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
-main_window=""
-for _ in {1..50}; do
-  if main_window="$(xdotool search --onlyvisible --name '^OpenCode$' 2>/dev/null | tail -n 1)" && [[ -n "${main_window}" ]]; then
+if [[ -z "${DBUS_SESSION_BUS_ADDRESS:-}" && -z "${SMOKE_IN_DBUS:-}" ]] && command -v dbus-run-session >/dev/null; then
+  SMOKE_IN_DBUS=1 exec dbus-run-session -- bash "$0" "$@"
+fi
+
+temporary="$(mktemp -d)"
+xvfb_pid=""
+pid=""
+cleanup() {
+  [[ -z "${pid}" ]] || kill "${pid}" 2>/dev/null || true
+  [[ -z "${pid}" ]] || wait "${pid}" 2>/dev/null || true
+  [[ -z "${xvfb_pid}" ]] || kill "${xvfb_pid}" 2>/dev/null || true
+  rm -rf "${temporary}"
+}
+trap cleanup EXIT
+
+if [[ -z "${DISPLAY:-}" ]]; then
+  for display in $(seq 90 120); do
+    [[ -e "/tmp/.X11-unix/X${display}" || -e "/tmp/.X${display}-lock" ]] && continue
+    Xvfb ":${display}" -screen 0 1180x820x24 -nolisten tcp >/dev/null 2>&1 &
+    xvfb_pid=$!
+    export DISPLAY=":${display}"
     break
-  fi
-  if ! kill -0 "${pid}" 2>/dev/null; then
-    wait "${pid}"
-    exit 1
-  fi
-  sleep 0.1
-done
-[[ -n "${main_window}" ]]
+  done
+  for _ in $(seq 1 50); do xdotool getdisplaygeometry >/dev/null 2>&1 && break; sleep 0.1; done
+fi
 
-for _ in {1..20}; do
-  xdotool windowfocus "${main_window}" 2>/dev/null || true
-  xdotool key --window "${main_window}" ctrl+t
-  for _ in {1..5}; do
-    if xdotool search --onlyvisible --name '^New session$' >/dev/null 2>&1; then
-      exit 0
-    fi
+if [[ -n "${SMOKE_BINARY:-}" ]]; then
+  binary="${SMOKE_BINARY}"
+else
+  cargo build --locked
+  binary="${CARGO_TARGET_DIR:-target}/debug/opencode-gtk"
+fi
+
+alive() { kill -0 "${pid}" 2>/dev/null; }
+
+# run NAME ARGS... -- starts the client, waits for its window, sends shortcuts.
+run() {
+  local name="$1" window="" key
+  shift
+  XDG_CONFIG_HOME="${temporary}/${name}/config" \
+  XDG_DATA_HOME="${temporary}/${name}/data" \
+  XDG_CACHE_HOME="${temporary}/${name}/cache" \
+  GSETTINGS_BACKEND=memory \
+  GDK_BACKEND=x11 \
+  GTK_A11Y=none \
+  NO_AT_BRIDGE=1 \
+  "${binary}" "$@" >"${temporary}/${name}.log" 2>&1 &
+  pid=$!
+  # The first start in a fresh container also builds the font cache.
+  for _ in {1..300}; do
+    window="$(xdotool search --onlyvisible --name '^OpenCode( Preview)?$' 2>/dev/null | tail -n 1)" || true
+    [[ -n "${window}" ]] && break
+    alive || { cat "${temporary}/${name}.log" >&2; printf '%s: client exited before its window appeared\n' "${name}" >&2; exit 1; }
     sleep 0.1
   done
-done
+  [[ -n "${window}" ]] || { cat "${temporary}/${name}.log" >&2; printf '%s: no main window\n' "${name}" >&2; exit 1; }
+  sleep 1
+  # New session, sessions, rename and settings overlays, each closed again;
+  # then a prompt typed into the composer.
+  for key in ctrl+t Escape ctrl+p Escape F2 Escape ctrl+comma Escape ctrl+g; do
+    xdotool windowfocus "${window}" 2>/dev/null || true
+    xdotool key --clearmodifiers "${key}"
+    sleep 0.3
+  done
+  xdotool type --delay 10 --clearmodifiers "smoke test"
+  xdotool key --clearmodifiers Return
+  sleep 1.5
+  alive || { cat "${temporary}/${name}.log" >&2; printf '%s: client exited\n' "${name}" >&2; exit 1; }
+  if grep -qi panicked "${temporary}/${name}.log"; then
+    cat "${temporary}/${name}.log" >&2
+    exit 1
+  fi
+  if [[ -n "${SMOKE_SHOTS:-}" ]] && command -v import >/dev/null; then
+    mkdir -p "${SMOKE_SHOTS}"
+    import -window root "${SMOKE_SHOTS}/smoke-${name}.png" || true
+  fi
+  kill "${pid}"
+  wait "${pid}" 2>/dev/null || true
+  pid=""
+  printf 'PASS %s\n' "${name}"
+}
 
-printf '%s\n' 'Ctrl+T did not open the new-session dialog' >&2
-exit 1
+run preview --preview
+run unreachable --server http://127.0.0.1:9 --username smoke-test

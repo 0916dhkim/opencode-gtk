@@ -1,5 +1,3 @@
-// Removed once wired in (CP-012).
-#![allow(dead_code)]
 //! Typed wire layer for the OpenCode 2.0.8 HTTP API (`/api/...`).
 //!
 //! Only the surface the GTK client needs is modelled. Every type decodes
@@ -135,9 +133,13 @@ pub type InboxListResponse = Data<Vec<InboxEntry>>;
 pub type MessageListResponse = Page<SessionMessage>;
 pub type ModelListResponse = Located<Vec<ModelInfo>>;
 pub type PermissionRequestListResponse = Located<Vec<PermissionRequest>>;
-pub type SessionPermissionListResponse = Data<Vec<PermissionRequest>>;
 pub type FormListResponse = Located<Vec<FormInfo>>;
+// Routes the client does not call; decoded by the fixture tests only.
+#[cfg(test)]
+pub type SessionPermissionListResponse = Data<Vec<PermissionRequest>>;
+#[cfg(test)]
 pub type SessionFormListResponse = Data<Vec<FormInfo>>;
+#[cfg(test)]
 pub type FormDetailResponse = Data<FormDetail>;
 
 pub fn decode<T: DeserializeOwned>(body: &[u8]) -> Result<T, serde_json::Error> {
@@ -145,6 +147,7 @@ pub fn decode<T: DeserializeOwned>(body: &[u8]) -> Result<T, serde_json::Error> 
 }
 
 /// One recorded HTTP exchange, as stored in `tests/fixtures/v2-2.0.8/<name>.json`.
+#[cfg(test)]
 #[derive(Clone, Debug, Deserialize)]
 pub struct CapturedExchange {
     pub name: String,
@@ -154,25 +157,22 @@ pub struct CapturedExchange {
     pub note: Option<String>,
 }
 
+#[cfg(test)]
 #[derive(Clone, Debug, Deserialize)]
 pub struct CapturedRequest {
     pub method: String,
-    pub path: String,
     /// e.g. `/api/session/{sessionID}/message`.
     #[serde(rename = "pathTemplate")]
     pub path_template: String,
     /// Raw query string, without `?`.
     #[serde(default)]
     pub query: Option<String>,
-    #[serde(default)]
-    pub body: Value,
 }
 
+#[cfg(test)]
 #[derive(Clone, Debug, Deserialize)]
 pub struct CapturedResponse {
     pub status: u16,
-    #[serde(default)]
-    pub headers: JsonMap,
     /// Parsed JSON body; `null` for empty bodies (204, and the bodiless 401).
     #[serde(default)]
     pub body: Value,
@@ -181,6 +181,7 @@ pub struct CapturedResponse {
     pub body_text: Option<String>,
 }
 
+#[cfg(test)]
 impl CapturedExchange {
     pub fn decode_body<T: DeserializeOwned>(&self) -> Result<T, serde_json::Error> {
         T::deserialize(&self.response.body)
@@ -387,14 +388,6 @@ impl SessionInfo {
 
     pub fn is_root(&self) -> bool {
         self.parent_id.is_none()
-    }
-
-    pub fn display_title(&self) -> &str {
-        self.title
-            .as_deref()
-            .map(str::trim)
-            .filter(|title| !title.is_empty())
-            .unwrap_or("Untitled session")
     }
 }
 
@@ -605,6 +598,7 @@ impl SessionMessage {
         })
     }
 
+    #[cfg(test)]
     pub fn id(&self) -> Option<&str> {
         Some(match self {
             Self::AgentSwitched(message) => &message.id,
@@ -621,6 +615,7 @@ impl SessionMessage {
         })
     }
 
+    #[cfg(test)]
     pub fn kind(&self) -> &str {
         match self {
             Self::AgentSwitched(_) => "agent-switched",
@@ -1075,20 +1070,8 @@ pub struct ModelInfo {
 }
 
 impl ModelInfo {
-    pub fn model_ref(&self, variant: Option<&str>) -> ModelRef {
-        ModelRef {
-            id: self.id.clone(),
-            provider_id: self.provider_id.clone(),
-            variant: variant.map(str::to_owned),
-        }
-    }
-
     pub fn accepts_input(&self, modality: &str) -> bool {
         self.capabilities.input.iter().any(|item| item == modality)
-    }
-
-    pub fn matches(&self, model: &ModelRef) -> bool {
-        self.id == model.id && self.provider_id == model.provider_id
     }
 }
 
@@ -1269,6 +1252,7 @@ impl ApiError {
         )
     }
 
+    #[cfg(test)]
     pub fn field(&self) -> Option<&str> {
         self.extra.get("field").and_then(Value::as_str)
     }
@@ -1342,6 +1326,7 @@ impl Event {
     }
 }
 
+#[cfg(test)]
 pub fn parse_event(json: &str) -> Result<Event, serde_json::Error> {
     serde_json::from_str(json)
 }
@@ -2214,6 +2199,7 @@ pub fn message_id_from_event_id(event_id: &str) -> Option<String> {
 // Routes
 // ---------------------------------------------------------------------------
 
+#[cfg(test)]
 pub struct EndpointSpec {
     pub name: &'static str,
     pub method: &'static str,
@@ -2221,6 +2207,7 @@ pub struct EndpointSpec {
     pub success_status: u16,
 }
 
+#[cfg(test)]
 const fn endpoint(
     name: &'static str,
     method: &'static str,
@@ -2235,7 +2222,9 @@ const fn endpoint(
     }
 }
 
-/// Endpoints the client uses, with their success status (from `client.js`).
+/// Endpoints the client uses (plus the per-session list and form routes the
+/// fixtures cover), with their success status (from `client.js`).
+#[cfg(test)]
 pub const ENDPOINTS: &[EndpointSpec] = &[
     endpoint("server.info", "GET", "/api/info", 200),
     endpoint("project.list", "GET", "/api/project", 200),
@@ -2322,6 +2311,7 @@ pub const ENDPOINTS: &[EndpointSpec] = &[
     endpoint("event.subscribe", "GET", "/api/event", 200),
 ];
 
+#[cfg(test)]
 pub fn endpoint_spec(name: &str) -> Option<&'static EndpointSpec> {
     ENDPOINTS.iter().find(|spec| spec.name == name)
 }
@@ -2380,6 +2370,8 @@ pub fn session_inbox_path(session_id: &str) -> String {
     format!("{}/inbox", session_path(session_id))
 }
 
+/// Cancels one queued prompt; kept for the deferred queued-prompt cancel (R4.4).
+#[allow(dead_code)]
 pub fn session_inbox_item_path(session_id: &str, inbox_id: &str) -> String {
     format!(
         "{}/inbox/{}",
@@ -2390,10 +2382,6 @@ pub fn session_inbox_item_path(session_id: &str, inbox_id: &str) -> String {
 
 pub fn session_messages_path(session_id: &str) -> String {
     format!("{}/message", session_path(session_id))
-}
-
-pub fn session_permissions_path(session_id: &str) -> String {
-    format!("{}/permission", session_path(session_id))
 }
 
 /// `session_id` must be the request's own `sessionID` (possibly a child session).
@@ -2411,10 +2399,6 @@ pub fn permission_requests_path() -> String {
 
 pub fn forms_path() -> String {
     format!("{API_PREFIX}/form")
-}
-
-pub fn session_forms_path(session_id: &str) -> String {
-    format!("{}/form", session_path(session_id))
 }
 
 /// Get (`GET`) or cancel (`DELETE`) one form. For the `"global"` owner also
@@ -2442,6 +2426,7 @@ pub fn events_path() -> String {
 pub type QueryPairs = Vec<(String, String)>;
 
 /// `?a=b&c=d`, or an empty string when there are no pairs.
+#[cfg(test)]
 pub fn query_string(pairs: &[(String, String)]) -> String {
     if pairs.is_empty() {
         return String::new();
@@ -2471,14 +2456,12 @@ pub fn form_location_query(session_id: &str, directory: &str) -> QueryPairs {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Order {
     Asc,
-    Desc,
 }
 
 impl Order {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Asc => "asc",
-            Self::Desc => "desc",
         }
     }
 }
@@ -2489,7 +2472,6 @@ pub enum ParentFilter {
     Any,
     /// `parentID=null`: root sessions only.
     Root,
-    Of(String),
 }
 
 /// `GET /api/session` query. A cursor encodes the original filters and order,
@@ -2534,7 +2516,6 @@ impl SessionListQuery {
         match &self.parent {
             ParentFilter::Any => {}
             ParentFilter::Root => pairs.push(("parentID".into(), "null".into())),
-            ParentFilter::Of(id) => pairs.push(("parentID".into(), id.clone())),
         }
         if let Some(directory) = &self.directory {
             pairs.push(("directory".into(), directory.clone()));
@@ -2683,7 +2664,7 @@ mod tests {
         assert!(first.is_root());
         let child = &page.data[1];
         assert_eq!(child.parent_id.as_deref(), Some("ses_1"));
-        assert_eq!(child.display_title(), "Untitled session");
+        assert_eq!(child.title, None);
         assert_eq!(child.outcome, Some(Outcome::Unknown));
         assert_eq!(page.next_cursor(), None);
 
@@ -2695,7 +2676,7 @@ mod tests {
     #[test]
     fn session_get_and_active_use_data_envelopes() {
         let session: SessionResponse = from(json!({ "data": session_json("ses_1") }));
-        assert_eq!(session.data.display_title(), "Fix bug");
+        assert_eq!(session.data.title.as_deref(), Some("Fix bug"));
         let active: SessionActiveResponse = from(json!({
             "data": { "ses_1": { "type": "running" }, "ses_2": { "type": "draining" } }
         }));
@@ -2977,9 +2958,7 @@ mod tests {
         assert!(model.accepts_input("pdf"));
         assert_eq!(model.limit.context, 400000);
         assert_eq!(model.variants[1].id, "high");
-        let selection = model.model_ref(Some("high"));
-        assert_eq!(selection.id, "gpt-6-sol");
-        assert!(model.matches(&selection));
+        assert_eq!(model.id, "gpt-6-sol");
         let old = &models.data[1];
         assert!(!old.enabled);
         assert_eq!(old.status, Some(ModelStatus::Unknown));
@@ -3649,6 +3628,7 @@ mod tests {
             ]
         );
         assert_eq!(endpoint_spec("session.prompt").unwrap().success_status, 200);
+        assert_eq!(endpoint_spec("session.update").unwrap().method, "PATCH");
         assert!(ENDPOINTS.iter().all(|spec| spec.path.starts_with("/api/")));
     }
 
@@ -3672,12 +3652,12 @@ mod tests {
         assert_eq!(query_string(&roots.pairs()), "?limit=100&parentID=null");
         let scoped = SessionListQuery {
             directory: Some("/repo".into()),
-            order: Some(Order::Desc),
+            order: Some(Order::Asc),
             ..SessionListQuery::roots()
         };
         assert_eq!(
             query_string(&scoped.pairs()),
-            "?order=desc&parentID=null&directory=%2Frepo"
+            "?order=asc&parentID=null&directory=%2Frepo"
         );
         assert_eq!(
             query_string(&scoped.with_cursor("abc").pairs()),
@@ -3686,10 +3666,10 @@ mod tests {
 
         let first = MessageListQuery {
             limit: Some(500),
-            order: Some(Order::Desc),
+            order: Some(Order::Asc),
             cursor: None,
         };
-        assert_eq!(query_string(&first.pairs()), "?limit=200&order=desc");
+        assert_eq!(query_string(&first.pairs()), "?limit=200&order=asc");
         let next = MessageListQuery {
             cursor: Some("eyJ".into()),
             ..first

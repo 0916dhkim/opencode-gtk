@@ -25,7 +25,11 @@ jobs:
         run: cargo clippy --all-targets -- -D warnings
       - name: Test
         run: cargo test --all-targets --locked
+      - name: Fake v2 server self-test
+        run: python3 tests/fake_v2/selftest.py
       - name: GTK smoke test
         run: xvfb-run --auto-servernum bash tests/smoke-ui.sh
-      - name: Remote flow GTK test
-        run: xvfb-run --auto-servernum bash tests/remote-flow-ui.sh
+      - name: Remote flow GTK test (fake v2 server)
+        run: xvfb-run --auto-servernum -s "-screen 0 1280x1024x24" bash tests/remote-flow-ui.sh
+      # The real OpenCode 2.0.8 end-to-end run (tests/v2/e2e.sh) needs Docker and
+      # downloads the pinned CLI when its image is built, so it runs locally only.
