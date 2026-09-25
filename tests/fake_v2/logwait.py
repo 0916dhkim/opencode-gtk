@@ -44,7 +44,11 @@ def matches(record, code):
         "ev": record.get("type") if record.get("kind") == "event" else None,
     }
     try:
-        return bool(eval(code, {"__builtins__": {"any": any, "all": all, "len": len, "str": str, "isinstance": isinstance, "dict": dict, "list": list}}, scope))
+        # Names go in globals: generator expressions in EXPR (e.g. `any(k in b ...)`)
+        # get their own scope and cannot see a separate locals dict.
+        names = {"__builtins__": {"any": any, "all": all, "len": len, "str": str, "isinstance": isinstance, "dict": dict, "list": list}}
+        names.update(scope)
+        return bool(eval(code, names))
     except Exception:  # noqa: BLE001 - a record missing a field just doesn't match
         return False
 
