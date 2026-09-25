@@ -65,10 +65,19 @@ if docker run --rm --platform linux/amd64 --network "$NET" \
   -v "$CARGO_VOLUME":/usr/local/cargo/registry \
   -v "$TARGET_VOLUME":/app/target \
   -v "$state/password":/run/ocgtk/password:ro \
-  -e OCGTK_LIVE_URL=http://127.0.0.1:4096 \
+  -e OCGTK_V2H_HARNESS=1 \
+  -e OCGTK_LIVE_URL=http://127.0.0.1:14096 \
   -e OCGTK_LIVE_PASSWORD_FILE=/run/ocgtk/password \
   "$BUILDER" bash -c '
-    python3 tests/v2/loopback.py 4096 ocgtk-v2h-server 4096 &
+    set -e
+    python3 tests/v2/loopback.py --ready /tmp/forward-ready 14096 ocgtk-v2h-server 4096 &
+    forwarder=$!
+    for _ in $(seq 1 50); do
+      [ -s /tmp/forward-ready ] && break
+      kill -0 "$forwarder" 2>/dev/null || break
+      sleep 0.1
+    done
+    [ -s /tmp/forward-ready ] || { echo "e2e: loopback forwarder could not listen on 127.0.0.1:14096" >&2; exit 1; }
     cargo test --offline --locked live_server_end_to_end -- --ignored --nocapture --test-threads 1'; then
   record PASS api-live
 else

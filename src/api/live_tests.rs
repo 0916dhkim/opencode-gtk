@@ -4,8 +4,11 @@
 //! Ignored by default. They go through the client's own `Api` code paths and
 //! the real transcript reducer, and need:
 //!
-//! - `OCGTK_LIVE_URL`: the server, e.g. `http://127.0.0.1:4096` (a loopback
-//!   forward to the harness, since remote plain HTTP is refused);
+//! - `OCGTK_V2H_HARNESS=1`: set only by `tests/v2/e2e.sh`, so that a stray
+//!   `--ignored` run can never drive a real (live) server;
+//! - `OCGTK_LIVE_URL`: the harness server, e.g. `http://127.0.0.1:14096` (a
+//!   loopback forward to the harness, since remote plain HTTP is refused;
+//!   never 4096/4097, the ports of real servers on a developer host);
 //! - `OCGTK_LIVE_PASSWORD_FILE`: file holding the Basic password;
 //! - `OCGTK_LIVE_WORKSPACE`: the server-side project directory
 //!   (default `/state/workspace`).
@@ -13,10 +16,7 @@
 //! The harness's mock provider picks its reply from a `[[scenario:…]]`
 //! marker in the prompt (`tests/v2/README.md`).
 
-use std::{
-    collections::BTreeSet,
-    time::{Duration, Instant},
-};
+use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 
@@ -41,6 +41,11 @@ struct Live {
 
 impl Live {
     fn connect() -> Self {
+        assert_eq!(
+            std::env::var("OCGTK_V2H_HARNESS").as_deref(),
+            Ok("1"),
+            "refusing to run: OCGTK_V2H_HARNESS=1 marks the isolated harness (tests/v2/e2e.sh)"
+        );
         let base_url = std::env::var("OCGTK_LIVE_URL").expect("OCGTK_LIVE_URL");
         let password_file =
             std::env::var("OCGTK_LIVE_PASSWORD_FILE").expect("OCGTK_LIVE_PASSWORD_FILE");
@@ -264,8 +269,7 @@ impl Live {
     }
 
     fn pending(&self) -> PendingSnapshot {
-        let directories: BTreeSet<String> = [self.workspace.clone()].into();
-        let snapshot = self.api.load_pending(&directories);
+        let snapshot = self.api.load_pending(std::slice::from_ref(&self.workspace));
         assert!(snapshot.complete, "{:?}", snapshot.warnings);
         snapshot
     }
@@ -319,11 +323,15 @@ fn live_server_end_to_end() {
     step("bootstrap");
     let bootstrap = live
         .api
-        .bootstrap(std::slice::from_ref(&live.workspace))
+        .bootstrap(&[], std::slice::from_ref(&live.workspace))
         .expect("bootstrap");
     assert!(bootstrap.version.starts_with("2."), "{}", bootstrap.version);
     assert!(bootstrap.sessions_complete && bootstrap.statuses_complete);
-    assert!(bootstrap.pending_complete, "{:?}", bootstrap.warnings);
+    assert!(
+        bootstrap.pending_covered.contains(&live.workspace),
+        "{:?}",
+        bootstrap.warnings
+    );
     eprintln!("PASS bootstrap version {}", bootstrap.version);
 
     step("models");
@@ -684,7 +692,7 @@ fn live_server_end_to_end() {
     step("bootstrap again");
     let again = live
         .api
-        .bootstrap(std::slice::from_ref(&live.workspace))
+        .bootstrap(&[], std::slice::from_ref(&live.workspace))
         .expect("bootstrap");
     for id in [&session.id, &long.id, &parent.id] {
         assert!(

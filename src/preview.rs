@@ -69,6 +69,7 @@ impl State {
             Command::LoadPending { .. } => UiEvent::PendingLoaded(PendingSnapshot {
                 requests: self.pending.clone(),
                 complete: true,
+                covered: HashSet::from([DIRECTORY.to_owned()]),
                 warnings: Vec::new(),
             }),
             Command::LoadMessages { session_id, cursor } => UiEvent::MessagesLoaded {
@@ -164,7 +165,7 @@ impl State {
             statuses,
             statuses_complete: true,
             pending: self.pending.clone(),
-            pending_complete: true,
+            pending_covered: HashSet::from([DIRECTORY.to_owned()]),
             retry_needed: false,
             warnings: Vec::new(),
         }
@@ -689,7 +690,7 @@ mod tests {
     fn canned_requests_settle_once() {
         let mut state = State::new();
         let bootstrap = state.bootstrap();
-        assert!(bootstrap.pending_complete);
+        assert!(bootstrap.pending_covered.contains(DIRECTORY));
         assert_eq!(bootstrap.pending.len(), 2);
         let event = state.handle(Command::ReplyPermission {
             request_id: "per_preview".into(),

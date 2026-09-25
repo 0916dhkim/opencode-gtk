@@ -24,7 +24,7 @@ use serde_json::Value;
 use crate::{
     credentials::CloudflareAccessCredentials,
     model::{ModelCatalog, Project, RunStatus, Session},
-    pending::{PendingForm, PendingRequest, PendingSnapshot},
+    pending::{self, PendingForm, PendingRequest, PendingSnapshot},
     protocol,
 };
 
@@ -52,10 +52,12 @@ pub struct ApiConfig {
 
 #[derive(Debug)]
 pub enum Command {
-    /// `directories` are locations the UI knows beyond the server's project
-    /// and session lists (open tabs, open prompts); their pending
-    /// permissions and forms are recovered too.
+    /// Pending permissions and forms are recovered only where work can be
+    /// pending ([`pending::pending_directories`]): the locations of the
+    /// open tabs `sessions` and of the sessions the server reports active,
+    /// plus `directories` (open prompts and forms).
     Bootstrap {
+        sessions: Vec<String>,
         directories: Vec<String>,
     },
     /// Refetches the pending permission and form lists of these locations.
@@ -132,9 +134,10 @@ pub struct Bootstrap {
     pub statuses: HashMap<String, RunStatus>,
     pub statuses_complete: bool,
     pub pending: Vec<PendingRequest>,
-    /// Every pending permission and form list succeeded, so an open prompt
-    /// missing from `pending` was resolved while disconnected.
-    pub pending_complete: bool,
+    /// Locations whose pending lists were fetched: an open prompt there
+    /// missing from `pending` was resolved while disconnected. A failed
+    /// list sets `retry_needed` and a warning.
+    pub pending_covered: HashSet<String>,
     pub retry_needed: bool,
     pub warnings: Vec<String>,
 }
@@ -341,6 +344,27 @@ impl ApiHandle {
     }
 }
 
+/// The server's mount root: the configured URL with a trailing slash. The
+/// base may carry a reverse-proxy mount prefix; API paths add `/api`
+/// themselves, so a base that already ends in `/api` would double it.
+fn mount_root(base_url: &str) -> Result<Url> {
+    let mut base = base_url.trim().to_owned();
+    if !base.ends_with('/') {
+        base.push('/');
+    }
+    let mut url = Url::parse(&base).context("invalid OpenCode server URL")?;
+    let mount = url.path().trim_end_matches('/');
+    let mount = mount.strip_suffix(protocol::API_PREFIX).unwrap_or(mount);
+    let mount = format!("{mount}/");
+    url.set_path(&mount);
+    Ok(url)
+}
+
+/// The server's own web UI, served at its mount root.
+pub fn web_ui_url(base_url: &str) -> Result<String> {
+    Ok(mount_root(base_url)?.to_string())
+}
+
 #[derive(Clone)]
 struct Api {
     base_url: Url,
@@ -359,11 +383,7 @@ struct CloudflareAccessHeaders {
 
 impl Api {
     fn new(config: ApiConfig) -> Result<Self> {
-        let mut base = config.base_url.trim().to_owned();
-        if !base.ends_with('/') {
-            base.push('/');
-        }
-        let mut base_url = Url::parse(&base).context("invalid OpenCode server URL")?;
+        let base_url = mount_root(&config.base_url)?;
         if !matches!(base_url.scheme(), "http" | "https") {
             bail!("OpenCode server URL must use http or https");
         }
@@ -385,12 +405,6 @@ impl Api {
         if config.cloudflare_access.is_some() && base_url.scheme() != "https" {
             bail!("Cloudflare Access credentials require an HTTPS server URL");
         }
-        // The base may carry a reverse-proxy mount prefix; API paths add `/api`
-        // themselves, so a base that already ends in `/api` would double it.
-        let mount = base_url.path().trim_end_matches('/');
-        let mount = mount.strip_suffix(protocol::API_PREFIX).unwrap_or(mount);
-        let mount = format!("{mount}/");
-        base_url.set_path(&mount);
         let cloudflare_access = config
             .cloudflare_access
             .map(|credentials| {
@@ -553,7 +567,11 @@ impl Api {
         Ok(info)
     }
 
-    fn bootstrap(&self, extra_directories: &[String]) -> Result<Bootstrap> {
+    fn bootstrap(
+        &self,
+        open_sessions: &[String],
+        extra_directories: &[String],
+    ) -> Result<Bootstrap> {
         let mut warnings = Vec::new();
         let mut retry_needed = false;
         let version = self.server_info()?.version;
@@ -584,12 +602,14 @@ impl Api {
             }
         };
 
-        let directories: BTreeSet<String> = projects
-            .iter()
-            .map(|project: &Project| project.worktree.clone())
-            .chain(sessions.iter().map(|session| session.directory.clone()))
-            .chain(extra_directories.iter().cloned())
-            .collect();
+        let directories = pending::pending_directories(
+            &sessions,
+            open_sessions
+                .iter()
+                .map(String::as_str)
+                .chain(statuses.keys().map(String::as_str)),
+            extra_directories.iter().map(String::as_str),
+        );
         let pending = self.load_pending(&directories);
         if !pending.complete {
             retry_needed = true;
@@ -604,24 +624,27 @@ impl Api {
             statuses,
             statuses_complete,
             pending: pending.requests,
-            pending_complete: pending.complete,
+            pending_covered: pending.covered,
             retry_needed,
             warnings,
         })
     }
 
-    /// Pending permissions and forms of every location. Both lists are
+    /// Pending permissions and forms of these locations. Both lists are
     /// location-scoped (`location[directory]`) and include the requests of
     /// child sessions in that location. A request seen in two locations is
-    /// kept once.
-    fn load_pending(&self, directories: &BTreeSet<String>) -> PendingSnapshot {
+    /// kept once. A location is covered once both of its lists loaded.
+    fn load_pending(&self, directories: &[String]) -> PendingSnapshot {
         let mut snapshot = PendingSnapshot {
             complete: true,
             ..PendingSnapshot::default()
         };
         let mut seen = HashSet::new();
-        for directory in directories.iter().filter(|d| !d.is_empty()) {
+        let directories: BTreeSet<&String> = directories.iter().collect();
+        for directory in directories.into_iter().filter(|d| !d.is_empty()) {
             let location = [protocol::location_query(directory)];
+            let mut covered = vec![directory.clone()];
+            let mut listed = 0;
             let resolved = |located: &protocol::LocationRef| {
                 if located.directory.is_empty() {
                     directory.clone()
@@ -634,7 +657,9 @@ impl Api {
                 &location,
             ) {
                 Ok(list) => {
+                    listed += 1;
                     let directory = resolved(&list.location);
+                    covered.push(directory.clone());
                     for request in list.data {
                         if seen.insert(request.id.clone()) {
                             snapshot.requests.push(PendingRequest::Permission {
@@ -653,7 +678,9 @@ impl Api {
             }
             match self.get::<protocol::FormListResponse>(&protocol::forms_path(), &location) {
                 Ok(list) => {
+                    listed += 1;
                     let directory = resolved(&list.location);
+                    covered.push(directory.clone());
                     for form in list.data {
                         if seen.insert(form.id.clone()) {
                             snapshot.requests.push(PendingRequest::Form(PendingForm {
@@ -669,6 +696,9 @@ impl Api {
                         "Could not list pending forms in {directory}: {error:#}"
                     ));
                 }
+            }
+            if listed == 2 {
+                snapshot.covered.extend(covered);
             }
         }
         snapshot
@@ -934,11 +964,14 @@ fn spawn_command_worker(api: Api, commands: Receiver<Command>, ui: Sender<UiEven
     thread::spawn(move || {
         while let Ok(command) = commands.recv_blocking() {
             let event = match command {
-                Command::Bootstrap { directories } => {
-                    UiEvent::Bootstrap(api.bootstrap(&directories).map_err(format_error))
+                Command::Bootstrap {
+                    sessions,
+                    directories,
+                } => {
+                    UiEvent::Bootstrap(api.bootstrap(&sessions, &directories).map_err(format_error))
                 }
                 Command::LoadPending { directories } => {
-                    UiEvent::PendingLoaded(api.load_pending(&directories.into_iter().collect()))
+                    UiEvent::PendingLoaded(api.load_pending(&directories))
                 }
                 Command::LoadMessages { session_id, cursor } => {
                     let result = api
@@ -1343,6 +1376,7 @@ mod tests {
         let (api, events, key) = ApiHandle::preview();
         assert_eq!(key, crate::preview::SERVER_KEY);
         api.send(Command::Bootstrap {
+            sessions: Vec::new(),
             directories: Vec::new(),
         });
         api.send(Command::LoadModels {
@@ -1849,6 +1883,20 @@ mod tests {
     }
 
     #[test]
+    fn the_web_ui_opens_at_the_mount_root() {
+        for (base, expected) in [
+            ("https://host", "https://host/"),
+            (" https://host/api ", "https://host/"),
+            ("https://host/api/", "https://host/"),
+            ("https://host/prefix/api", "https://host/prefix/"),
+            ("https://host/myapi", "https://host/myapi/"),
+        ] {
+            assert_eq!(web_ui_url(base).unwrap(), expected, "{base}");
+        }
+        assert!(web_ui_url("not a url").is_err());
+    }
+
+    #[test]
     fn api_urls_keep_the_mount_prefix_without_doubling_api() {
         for (base, expected) in [
             ("https://host", "https://host/api/info"),
@@ -2078,7 +2126,7 @@ mod tests {
 
     #[test]
     fn bootstrap_pages_root_sessions_across_locations() {
-        let (base, requests, server) = serve(12, |request| {
+        let (base, requests, server) = serve(10, |request| {
             let query = request.query();
             let location = query
                 .get("location[directory]")
@@ -2125,14 +2173,16 @@ mod tests {
                 })),
                 ("/api/session", Some("c2")) => ok(json!({ "data": [], "cursor": {} })),
                 ("/api/session/active", _) => ok(json!({
-                    "data": { "ses_b": { "type": "running" } }
+                    "data": { "ses_c": { "type": "running" } }
                 })),
                 _ => panic!("unexpected request: {}", request.line),
             }
         });
 
         let api = Api::new(config(base, Some("secret"))).unwrap();
-        let bootstrap = api.bootstrap(&[]).unwrap();
+        let bootstrap = api
+            .bootstrap(&["ses_a".into(), "ses_gone".into()], &[])
+            .unwrap();
         server.join().unwrap();
 
         assert_eq!(bootstrap.version, "2.0.8");
@@ -2160,7 +2210,7 @@ mod tests {
         );
         assert_eq!(
             bootstrap.statuses,
-            HashMap::from([("ses_b".to_owned(), RunStatus::Busy)])
+            HashMap::from([("ses_c".to_owned(), RunStatus::Busy)])
         );
         assert!(bootstrap.sessions_complete);
         assert!(bootstrap.statuses_complete);
@@ -2185,7 +2235,10 @@ mod tests {
             ],
             "a child session's request is recovered even though the child is not listed"
         );
-        assert!(bootstrap.pending_complete);
+        assert_eq!(
+            bootstrap.pending_covered,
+            HashSet::from(["/a".to_owned(), "/elsewhere".to_owned()])
+        );
         assert!(!bootstrap.retry_needed);
         assert!(bootstrap.warnings.is_empty());
 
@@ -2219,11 +2272,12 @@ mod tests {
         pending.sort();
         let expected: Vec<_> = ["/api/form", "/api/permission/request"]
             .into_iter()
-            .flat_map(|path| {
-                ["/a", "/b", "/elsewhere"].map(|dir| (path.to_owned(), dir.to_owned()))
-            })
+            .flat_map(|path| ["/a", "/elsewhere"].map(|dir| (path.to_owned(), dir.to_owned())))
             .collect();
-        assert_eq!(pending, expected, "every project and session location");
+        assert_eq!(
+            pending, expected,
+            "the open tab's and the active session's locations only, never project /b or idle ses_b's"
+        );
         assert!(requests
             .iter()
             .all(|request| !request.query().contains_key("directory")));
@@ -2253,7 +2307,7 @@ mod tests {
             }
         });
         let api = Api::new(config(base, None)).unwrap();
-        let bootstrap = api.bootstrap(&[]).unwrap();
+        let bootstrap = api.bootstrap(&["ses_a".into()], &[]).unwrap();
         server.join().unwrap();
 
         assert_eq!(bootstrap.sessions.len(), 1);
@@ -2261,8 +2315,8 @@ mod tests {
         assert!(!bootstrap.statuses_complete);
         assert_eq!(bootstrap.pending.len(), 1, "what did load is still shown");
         assert!(
-            !bootstrap.pending_complete,
-            "one failed list keeps every open prompt"
+            bootstrap.pending_covered.is_empty(),
+            "/a's form list failed, so nothing there may be dismissed"
         );
         assert!(bootstrap.retry_needed);
         assert!(bootstrap.projects.is_empty());
@@ -2298,14 +2352,14 @@ mod tests {
         ] {
             let (base, _, server) = serve(1, move |_| (status, body.clone()));
             let api = Api::new(config(base, None)).unwrap();
-            let error = api.bootstrap(&[]).unwrap_err();
+            let error = api.bootstrap(&[], &[]).unwrap_err();
             server.join().unwrap();
             assert_eq!(format_error(error), expected);
         }
 
         let (base, _, server) = serve(1, |_| (401, String::new()));
         let api = Api::new(config(base, None)).unwrap();
-        let error = api.bootstrap(&[]).unwrap_err();
+        let error = api.bootstrap(&[], &[]).unwrap_err();
         server.join().unwrap();
         assert_eq!(format_error(error), "server returned 401 Unauthorized");
     }
@@ -2454,6 +2508,7 @@ mod tests {
         };
         assert_eq!(echoed, model);
         let UiEvent::Bootstrap(Ok(bootstrap)) = state.handle(Command::Bootstrap {
+            sessions: Vec::new(),
             directories: Vec::new(),
         }) else {
             panic!("preview bootstrap failed");
@@ -2563,19 +2618,16 @@ mod tests {
 
         let child_permissions = fixture("permission.request.list.child");
         let forms = fixture("form.list");
-        let home_permissions = fixture("permission.request.list.directoryQuery");
-        let home_forms = fixture("form.list.directoryQuery");
-        let (base, _, server) = serve(10, move |request| {
+        let (base, _, server) = serve(8, move |request| {
             let cursor = request.query().get("cursor").cloned();
             let workspace = request
                 .query()
                 .get("location[directory]")
                 .is_some_and(|dir| dir == "/state/workspace");
             match (request.path(), cursor) {
+                // Only the running session's location; never project /state/home.
                 ("/api/permission/request", _) if workspace => ok(child_permissions.clone()),
-                ("/api/permission/request", _) => ok(home_permissions.clone()),
                 ("/api/form", _) if workspace => ok(forms.clone()),
-                ("/api/form", _) => ok(home_forms.clone()),
                 ("/api/info", _) => ok(info.clone()),
                 ("/api/project", _) => ok(projects.clone()),
                 ("/api/session", None) => ok(page1.clone()),
@@ -2586,7 +2638,7 @@ mod tests {
             }
         });
         let api = Api::new(config(base, Some("secret"))).unwrap();
-        let bootstrap = api.bootstrap(&[]).unwrap();
+        let bootstrap = api.bootstrap(&[], &[]).unwrap();
         server.join().unwrap();
 
         assert_eq!(bootstrap.version, "2.0.8");
@@ -2604,7 +2656,10 @@ mod tests {
             .iter()
             .all(|project| project.worktree.starts_with('/')));
         assert_eq!(bootstrap.statuses.get(&running), Some(&RunStatus::Busy));
-        assert!(bootstrap.pending_complete);
+        assert_eq!(
+            bootstrap.pending_covered,
+            HashSet::from(["/state/workspace".to_owned()])
+        );
         let ids: Vec<_> = bootstrap.pending.iter().map(PendingRequest::id).collect();
         assert_eq!(
             ids,

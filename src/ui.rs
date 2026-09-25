@@ -34,6 +34,10 @@ use crate::{
 const STREAM_FRAME: Duration = Duration::from_millis(33);
 const BOOTSTRAP_RETRY_MIN: Duration = Duration::from_secs(2);
 const BOOTSTRAP_RETRY_MAX: Duration = Duration::from_secs(30);
+/// Automatic retries of a bootstrap that loaded only in part (2+4+8+16+30 s,
+/// about a minute). A location or list that keeps failing then stops
+/// driving full re-bootstraps; a reconnect starts over.
+const BOOTSTRAP_PARTIAL_RETRY_LIMIT: u32 = 5;
 /// The server can list no models right after it starts (R5.5). Retry an empty
 /// catalog with backoff, a bounded number of times; catalog events also
 /// trigger a reload.
@@ -152,6 +156,19 @@ struct OptimisticPrompt {
     accepted: bool,
 }
 
+/// What settling a prompt send changed ([`State::settle_prompt`]).
+#[derive(Debug, Default, PartialEq, Eq)]
+struct PromptSettled {
+    /// A stop pressed while the send was in flight, to send now.
+    abort: bool,
+    /// The send failed with this error.
+    error: Option<String>,
+    /// The failed prompt went back into the session's draft.
+    restored: bool,
+    /// The session's status went back to idle.
+    status_changed: bool,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum AppModalKind {
     Sessions,
@@ -175,8 +192,6 @@ struct ComposerPrompt {
     session_id: Option<String>,
     directory: String,
     widget: gtk::Widget,
-    /// Receives keyboard focus when the prompt is shown.
-    focus: gtk::Widget,
 }
 
 /// A pending-list reconciliation in flight: the requests open when it
@@ -190,6 +205,9 @@ struct PendingReload {
 
 #[derive(Default)]
 struct State {
+    /// Newest `time.updated` first, as listed by the last bootstrap and
+    /// changed by session events. Activity without a session event (new
+    /// messages) does not reorder it until the next bootstrap; accepted.
     sessions: Vec<Session>,
     projects: Vec<Project>,
     tabs: Vec<String>,
@@ -225,6 +243,90 @@ impl State {
                     .insert(pending.request_id, pending.draft.attachments);
             }
         }
+    }
+
+    /// A run status the server reported (event or bootstrap). It never
+    /// settles an in-flight send, which only its POST's response does
+    /// ([`State::settle_prompt`]): a run of an earlier prompt can start or
+    /// end meanwhile. Returns whether a stop deferred until the server
+    /// reported the run must be sent now.
+    fn apply_server_status(&mut self, session_id: &str, status: &RunStatus) -> bool {
+        match status {
+            RunStatus::Busy | RunStatus::Retry { .. } => {
+                self.server_busy.insert(session_id.to_owned());
+                self.abort_requested.remove(session_id)
+            }
+            RunStatus::Idle => {
+                self.server_busy.remove(session_id);
+                self.abort_requested.remove(session_id);
+                false
+            }
+        }
+    }
+
+    /// Settles a finished prompt send; the POST's response is authoritative
+    /// (a run starting or ending meanwhile settles nothing). The worker has
+    /// read the request's files by now, so they may go: a sent prompt's
+    /// clipboard files are deleted (exactly once), a failed prompt goes back
+    /// into the draft with its files, and its optimistic row goes. Only
+    /// the row and pending prompt of this `request_id` are touched; a
+    /// request no longer tracked (its session went away) only frees its
+    /// files and reports its error.
+    fn settle_prompt(
+        &mut self,
+        request_id: u64,
+        session_id: &str,
+        result: Result<(), String>,
+    ) -> PromptSettled {
+        if let Some(paths) = self.detached_attachments.remove(&request_id) {
+            remove_clipboard_attachments(&paths);
+        }
+        let own_row = self
+            .optimistic_prompts
+            .get(session_id)
+            .is_some_and(|optimistic| optimistic.request_id == request_id);
+        if own_row {
+            if result.is_ok() {
+                if let Some(optimistic) = self.optimistic_prompts.get_mut(session_id) {
+                    optimistic.accepted = true;
+                }
+            } else {
+                self.optimistic_prompts.remove(session_id);
+            }
+        }
+        let current = self
+            .pending_prompts
+            .get(session_id)
+            .is_some_and(|pending| pending.request_id == request_id);
+        let mut settled = PromptSettled::default();
+        if !current {
+            settled.error = result.err();
+            return settled;
+        }
+        let pending = self
+            .pending_prompts
+            .remove(session_id)
+            .expect("matching pending prompt");
+        match result {
+            Ok(()) => {
+                remove_clipboard_attachments(&pending.draft.attachments);
+                settled.abort = self.abort_requested.remove(session_id);
+            }
+            Err(error) => {
+                self.abort_requested.remove(session_id);
+                // The local busy state was only this send's, unless the
+                // server reported a run of its own meanwhile.
+                if !self.server_busy.contains(session_id) {
+                    let previous = self.statuses.insert(session_id.to_owned(), RunStatus::Idle);
+                    settled.status_changed = previous != Some(RunStatus::Idle);
+                }
+                let draft = self.drafts.entry(session_id.to_owned()).or_default();
+                restore_failed_prompt(draft, pending);
+                settled.restored = true;
+                settled.error = Some(error);
+            }
+        }
+        settled
     }
 
     /// Drops the session's draft, deleting its clipboard files. Drafts are
@@ -446,6 +548,12 @@ struct Controller {
     bootstrap_requests_at_start: HashSet<String>,
     bootstrap_retry_token: u64,
     bootstrap_retry_delay: Duration,
+    /// Automatic retries of partial bootstraps since the last complete one
+    /// or reconnect ([`BOOTSTRAP_PARTIAL_RETRY_LIMIT`]).
+    bootstrap_partial_retries: u32,
+    /// A bootstrap was requested on this connection: the first
+    /// `server.connected` must then refetch ([`connect_resync`]).
+    bootstrap_requested: bool,
     self_weak: Weak<RefCell<Controller>>,
     dialogs: HashMap<String, gtk::Widget>,
     pending_actions: HashSet<String>,
@@ -922,6 +1030,8 @@ pub fn launch(
         bootstrap_requests_at_start: HashSet::new(),
         bootstrap_retry_token: 1,
         bootstrap_retry_delay: BOOTSTRAP_RETRY_MIN,
+        bootstrap_partial_retries: 0,
+        bootstrap_requested: false,
         self_weak: Weak::new(),
         dialogs: HashMap::new(),
         pending_actions: HashSet::new(),
@@ -987,7 +1097,7 @@ pub fn launch(
         gtk::prelude::GtkWindowExt::set_focus(&widgets.window, Some(&widgets.new_button));
         widgets.window.present();
     }
-    controller.borrow().send_bootstrap();
+    controller.borrow_mut().send_bootstrap();
 
     let close_controller = Rc::downgrade(&controller);
     controller
@@ -2800,7 +2910,8 @@ impl Controller {
                     let mut commands = Vec::new();
                     if connected {
                         this.widgets.status.set_label("Connected");
-                        if this.connected_once {
+                        if connect_resync(this.connected_once, this.bootstrap_requested) {
+                            this.bootstrap_partial_retries = 0;
                             if this.bootstrap_pending {
                                 this.bootstrap_reload_pending = true;
                             } else {
@@ -2998,64 +3109,21 @@ impl Controller {
             } => {
                 let command = {
                     let mut this = controller.borrow_mut();
-                    // The worker has finished reading this request's files.
-                    if let Some(paths) = this.state.detached_attachments.remove(&request_id) {
-                        remove_clipboard_attachments(&paths);
+                    let settled = this.state.settle_prompt(request_id, &session_id, result);
+                    if let Some(error) = &settled.error {
+                        this.show_error(error);
                     }
-                    if result.is_ok() {
-                        if let Some(optimistic) = this
-                            .state
-                            .optimistic_prompts
-                            .get_mut(&session_id)
-                            .filter(|optimistic| optimistic.request_id == request_id)
-                        {
-                            optimistic.accepted = true;
-                        }
+                    let active = this.state.active.as_deref() == Some(session_id.as_str());
+                    if settled.restored && active {
+                        this.refresh_composer();
                     }
-                    let current = this
-                        .state
-                        .pending_prompts
-                        .get(&session_id)
-                        .is_some_and(|pending| pending.request_id == request_id);
-                    if !current {
-                        return;
+                    if settled.status_changed {
+                        let weak = this.self_weak.clone();
+                        this.refresh_tabs(&weak);
                     }
-                    match result {
-                        Ok(()) => {
-                            if let Some(pending) = this.state.pending_prompts.remove(&session_id) {
-                                remove_clipboard_attachments(&pending.draft.attachments);
-                            }
-                            this.state.abort_requested.remove(&session_id).then(|| {
-                                this.session(&session_id).map(|_| Command::Abort {
-                                    session_id: session_id.clone(),
-                                })
-                            })
-                        }
-                        Err(error) => {
-                            let status_changed =
-                                this.update_session_status(&session_id, RunStatus::Idle);
-                            this.state.server_busy.remove(&session_id);
-                            this.state.abort_requested.remove(&session_id);
-                            let pending = this
-                                .state
-                                .pending_prompts
-                                .remove(&session_id)
-                                .expect("matching pending prompt");
-                            this.state.optimistic_prompts.remove(&session_id);
-                            let draft = this.state.drafts.entry(session_id.clone()).or_default();
-                            restore_failed_prompt(draft, pending);
-                            this.show_error(&error);
-                            if this.state.active.as_deref() == Some(session_id.as_str()) {
-                                this.refresh_composer();
-                            }
-                            if status_changed {
-                                let weak = this.self_weak.clone();
-                                this.refresh_tabs(&weak);
-                            }
-                            None
-                        }
-                    }
-                    .flatten()
+                    (settled.abort && this.session(&session_id).is_some()).then(|| Command::Abort {
+                        session_id: session_id.clone(),
+                    })
                 };
                 if let Some(command) = command {
                     controller.borrow().api.send(command);
@@ -3138,18 +3206,23 @@ impl Controller {
     }
 
     fn begin_bootstrap(&mut self) {
+        self.bootstrap_requested = true;
         self.bootstrap_pending = true;
         self.bootstrap_retry_token += 1;
         self.bootstrap_requests_at_start = self.open_request_ids();
     }
 
+    /// The API adds the locations of the open tabs (resolved against the
+    /// fresh session list) and of the sessions the server reports active.
     fn bootstrap_command(&self) -> Command {
         Command::Bootstrap {
-            directories: self.pending_directories(),
+            sessions: self.state.tabs.clone(),
+            directories: self.open_request_directories(),
         }
     }
 
-    fn send_bootstrap(&self) {
+    fn send_bootstrap(&mut self) {
+        self.bootstrap_requested = true;
         self.api.send(self.bootstrap_command());
     }
 
@@ -3162,30 +3235,45 @@ impl Controller {
             .collect()
     }
 
-    /// Every location whose pending permissions and forms matter: projects,
-    /// known sessions, open tabs, and the locations of open prompts (so a
-    /// complete result can dismiss them).
-    fn pending_directories(&self) -> Vec<String> {
+    /// The locations of open prompts and forms, so that a snapshot covering
+    /// them can dismiss the ones resolved elsewhere.
+    fn open_request_directories(&self) -> Vec<String> {
         let directories: BTreeSet<&str> = self
-            .state
-            .projects
+            .composer_prompts
             .iter()
-            .map(|project| project.worktree.as_str())
-            .chain(
-                self.state
-                    .sessions
-                    .iter()
-                    .map(|session| session.directory.as_str()),
-            )
-            .chain(
-                self.composer_prompts
-                    .iter()
-                    .map(|prompt| prompt.directory.as_str()),
-            )
+            .map(|prompt| prompt.directory.as_str())
             .chain(self.forms.directories())
             .filter(|directory| !directory.is_empty())
             .collect();
         directories.into_iter().map(str::to_owned).collect()
+    }
+
+    /// The locations whose pending lists a reconciliation fetches: open
+    /// tabs, active sessions, open prompts and forms
+    /// ([`pending::pending_directories`]).
+    fn pending_directories(&self) -> Vec<String> {
+        let open = self.open_request_directories();
+        pending::pending_directories(
+            &self.state.sessions,
+            self.state.tabs.iter().map(String::as_str).chain(
+                self.state
+                    .statuses
+                    .iter()
+                    .filter(|(_, status)| status.is_busy())
+                    .map(|(id, _)| id.as_str()),
+            ),
+            open.iter().map(String::as_str),
+        )
+    }
+
+    /// The location of an open permission prompt or form.
+    fn request_directory(&self, id: &str) -> Option<String> {
+        self.composer_prompts
+            .iter()
+            .find(|prompt| prompt.request_id == id)
+            .map(|prompt| prompt.directory.clone())
+            .or_else(|| self.forms.directory(id).map(str::to_owned))
+            .filter(|directory| !directory.is_empty())
     }
 
     /// Starts reconciling the pending lists, e.g. after a reply found its
@@ -3218,7 +3306,7 @@ impl Controller {
         Self::apply_pending_snapshot(
             controller,
             snapshot.requests,
-            snapshot.complete,
+            &snapshot.covered,
             &reload.at_start,
             &reload.resolved,
         );
@@ -3234,14 +3322,15 @@ impl Controller {
     }
 
     /// Applies recovered pending lists. Requests resolved while the lists were
-    /// loading are skipped; when every list loaded, requests that were open
-    /// at the start and are missing now were resolved elsewhere and go away.
-    /// A partial result never dismisses anything (P4). Recovered requests
-    /// take the same path as live `permission.asked` / `form.created`.
+    /// loading are skipped; requests that were open at the start and are
+    /// missing now were resolved elsewhere and go away, but only in a
+    /// location whose lists fully loaded (`covered`): a failed or unqueried
+    /// location never dismisses anything (P4). Recovered requests take the
+    /// same path as live `permission.asked` / `form.created`.
     fn apply_pending_snapshot(
         controller: &Rc<RefCell<Self>>,
         requests: Vec<PendingRequest>,
-        complete: bool,
+        covered: &HashSet<String>,
         at_start: &HashSet<String>,
         resolved: &HashSet<String>,
     ) {
@@ -3252,13 +3341,13 @@ impl Controller {
         let mut permissions = Vec::new();
         {
             let mut this = controller.borrow_mut();
-            if complete {
-                let current: HashSet<&str> = requests.iter().map(PendingRequest::id).collect();
-                for id in at_start.iter().filter(|id| !current.contains(id.as_str())) {
-                    this.remove_composer_prompt(id);
-                    this.forms.remove(id);
-                    this.form_cancels.remove(id);
-                }
+            let dismissed = pending::dismissed_requests(at_start, &requests, covered, |id| {
+                this.request_directory(id)
+            });
+            for id in dismissed {
+                this.remove_composer_prompt(&id);
+                this.forms.remove(&id);
+                this.form_cancels.remove(&id);
             }
             for request in requests {
                 match request {
@@ -3319,7 +3408,7 @@ impl Controller {
 
     fn apply_bootstrap(controller: &Rc<RefCell<Self>>, bootstrap: Bootstrap) {
         let pending = bootstrap.pending;
-        let pending_complete = bootstrap.pending_complete;
+        let pending_covered = bootstrap.pending_covered;
         let statuses_complete = bootstrap.statuses_complete;
         let retry_needed = bootstrap.retry_needed;
         let warnings = bootstrap.warnings;
@@ -3394,23 +3483,10 @@ impl Controller {
                 this.state.statuses.extend(statuses.clone());
             }
             for (session_id, status) in statuses {
-                match status {
-                    RunStatus::Busy | RunStatus::Retry { .. } => {
-                        this.state.server_busy.insert(session_id.clone());
-                        this.state.detach_pending_prompt(&session_id);
-                        if this.state.abort_requested.remove(&session_id)
-                            && this.session(&session_id).is_some()
-                        {
-                            api_commands.push(Command::Abort {
-                                session_id: session_id.clone(),
-                            });
-                        }
-                    }
-                    RunStatus::Idle => {
-                        this.state.server_busy.remove(&session_id);
-                        this.state.detach_pending_prompt(&session_id);
-                        this.state.abort_requested.remove(&session_id);
-                    }
+                if this.state.apply_server_status(&session_id, &status)
+                    && this.session(&session_id).is_some()
+                {
+                    api_commands.push(Command::Abort { session_id });
                 }
             }
             this.apply_missed_idle(statuses_complete);
@@ -3487,6 +3563,7 @@ impl Controller {
             if !retry_needed {
                 this.bootstrap_retry_delay = BOOTSTRAP_RETRY_MIN;
                 this.bootstrap_retry_token += 1;
+                this.bootstrap_partial_retries = 0;
             }
             if this.bootstrap_reload_pending {
                 this.bootstrap_reload_pending = false;
@@ -3506,7 +3583,7 @@ impl Controller {
         Self::apply_pending_snapshot(
             controller,
             pending,
-            pending_complete,
+            &pending_covered,
             &requests_at_start,
             &resolved_requests,
         );
@@ -3517,9 +3594,29 @@ impl Controller {
         }
         if let Some((api, command)) = retry_immediately {
             api.send(command);
-        } else if retry_needed {
+        } else if retry_needed && controller.borrow_mut().take_partial_retry() {
             Self::schedule_bootstrap_retry(controller);
         }
+    }
+
+    /// Whether a partial bootstrap may retry automatically once more. After
+    /// [`BOOTSTRAP_PARTIAL_RETRY_LIMIT`] retries it says so in the status
+    /// tooltip instead; the next reconnect or complete bootstrap resets it.
+    fn take_partial_retry(&mut self) -> bool {
+        if self.bootstrap_partial_retries < BOOTSTRAP_PARTIAL_RETRY_LIMIT {
+            self.bootstrap_partial_retries += 1;
+            return true;
+        }
+        let tooltip = self
+            .widgets
+            .status
+            .tooltip_text()
+            .map(|text| format!("{text}\n"))
+            .unwrap_or_default();
+        self.widgets.status.set_tooltip_text(Some(&format!(
+            "{tooltip}Stopped retrying automatically; reconnecting retries."
+        )));
+        false
     }
 
     fn apply_messages(
@@ -3807,27 +3904,16 @@ impl Controller {
             self.status_events_during_bootstrap
                 .insert(session_id.clone(), status.clone());
         }
-        match &status {
-            RunStatus::Busy | RunStatus::Retry { .. } => {
-                self.state.server_busy.insert(session_id.clone());
-                self.state.detach_pending_prompt(&session_id);
-                if self.state.abort_requested.remove(&session_id)
-                    && self.session(&session_id).is_some()
-                {
-                    effects.api_commands.push(Command::Abort {
-                        session_id: session_id.clone(),
-                    });
-                }
-            }
-            RunStatus::Idle => {
-                // The optimistic row stays: a prompt steered into a run that
-                // then ends is still queued (its row comes with
-                // `session.inbox.enqueued`, which supersedes it). See
-                // `Controller::settle_optimistic_prompt`.
-                self.state.server_busy.remove(&session_id);
-                self.state.abort_requested.remove(&session_id);
-                self.state.detach_pending_prompt(&session_id);
-            }
+        // On Idle the optimistic row stays: a prompt steered into a run that
+        // then ends is still queued (its row comes with
+        // `session.inbox.enqueued`, which supersedes it). See
+        // `Controller::settle_optimistic_prompt`.
+        if self.state.apply_server_status(&session_id, &status)
+            && self.session(&session_id).is_some()
+        {
+            effects.api_commands.push(Command::Abort {
+                session_id: session_id.clone(),
+            });
         }
         let previous = self.state.statuses.get(&session_id).cloned();
         let status_changed = self.update_session_status(&session_id, status.clone());
@@ -4371,7 +4457,13 @@ impl Controller {
 
     /// Opens the server's own web UI, which can answer forms.
     fn open_web_ui(&mut self) {
-        let uri = self.connection_config.base_url.trim().to_owned();
+        let uri = match api::web_ui_url(&self.connection_config.base_url) {
+            Ok(uri) => uri,
+            Err(error) => {
+                self.show_error(&format!("Could not open the web UI: {error:#}"));
+                return;
+            }
+        };
         if let Err(error) =
             gio::AppInfo::launch_default_for_uri(&uri, None::<&gio::AppLaunchContext>)
         {
@@ -4413,15 +4505,14 @@ impl Controller {
                 self.widgets.prompt_host.append(&prompt.widget);
                 self.shown_composer_prompt = Some(prompt.request_id.clone());
                 self.widgets.composer_stack.set_visible_child_name("prompt");
-                // The primary action takes focus so the keyboard can answer,
-                // unless an overlay currently owns it.
-                if self.app_modal.is_none() && !self.widgets.new_session_overlay.is_visible() {
-                    let focus = prompt.focus.clone();
-                    glib::idle_add_local_once(move || {
-                        if focus.is_mapped() {
-                            focus.grab_focus();
-                        }
-                    });
+                // Nothing grabs focus here. GTK's stack may hand a focus the
+                // composer held to the prompt; it must never end up on a reply.
+                let focus = gtk::prelude::GtkWindowExt::focus(&self.widgets.window);
+                let in_prompt = focus
+                    .as_ref()
+                    .is_some_and(|focus| focus.is_ancestor(&prompt.widget));
+                if permission_prompt_focus(in_prompt) == PromptFocus::Body {
+                    prompt.widget.grab_focus();
                 }
             }
         }
@@ -4730,6 +4821,7 @@ impl Controller {
             return;
         };
         let busy = self.state.statuses.get(active).is_some_and(|s| s.is_busy());
+        let sending = self.state.pending_prompts.contains_key(active);
         set_button_icon(
             &self.widgets.send_button,
             if busy { ICON_STOP } else { ICON_SEND },
@@ -4737,6 +4829,8 @@ impl Controller {
         );
         self.widgets.send_button.set_tooltip_text(Some(if busy {
             "Stop generation"
+        } else if sending {
+            "Sending the previous prompt…"
         } else {
             "Send prompt"
         }));
@@ -4759,7 +4853,7 @@ impl Controller {
         });
         self.widgets
             .send_button
-            .set_sensitive(busy || (has_input && attachments_valid && model_ready));
+            .set_sensitive(busy || (!sending && has_input && attachments_valid && model_ready));
     }
 
     fn selected_model_supports_attachments(&self) -> bool {
@@ -5497,6 +5591,10 @@ impl Controller {
                     this.state.abort_requested.remove(&active);
                     Some(Command::Abort { session_id: active })
                 }
+            } else if this.state.pending_prompts.contains_key(&active) {
+                // The previous send has not been answered yet; it may still
+                // fail and come back into the draft.
+                None
             } else {
                 let supports_attachments = this.selected_model_supports_attachments();
                 let draft = this.state.drafts.entry(active.clone()).or_default();
@@ -6831,6 +6929,8 @@ impl Controller {
             this.bootstrap_requests_at_start.clear();
             this.bootstrap_retry_token += 1;
             this.bootstrap_retry_delay = BOOTSTRAP_RETRY_MIN;
+            this.bootstrap_partial_retries = 0;
+            this.bootstrap_requested = false;
             this.pending_session_request = None;
             this.pending_rename_request = None;
             this.connected_once = false;
@@ -6845,7 +6945,7 @@ impl Controller {
         };
         Self::refresh_all(controller);
         start_event_loop(controller, events, generation);
-        controller.borrow().send_bootstrap();
+        controller.borrow_mut().send_bootstrap();
     }
 
     fn show_new_session(controller: &Rc<RefCell<Self>>) {
@@ -7214,6 +7314,9 @@ impl Controller {
         let always_patterns = pending::always_patterns(&request);
 
         let root = gtk::Box::new(gtk::Orientation::Vertical, 12);
+        // Focusable itself, so focus handed to the prompt lands on this box
+        // (which answers no key) before any reply.
+        root.set_focusable(true);
         let heading = gtk::Label::new(Some(&format!("Allow {action}?")));
         heading.set_xalign(0.0);
         heading.add_css_class("prompt-heading");
@@ -7286,6 +7389,9 @@ impl Controller {
         }
         let actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         actions.set_halign(gtk::Align::End);
+        // No reply is ever focused or the window default: the prompt can
+        // appear while the user is typing, and a stray Space or Enter must
+        // never answer it (`permission_prompt_focus`).
         let reject = gtk::Button::with_label("Deny");
         let once = gtk::Button::with_label("Allow once");
         once.add_css_class("suggested-action");
@@ -7301,7 +7407,7 @@ impl Controller {
         use protocol::PermissionDecision;
         let mut replies = vec![
             (reject, PermissionDecision::Reject),
-            (once.clone(), PermissionDecision::Once),
+            (once, PermissionDecision::Once),
         ];
         if let Some(always) = always {
             replies.push((always, PermissionDecision::Always));
@@ -7330,7 +7436,6 @@ impl Controller {
             session_id: scope,
             directory,
             widget,
-            focus: once.upcast(),
         });
         this.refresh_composer_prompt();
     }
@@ -7976,6 +8081,39 @@ fn unix_millis() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis() as u64)
         .unwrap_or(0)
+}
+
+/// Whether a `server.connected` must refetch the snapshot (bootstrap, loaded
+/// conversations, catalogs). v2 has no replay, so anything that happened
+/// between the snapshot's request and this connect is lost otherwise: on
+/// every reconnect, and on the first connect when a bootstrap was already
+/// requested before it (at startup it always is). An in-flight bootstrap
+/// is coalesced by the caller (`bootstrap_reload_pending`).
+fn connect_resync(connected_once: bool, bootstrap_requested: bool) -> bool {
+    connected_once || bootstrap_requested
+}
+
+/// Where keyboard focus goes when a permission prompt is shown.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PromptFocus {
+    /// Focus stays where it is (outside the prompt).
+    Unchanged,
+    /// The prompt's own box, which answers no key: Tab then reaches the
+    /// replies.
+    Body,
+}
+
+/// A prompt can replace the composer while the user is typing their next
+/// message, and GTK's stack may then move the composer's focus to the first
+/// focusable widget of the prompt. No reply may ever get it: a stray Space
+/// or Enter would answer a request nobody read. `focus_in_prompt` is
+/// whether the focus is inside the prompt after it was shown.
+fn permission_prompt_focus(focus_in_prompt: bool) -> PromptFocus {
+    if focus_in_prompt {
+        PromptFocus::Body
+    } else {
+        PromptFocus::Unchanged
+    }
 }
 
 /// Puts a failed prompt back into the composer, ahead of anything typed
@@ -9633,6 +9771,200 @@ mod tests {
         assert!(fresh.starts_with("msg_") && fresh != "msg_failed");
     }
 
+    /// A pasted (clipboard) file; retried because parallel tests may remove
+    /// the shared, then empty, clipboard directory in between.
+    fn pasted_file(name: &str) -> PathBuf {
+        let directory = clipboard_attachment_dir();
+        let path = directory.join(name);
+        for _ in 0..20 {
+            let _ = fs::create_dir_all(&directory);
+            if fs::write(&path, b"png").is_ok() {
+                break;
+            }
+        }
+        assert!(path.exists());
+        path
+    }
+
+    fn sending(
+        state: &mut State,
+        session_id: &str,
+        request_id: u64,
+        text: &str,
+        file: &std::path::Path,
+    ) {
+        let draft = Draft {
+            text: text.into(),
+            attachments: vec![file.to_path_buf()],
+            failed: None,
+        };
+        state.optimistic_prompts.insert(
+            session_id.into(),
+            OptimisticPrompt {
+                row: optimistic_transcript_row(&draft, 1),
+                message_id: format!("msg_{request_id}"),
+                request_id,
+                accepted: false,
+            },
+        );
+        state.pending_prompts.insert(
+            session_id.into(),
+            PendingPrompt {
+                request_id,
+                message_id: format!("msg_{request_id}"),
+                draft,
+            },
+        );
+        state.statuses.insert(session_id.into(), RunStatus::Busy);
+    }
+
+    #[test]
+    fn run_statuses_never_settle_an_in_flight_send() {
+        let pasted = pasted_file("clipboard-status-test.png");
+        let mut state = State::default();
+        sending(&mut state, "ses_a", 3, "hello", &pasted);
+        state.abort_requested.insert("ses_a".into());
+
+        assert!(
+            state.apply_server_status("ses_a", &RunStatus::Busy),
+            "Busy only sends the deferred stop"
+        );
+        assert!(!state.apply_server_status("ses_a", &RunStatus::Idle));
+        assert!(!state.apply_server_status("ses_a", &RunStatus::Busy));
+        assert!(!state.apply_server_status("ses_a", &RunStatus::Idle));
+        assert_eq!(
+            state.pending_prompts.get("ses_a").map(|p| p.request_id),
+            Some(3)
+        );
+        assert!(state.optimistic_prompts.contains_key("ses_a"));
+        assert!(state.detached_attachments.is_empty());
+        assert!(pasted.exists(), "the worker may still be reading it");
+        remove_clipboard_attachments(&[pasted]);
+    }
+
+    #[test]
+    fn a_send_that_fails_after_busy_and_idle_comes_back_as_the_draft() {
+        let pasted = pasted_file("clipboard-failed-send-test.png");
+        let mut state = State::default();
+        sending(&mut state, "ses_a", 3, "hello", &pasted);
+        state.apply_server_status("ses_a", &RunStatus::Busy);
+        state.apply_server_status("ses_a", &RunStatus::Idle);
+        state.statuses.insert("ses_a".into(), RunStatus::Idle);
+
+        let settled = state.settle_prompt(3, "ses_a", Err("upload failed".into()));
+        assert_eq!(
+            settled,
+            PromptSettled {
+                abort: false,
+                error: Some("upload failed".into()),
+                restored: true,
+                status_changed: false,
+            }
+        );
+        assert!(
+            !state.optimistic_prompts.contains_key("ses_a"),
+            "no ghost YOU row"
+        );
+        assert!(state.pending_prompts.is_empty());
+        let draft = &state.drafts["ses_a"];
+        assert_eq!(draft.text, "hello");
+        assert_eq!(draft.attachments, [pasted.clone()]);
+        assert_eq!(
+            draft
+                .failed
+                .as_ref()
+                .map(|failed| failed.message_id.as_str()),
+            Some("msg_3"),
+            "an unchanged resend reuses the id"
+        );
+        assert!(pasted.exists(), "the restored draft still owns its file");
+
+        // A failure while the local Busy is only this send's goes back to Idle;
+        // a run the server reported meanwhile keeps its status.
+        sending(&mut state, "ses_b", 4, "x", &pasted);
+        let settled = state.settle_prompt(4, "ses_b", Err("boom".into()));
+        assert!(settled.status_changed);
+        assert_eq!(state.statuses["ses_b"], RunStatus::Idle);
+        sending(&mut state, "ses_c", 5, "y", &pasted);
+        state.apply_server_status("ses_c", &RunStatus::Busy);
+        let settled = state.settle_prompt(5, "ses_c", Err("boom".into()));
+        assert!(!settled.status_changed);
+        assert_eq!(state.statuses["ses_c"], RunStatus::Busy);
+        state.remove_drafts();
+        assert!(!pasted.exists());
+    }
+
+    #[test]
+    fn an_accepted_send_frees_its_files_once_and_keeps_its_row() {
+        let pasted = pasted_file("clipboard-accepted-send-test.png");
+        let mut state = State::default();
+        sending(&mut state, "ses_a", 3, "hello", &pasted);
+        state.abort_requested.insert("ses_a".into());
+
+        let settled = state.settle_prompt(3, "ses_a", Ok(()));
+        assert_eq!(
+            settled,
+            PromptSettled {
+                abort: true,
+                ..PromptSettled::default()
+            }
+        );
+        assert!(!pasted.exists());
+        assert!(state.optimistic_prompts["ses_a"].accepted);
+        assert!(state.pending_prompts.is_empty());
+        assert!(!state.drafts.contains_key("ses_a"));
+
+        // A duplicate or stale report for the same request changes nothing.
+        assert_eq!(
+            state.settle_prompt(3, "ses_a", Ok(())),
+            PromptSettled::default()
+        );
+        assert!(state.optimistic_prompts["ses_a"].accepted);
+    }
+
+    #[test]
+    fn a_stale_prompt_report_touches_only_its_own_request() {
+        let pasted = pasted_file("clipboard-stale-send-test.png");
+        let mut state = State::default();
+        sending(&mut state, "ses_a", 3, "old", &pasted);
+        // The session went away (and came back with a new send).
+        state.detach_pending_prompt("ses_a");
+        state.optimistic_prompts.remove("ses_a");
+        let newer = pasted_file("clipboard-stale-newer-test.png");
+        sending(&mut state, "ses_a", 4, "new", &newer);
+
+        let settled = state.settle_prompt(3, "ses_a", Err("gone".into()));
+        assert_eq!(settled.error.as_deref(), Some("gone"));
+        assert!(!settled.restored);
+        assert!(
+            !pasted.exists(),
+            "the detached request's files go once it reports"
+        );
+        assert_eq!(state.optimistic_prompts["ses_a"].request_id, 4);
+        assert_eq!(state.pending_prompts["ses_a"].request_id, 4);
+        assert!(!state.drafts.contains_key("ses_a"));
+        assert!(newer.exists());
+        state.settle_prompt(4, "ses_a", Ok(()));
+        assert!(!newer.exists());
+    }
+
+    #[test]
+    fn no_permission_reply_ever_takes_focus() {
+        assert_eq!(permission_prompt_focus(true), PromptFocus::Body);
+        assert_eq!(permission_prompt_focus(false), PromptFocus::Unchanged);
+    }
+
+    #[test]
+    fn the_first_connect_refetches_what_the_startup_bootstrap_may_have_missed() {
+        assert!(
+            connect_resync(false, true),
+            "bootstrap requested before connecting"
+        );
+        assert!(connect_resync(true, true), "every reconnect");
+        assert!(connect_resync(true, false));
+        assert!(!connect_resync(false, false), "nothing requested yet");
+    }
+
     #[test]
     fn detached_prompts_keep_clipboard_files_until_their_send_reports_back() {
         let directory = clipboard_attachment_dir();
@@ -9653,7 +9985,7 @@ mod tests {
             },
         );
 
-        // A Busy/Idle status arriving while the worker may still be reading.
+        // The session goes away while the worker may still be reading.
         state.detach_pending_prompt("ses_a");
         assert!(state.pending_prompts.is_empty());
         assert!(pasted.exists(), "the worker may not have read it yet");

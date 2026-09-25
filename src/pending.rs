@@ -1,12 +1,15 @@
 //! Pending permission requests and forms: recovery results, event changes,
 //! and the pure display rules the UI builds its prompt and notice from.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use serde_json::Value;
 
-use crate::protocol::{
-    EventKind, FormInfo, JsonMap, PermissionRequest, PermissionSource, GLOBAL_FORM_OWNER,
+use crate::{
+    model::Session,
+    protocol::{
+        EventKind, FormInfo, JsonMap, PermissionRequest, PermissionSource, GLOBAL_FORM_OWNER,
+    },
 };
 
 /// Shortcut that cancels the form shown in the notice.
@@ -40,13 +43,63 @@ impl PendingRequest {
     }
 }
 
-/// The pending lists of every queried location. `complete` is true only
-/// when every list was fetched; otherwise open prompts must be kept.
+/// The pending lists of the queried locations. `complete` is true only when
+/// every list was fetched. `covered` holds each location whose permission
+/// and form lists were both fetched (as queried and as the server resolved
+/// it): only an open request in one of those may be dismissed for missing
+/// from `requests` ([`dismissed_requests`]).
 #[derive(Debug, Default)]
 pub struct PendingSnapshot {
     pub requests: Vec<PendingRequest>,
     pub complete: bool,
+    pub covered: HashSet<String>,
     pub warnings: Vec<String>,
+}
+
+/// The locations whose pending lists are fetched: those of `session_ids`
+/// (open tabs and active sessions) that are known root sessions, plus
+/// `directories` (open prompts and forms). Listing a location makes the
+/// server start it (MCP servers included) and keep it alive, so locations
+/// that cannot have pending work, such as every project or every old
+/// session's directory, are never listed; a request raised anywhere else
+/// still arrives live as `permission.asked` / `form.created`. An active
+/// child session is not a root, but its parent runs (and is active) in the
+/// same location while the child waits.
+pub fn pending_directories<'a>(
+    sessions: &'a [Session],
+    session_ids: impl IntoIterator<Item = &'a str>,
+    directories: impl IntoIterator<Item = &'a str>,
+) -> Vec<String> {
+    let session_ids: HashSet<&str> = session_ids.into_iter().collect();
+    let selected: BTreeSet<&str> = sessions
+        .iter()
+        .filter(|session| session_ids.contains(session.id.as_str()))
+        .map(|session| session.directory.as_str())
+        .chain(directories)
+        .filter(|directory| !directory.is_empty())
+        .collect();
+    selected.into_iter().map(str::to_owned).collect()
+}
+
+/// The open requests a pending snapshot dismisses: open when it started
+/// (`at_start`), missing from it, and located in a location it `covered`.
+/// A request whose location is unknown, or outside the queried set, is
+/// kept: a snapshot says nothing about locations it did not list (P4).
+pub fn dismissed_requests<'a>(
+    at_start: impl IntoIterator<Item = &'a String>,
+    snapshot: &[PendingRequest],
+    covered: &HashSet<String>,
+    directory_of: impl Fn(&str) -> Option<String>,
+) -> Vec<String> {
+    let current: HashSet<&str> = snapshot.iter().map(PendingRequest::id).collect();
+    let mut dismissed: Vec<String> = at_start
+        .into_iter()
+        .filter(|id| !current.contains(id.as_str()))
+        .filter(|id| directory_of(id).is_some_and(|directory| covered.contains(&directory)))
+        .cloned()
+        .collect();
+    dismissed.sort();
+    dismissed
 }
 
 /// What a live event changes about pending requests.
@@ -205,6 +258,14 @@ impl Forms {
         self.items.iter().map(|item| item.form.id.as_str())
     }
 
+    /// The location of a pending form, when known.
+    pub fn directory(&self, form_id: &str) -> Option<&str> {
+        self.items
+            .iter()
+            .find(|item| item.form.id == form_id)
+            .and_then(|item| item.directory.as_deref())
+    }
+
     pub fn directories(&self) -> impl Iterator<Item = &str> {
         self.items
             .iter()
@@ -319,6 +380,69 @@ mod tests {
             .unwrap(),
             directory: Some("/repo".into()),
         }
+    }
+
+    fn root(id: &str, directory: &str) -> Session {
+        serde_json::from_value(json!({
+            "id": id, "directory": directory, "title": id,
+            "time": { "created": 1, "updated": 1 }
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn pending_lists_are_fetched_only_where_work_can_be_pending() {
+        let sessions = [
+            root("ses_tab", "/repo"),
+            root("ses_running", "/tmp/worktree-live"),
+            root("ses_old", "/tmp/worktree-old"),
+            root("ses_older", "/tmp/worktree-older"),
+            root("ses_blank", ""),
+        ];
+        let directories = pending_directories(
+            &sessions,
+            ["ses_tab", "ses_running", "ses_child_not_root", "ses_blank"],
+            ["/prompt/dir", "/repo", ""],
+        );
+        assert_eq!(
+            directories,
+            ["/prompt/dir", "/repo", "/tmp/worktree-live"],
+            "open tabs, active sessions and open prompts only; never old sessions"
+        );
+        assert!(pending_directories(&sessions, [], []).is_empty());
+    }
+
+    #[test]
+    fn a_snapshot_dismisses_only_requests_in_locations_it_covered() {
+        let at_start: HashSet<String> = ["per_a", "per_b", "frm_c", "per_kept", "frm_nowhere"]
+            .map(str::to_owned)
+            .into();
+        let located = HashMap::from([
+            ("per_a", "/a"),
+            ("per_b", "/b"),
+            ("frm_c", "/a"),
+            ("per_kept", "/a"),
+        ]);
+        let snapshot = [PendingRequest::Permission {
+            directory: "/a".into(),
+            request: request(json!({ "id": "per_kept", "sessionID": "ses_a" })),
+        }];
+        let covered: HashSet<String> = ["/a".to_owned()].into();
+        let dismissed = dismissed_requests(&at_start, &snapshot, &covered, |id| {
+            located.get(id).map(|dir| (*dir).to_owned())
+        });
+        assert_eq!(
+            dismissed,
+            ["frm_c", "per_a"],
+            "/b was not listed and frm_nowhere has no known location"
+        );
+        assert!(
+            dismissed_requests(&at_start, &snapshot, &HashSet::new(), |id| {
+                located.get(id).map(|dir| (*dir).to_owned())
+            })
+            .is_empty(),
+            "a snapshot that covered nothing dismisses nothing"
+        );
     }
 
     #[test]

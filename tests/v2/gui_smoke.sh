@@ -20,7 +20,9 @@ password_file="${GUI_PASSWORD_FILE:?GUI_PASSWORD_FILE is required}"
 upstream_host="${GUI_UPSTREAM_HOST:-ocgtk-v2h-server}"
 workspace="${GUI_WORKSPACE:-/state/workspace}"
 shots="${GUI_SHOTS:-}"
-base="http://127.0.0.1:4096"
+# Never 4096/4097: those are the ports of real servers on a developer host.
+local_port=14096
+base="http://127.0.0.1:${local_port}"
 temporary="$(mktemp -d)"
 pids=()
 failures=0
@@ -35,8 +37,18 @@ trap cleanup EXIT
 pass() { printf 'PASS %s\n' "$1"; }
 fail() { printf 'FAIL %s: %s\n' "$1" "$2" >&2; failures=$((failures + 1)); }
 
-python3 tests/v2/loopback.py 4096 "${upstream_host}" 4096 &
-pids+=($!)
+python3 tests/v2/loopback.py --ready "${temporary}/forward-ready" "${local_port}" "${upstream_host}" 4096 &
+forwarder=$!
+pids+=("${forwarder}")
+for _ in $(seq 1 50); do
+  [[ -s "${temporary}/forward-ready" ]] && break
+  kill -0 "${forwarder}" 2>/dev/null || break
+  sleep 0.1
+done
+if [[ ! -s "${temporary}/forward-ready" ]]; then
+  fail "forwarder" "could not listen on 127.0.0.1:${local_port}"
+  exit 1
+fi
 
 Xvfb :95 -screen 0 1180x820x24 -nolisten tcp >/dev/null 2>&1 &
 pids+=($!)

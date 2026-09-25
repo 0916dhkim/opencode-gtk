@@ -380,6 +380,18 @@ if [[ -n "${window}" ]] && app_alive && [[ -n "${new_session}" ]]; then
   key Return
   if expect "permission.child-asked" "ev == 'permission.asked' and r.get('sessionID') not in (None, '${new_session}')" "${timeout_s}"; then
     child_session="$(field "${found}" 'r["sessionID"]')"
+    # The prompt replaced the composer while it had keyboard focus (the prompt above was typed
+    # there). No reply may take that focus: stray Space/Enter must not answer (ui.rs
+    # permission_prompt_focus). Replies below are clicked, never keyed.
+    sleep 0.7
+    mark_now
+    key space
+    key Return
+    if stray="$(logq wait "${log}" --after "${mark}" --timeout 1.5 --expr "http and route == 'session.permission.reply'")"; then
+      fail "permission.no-stray-key" "Space/Enter answered the prompt: ${stray}"
+    else
+      pass "permission.no-stray-key"
+    fi
     geometry
     # With `save` present the buttons are Deny, Allow once, Always allow (rightmost).
     click_until "permission.child-reply" \
