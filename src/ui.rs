@@ -18,7 +18,7 @@ use crate::{
         self, ApiConfig, ApiHandle, Bootstrap, Command, InboxRequest, MessageLoadError,
         MessagePage, ServerEnvelope, Settled, UiEvent,
     },
-    credentials::{self, CloudflareAccessCredentials},
+    credentials::{self, CloudflareAccessCredentials, PasswordTarget, SystemKeyring},
     markdown,
     model::{
         displayed_model, event_run_status, format_context_usage, model_switch_for_pick,
@@ -536,6 +536,8 @@ struct Controller {
     persistence_warning: Option<String>,
     persistence_error: Option<String>,
     credential_warning: Option<String>,
+    /// Whether the system keyring holds the current connection's password.
+    password_stored: bool,
     persistence_writes_blocked: bool,
     had_server_state: bool,
     offline_busy: HashSet<String>,
@@ -970,10 +972,34 @@ pub fn launch(
             cf_access_client_secret,
         )
     };
+    let username = username.unwrap_or_else(|| persisted.connection.username.clone());
+    let password = if preview {
+        credentials::PasswordLoad {
+            password,
+            ..Default::default()
+        }
+    } else {
+        let persisted_identity = credentials::same_password_identity(
+            &base_url,
+            &username,
+            &persisted.connection.server,
+            &persisted.connection.username,
+        );
+        credentials::initial_password(
+            &SystemKeyring,
+            &base_url,
+            &username,
+            password,
+            persisted.connection.basic_auth_in_keyring,
+            persisted_identity,
+        )
+    };
+    let password_stored = password.stored;
+    let credential_warning = join_warnings(credential_warning, password.warning);
     let config = ApiConfig {
         base_url,
-        username: username.unwrap_or_else(|| persisted.connection.username.clone()),
-        password,
+        username,
+        password: password.password,
         cloudflare_access,
     };
     install_css();
@@ -1045,6 +1071,7 @@ pub fn launch(
         persistence_warning,
         persistence_error,
         credential_warning,
+        password_stored,
         persistence_writes_blocked,
         had_server_state,
         offline_busy,
@@ -1232,6 +1259,22 @@ fn persist_cloudflare_credentials(current: &ApiConfig, next: &ApiConfig) -> anyh
         credentials::remove(&next.base_url)
     } else {
         Ok(())
+    }
+}
+
+fn join_warnings(first: Option<String>, second: Option<String>) -> Option<String> {
+    match (first, second) {
+        (Some(first), Some(second)) => Some(format!("{first}\n{second}")),
+        (first, second) => first.or(second),
+    }
+}
+
+fn connection_settings(config: &ApiConfig, password_stored: bool) -> ConnectionSettings {
+    ConnectionSettings {
+        server: config.base_url.clone(),
+        username: config.username.clone(),
+        cloudflare_access: config.cloudflare_access.is_some(),
+        basic_auth_in_keyring: password_stored,
     }
 }
 
@@ -3678,7 +3721,7 @@ impl Controller {
                     } else if persistence_failed {
                         "State not saved"
                     } else if credentials_failed {
-                        "Credentials unavailable"
+                        "Credential warning"
                     } else {
                         "State recovered"
                     }
@@ -6811,7 +6854,10 @@ impl Controller {
                 return;
             }
         }
-        let config = controller.borrow().connection_config.clone();
+        let (config, password_stored) = {
+            let this = controller.borrow();
+            (this.connection_config.clone(), this.password_stored)
+        };
 
         let root = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         root.set_hexpand(true);
@@ -6931,13 +6977,18 @@ impl Controller {
         password_label.set_xalign(0.0);
         let password = gtk::Entry::new();
         password.set_visibility(false);
-        password.set_placeholder_text(Some(if config.password.is_some() {
+        password.set_placeholder_text(Some(if password_stored {
+            "Stored in the system keyring"
+        } else if config.password.is_some() {
             "Leave blank to keep the current password"
         } else {
-            "Not saved to disk"
+            "Required by OpenCode 2.x"
         }));
+        let remember_password =
+            gtk::CheckButton::with_mnemonic("_Remember the password in the system keyring");
+        remember_password.set_active(true);
         let connection_hint = gtk::Label::new(Some(
-            "Remote servers require HTTPS. Loopback HTTP is supported for SSH tunnels. Passwords stay in memory only.",
+            "Remote servers require HTTPS. Loopback HTTP is supported for SSH tunnels. A remembered password is used only for this server URL and username; uncheck Remember to remove it.",
         ));
         connection_hint.set_xalign(0.0);
         connection_hint.set_wrap(true);
@@ -6984,6 +7035,7 @@ impl Controller {
         connection_box.append(&username);
         connection_box.append(&password_label);
         connection_box.append(&password);
+        connection_box.append(&remember_password);
         connection_box.append(&connection_hint);
         connection_box.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
         connection_box.append(&cloudflare_label);
@@ -7008,7 +7060,7 @@ impl Controller {
 
         let conn_bottombar = gtk::Box::new(gtk::Orientation::Horizontal, 10);
         conn_bottombar.add_css_class("settings-bottombar");
-        let mem_hint = gtk::Label::new(Some("Passwords stay in memory only"));
+        let mem_hint = gtk::Label::new(Some("Secrets stay out of the state file"));
         mem_hint.set_xalign(0.0);
         mem_hint.add_css_class("session-picker-path");
         mem_hint.set_hexpand(true);
@@ -7030,6 +7082,7 @@ impl Controller {
             let server = server.clone();
             let username = username.clone();
             let password = password.clone();
+            let remember_password = remember_password.clone();
             let cloudflare_client_id = cloudflare_client_id.clone();
             let cloudflare_client_secret = cloudflare_client_secret.clone();
             let validation = validation.clone();
@@ -7043,10 +7096,25 @@ impl Controller {
                     validation.set_label("Server URL and username are required");
                     return;
                 }
-                let current = controller.borrow().connection_config.clone();
-                let same_server = same_server(&current.base_url, &base_url);
-                let same_identity = same_server && current.username == username_value;
-                let entered_password = password.text().to_string();
+                let (current, current_stored) = {
+                    let this = controller.borrow();
+                    (this.connection_config.clone(), this.password_stored)
+                };
+                let password_plan = credentials::plan_password(
+                    &SystemKeyring,
+                    PasswordTarget {
+                        server: &current.base_url,
+                        username: &current.username,
+                    },
+                    current.password.as_deref(),
+                    current_stored,
+                    PasswordTarget {
+                        server: &base_url,
+                        username: &username_value,
+                    },
+                    password.text().as_str(),
+                    remember_password.is_active(),
+                );
                 let cloudflare_access = match configured_cloudflare_credentials(
                     &current,
                     cloudflare_client_id.text().as_str(),
@@ -7061,11 +7129,7 @@ impl Controller {
                 let config = ApiConfig {
                     base_url,
                     username: username_value,
-                    password: if entered_password.is_empty() && same_identity {
-                        current.password.clone()
-                    } else {
-                        (!entered_password.is_empty()).then_some(entered_password)
-                    },
+                    password: password_plan.password.clone(),
                     cloudflare_access,
                 };
 
@@ -7074,8 +7138,15 @@ impl Controller {
                         validation.set_label(&error.to_string());
                         return;
                     }
+                    let (stored, warning) = credentials::apply_password_change(
+                        &SystemKeyring,
+                        &config.base_url,
+                        &config.username,
+                        &password_plan,
+                    );
                     let mut this = controller.borrow_mut();
-                    this.apply_preferences(&config);
+                    this.password_stored = stored;
+                    this.apply_preferences(&config, warning);
                     this.close_app_modal();
                     return;
                 }
@@ -7087,7 +7158,21 @@ impl Controller {
                             validation.set_label(&error.to_string());
                             return;
                         }
-                        Self::switch_connection(&controller, config, api, events, server_key);
+                        let (stored, warning) = credentials::apply_password_change(
+                            &SystemKeyring,
+                            &config.base_url,
+                            &config.username,
+                            &password_plan,
+                        );
+                        controller.borrow_mut().password_stored = stored;
+                        Self::switch_connection(
+                            &controller,
+                            config,
+                            api,
+                            events,
+                            server_key,
+                            warning,
+                        );
                     }
                     Err(error) => validation.set_label(&error.to_string()),
                 }
@@ -7365,14 +7450,21 @@ impl Controller {
         }
     }
 
-    fn apply_preferences(&mut self, config: &ApiConfig) {
+    fn apply_preferences(&mut self, config: &ApiConfig, credential_warning: Option<String>) {
         self.connection_config = config.clone();
-        self.persisted.connection = ConnectionSettings {
-            server: config.base_url.clone(),
-            username: config.username.clone(),
-            cloudflare_access: config.cloudflare_access.is_some(),
-        };
-        self.credential_warning = None;
+        self.persisted.connection = connection_settings(config, self.password_stored);
+        self.credential_warning = credential_warning;
+        // No reconnect follows, so no bootstrap would surface the warning.
+        if let Some(warning) = &self.credential_warning {
+            let label = self.widgets.status.label();
+            if !label.ends_with("Credential warning") {
+                self.widgets
+                    .status
+                    .set_label(&format!("{label} · Credential warning"));
+            }
+            self.widgets.status.add_css_class("error");
+            self.widgets.status.set_tooltip_text(Some(warning));
+        }
         self.persist_state();
     }
 
@@ -7382,6 +7474,7 @@ impl Controller {
         api: ApiHandle,
         events: Receiver<UiEvent>,
         server_key: String,
+        credential_warning: Option<String>,
     ) {
         let generation = {
             let mut this = controller.borrow_mut();
@@ -7424,13 +7517,9 @@ impl Controller {
                 .unwrap_or_default();
             this.had_server_state = this.persisted.servers.contains_key(&server_key);
             this.offline_busy = server_state.busy.clone();
-            this.connection_config = config.clone();
-            this.persisted.connection = ConnectionSettings {
-                server: config.base_url,
-                username: config.username,
-                cloudflare_access: config.cloudflare_access.is_some(),
-            };
-            this.credential_warning = None;
+            this.persisted.connection = connection_settings(&config, this.password_stored);
+            this.connection_config = config;
+            this.credential_warning = credential_warning;
             // Drafts are never in flight, so their pasted files go now. The
             // old workers may still read in-flight prompts' files, which are
             // left for `remove_clipboard_attachment_dir` at exit.

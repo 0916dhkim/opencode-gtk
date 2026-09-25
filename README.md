@@ -7,7 +7,7 @@ A lightweight GTK 4 desktop client for a remote [OpenCode](https://opencode.ai) 
 ## Features
 
 - Connects to `opencode serve` over HTTPS or loopback HTTP through an SSH tunnel
-- Authenticates to Cloudflare Access with a service token stored in the Linux system keyring
+- Remembers the OpenCode password and the Cloudflare Access service token in the Linux system keyring
 - Opens multiple OpenCode sessions as persistent tabs and restores them after restart
 - Streams assistant text, reasoning, and tool activity over server-sent events, and resyncs after a reconnect
 - Selects any model and reasoning variant exposed by the server; the choice is saved on the session by the server
@@ -27,7 +27,7 @@ Messages the server has not delivered yet wait in a tray above the composer, gro
 
 **Stop** ends the run and parks every waiting message, steered or queued; nothing runs until you act. The tray then reads "Paused · N waiting", with the groups relabeled "Next turn", "Turn 2", …, and offers one **Resume**: it runs all of them in the order shown, the steered ones together in the next turn and then each queued one as its own turn. That is what the server does once a stopped session wakes, so rows only offer actions that do not wake it: ✕, and **→ Queue** on steered rows. To run only some messages, cancel the others first. Sending a new message to a stopped session wakes it too, so the composer warns about it while you type: the new message joins the next turn and the paused ones follow.
 
-The client stores non-secret UI state under `${XDG_CONFIG_HOME:-~/.config}/opencode-gtk/state.json`. OpenCode Basic Auth passwords stay in memory. Tabs saved for sessions the server does not know (for example from an OpenCode 1.x server) are dropped quietly. Cloudflare Access service tokens are stored by the desktop's Secret Service provider, such as GNOME Keyring or KWallet, and are never added to the state file.
+The client stores non-secret UI state under `${XDG_CONFIG_HOME:-~/.config}/opencode-gtk/state.json`. Tabs saved for sessions the server does not know (for example from an OpenCode 1.x server) are dropped quietly. The OpenCode Basic Auth password you enter in **Settings** and Cloudflare Access service tokens are stored by the desktop's Secret Service provider, such as GNOME Keyring or KWallet, and are never added to the state file or logs. When no Secret Service is available (or it is locked or fails), the password stays in memory for the session and the status bar shows a warning; connecting is never blocked.
 
 ## Server Setup
 
@@ -122,6 +122,14 @@ Cloudflare Access credentials can also be supplied for one run with `OPENCODE_CF
 
 `OPENCODE_SERVER_URL` defaults to `http://127.0.0.1:4096`, and the username defaults to `opencode`.
 
+### Saved password
+
+Type the password in **Settings** and press **Apply** to connect; with **Remember the password in the system keyring** checked (the default), it is saved and later launches connect without asking. The field then reads "Stored in the system keyring" and never shows the password; leave it blank to keep it, type a new one to replace it, or uncheck **Remember** and apply to remove it.
+
+A saved password belongs to one server URL and username. The URL is normalized (scheme, host, port, and mount prefix; a trailing slash or `/api` does not matter), and switching to another server or username never sends it there: that connection uses its own saved password, if any.
+
+At startup a `--password` or `OPENCODE_SERVER_PASSWORD` value takes precedence over the saved password, and is never written to the keyring unless you type it in **Settings**. A rejected password (401) keeps the saved entry; fix it in **Settings**.
+
 ## Shortcuts
 
 | Shortcut | Action |
@@ -166,6 +174,7 @@ UI tests run only headless (Xvfb and D-Bus, for example in Docker), never on a l
 
 - `tests/smoke-ui.sh`: the window opens and survives the everyday shortcuts, in preview mode and against an unreachable server.
 - `tests/remote-flow-ui.sh`: a full flow (bootstrap, paging, rename, create, prompt with an attachment, steer, queue, tray switch/cancel, Stop and Resume (with a parked steer, and with queued messages only), the paused composer warning, permissions, form cancel, reconnects) against `tests/fake_opencode_server.py`, a fake 2.x server built from real 2.0.8 captures. `python3 tests/fake_v2/selftest.py` checks the fake server itself.
+- `tests/keyring-ui.sh`: the password saved in **Settings** lands in a real Secret Service (gnome-keyring, installed at test time; see the script header), survives app and keyring restarts, is removed by unchecking **Remember**, is never saved from `OPENCODE_SERVER_PASSWORD`, and the client still connects without a session bus.
 - `tests/v2/e2e.sh --state DIR`: runs against a real, isolated OpenCode 2.0.8 server with a scripted mock model provider in Docker (`tests/v2/README.md`). It runs the ignored live API test (`cargo test live_server_end_to_end -- --ignored`) and a GUI smoke test, then takes the server down. It builds its Docker image from the published CLI, so CI does not run it.
 
 The included `Dockerfile` provides a reproducible Debian build environment when GTK development libraries are not installed locally:

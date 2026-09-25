@@ -41,6 +41,10 @@ pub struct ConnectionSettings {
     pub username: String,
     #[serde(default)]
     pub cloudflare_access: bool,
+    /// Whether the Basic password of this server and username was saved in
+    /// the system keyring from Settings. The secret itself never lands here.
+    #[serde(default)]
+    pub basic_auth_in_keyring: bool,
 }
 
 impl Default for ConnectionSettings {
@@ -49,6 +53,7 @@ impl Default for ConnectionSettings {
             server: "http://127.0.0.1:4096".into(),
             username: "opencode".into(),
             cloudflare_access: false,
+            basic_auth_in_keyring: false,
         }
     }
 }
@@ -166,6 +171,7 @@ mod tests {
                 server: "https://opencode.example.com".into(),
                 username: "danny".into(),
                 cloudflare_access: true,
+                basic_auth_in_keyring: true,
             },
             ..PersistedState::default()
         };
@@ -198,7 +204,9 @@ mod tests {
         assert_eq!(loaded.connection, state.connection);
         assert_eq!(loaded.zoom_level, 1.0);
         let contents = fs::read_to_string(path).unwrap();
+        assert!(contents.contains("\"basic_auth_in_keyring\": true"));
         assert!(!contents.contains("password"));
+        assert!(!contents.contains("secret"));
         assert!(!contents.contains("client.access"));
         assert!(!contents.contains("theme"));
     }

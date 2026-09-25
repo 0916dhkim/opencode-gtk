@@ -386,7 +386,7 @@ impl ApiHandle {
 /// The server's mount root: the configured URL with a trailing slash. The
 /// base may carry a reverse-proxy mount prefix; API paths add `/api`
 /// themselves, so a base that already ends in `/api` would double it.
-fn mount_root(base_url: &str) -> Result<Url> {
+pub(crate) fn mount_root(base_url: &str) -> Result<Url> {
     let mut base = base_url.trim().to_owned();
     if !base.ends_with('/') {
         base.push('/');
