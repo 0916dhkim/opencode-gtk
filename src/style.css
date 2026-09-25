@@ -829,8 +829,20 @@ button.markdown-code-copy.copied {
   font-size: 0.9em;
 }
 
-.composer-menu-arrow {
-  margin-left: 0.15em;
+/* Composer footer spacing: 0.3em (4 px) inside a control, 0.59em (8 px)
+   between controls in a group, 1.19em (16 px) between groups. */
+
+.composer-footer,
+.composer-footer-group {
+  border-spacing: 0.59em;
+}
+
+.composer-footer-status {
+  border-spacing: 1.19em;
+}
+
+.composer-menu-row {
+  border-spacing: 0.3em;
 }
 
 popover.model-picker-popover {
@@ -912,7 +924,6 @@ button.model-picker-row {
 .composer-usage {
   color: @oc_fg_model_picker_item_subtext;
   font-size: 0.82em;
-  padding: 0 0.3em;
 }
 
 .attachment-chip {
@@ -1237,12 +1248,16 @@ button.tab-picker-row.active {
   -gtk-icon-size: 1.1em;
 }
 
+/* At 0.82em text: the margin is 16 px, the spacing 4 px. */
 .queue-hint {
   color: @oc_fg_model_picker_item_subtext;
   font-size: 0.82em;
+  margin-left: 1.45em;
+  border-spacing: 0.37em;
 }
 
 .queue-hint .key-chip {
+  font-family: inherit;
   font-size: 0.9em;
 }
 

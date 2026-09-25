@@ -2,7 +2,8 @@
 //! minimum width and only asks for the child's natural width while `row`
 //! (an ancestor laying out siblings) has room for every visible child at
 //! natural width, so on a narrow window it gives its space back instead of
-//! squeezing the siblings. It expands, taking the row's spare width.
+//! squeezing the siblings. It does not expand; its `spacer` takes the row's
+//! spare width instead and has it re-decide whenever that width changes.
 
 use gtk::{glib, prelude::*, subclass::prelude::*};
 
@@ -41,6 +42,39 @@ mod imp {
         }
     }
 
+    impl FitOrHide {
+        /// Whether the child fits the row at natural width; on a change, the
+        /// widget is resized on the next frame.
+        pub fn decide(&self) -> bool {
+            let Some(child) = self.child.borrow().clone() else {
+                return false;
+            };
+            let natural = child.measure(gtk::Orientation::Horizontal, -1).1;
+            let obj = self.obj();
+            let fits = self.row.upgrade().is_none_or(|row| {
+                // What the row counts for this widget now: nothing while hidden.
+                let reported = if obj.is_visible() && self.fits.get() {
+                    natural
+                } else {
+                    0
+                };
+                let needed = row.measure(gtk::Orientation::Horizontal, -1).1 - reported + natural;
+                row.width() >= needed
+            });
+            if fits != self.fits.get() {
+                self.fits.set(fits);
+                // Not from inside the allocation: resize on the next frame.
+                let weak = obj.downgrade();
+                glib::idle_add_local_once(move || {
+                    if let Some(widget) = weak.upgrade() {
+                        widget.queue_resize();
+                    }
+                });
+            }
+            fits
+        }
+    }
+
     impl WidgetImpl for FitOrHide {
         fn measure(&self, orientation: gtk::Orientation, for_size: i32) -> (i32, i32, i32, i32) {
             let Some(child) = self.child.borrow().clone() else {
@@ -64,22 +98,8 @@ mod imp {
                 &gtk::Allocation::new(0, 0, width.min(natural).max(minimum), height),
                 baseline,
             );
-            let fits = self.row.upgrade().is_none_or(|row| {
-                let reported = if self.fits.get() { natural } else { 0 };
-                let needed = row.measure(gtk::Orientation::Horizontal, -1).1 - reported + natural;
-                row.width() >= needed
-            });
+            let fits = self.decide();
             self.drawn.set(fits && width >= natural);
-            if fits != self.fits.get() {
-                self.fits.set(fits);
-                // Not from inside the allocation: resize on the next frame.
-                let weak = self.obj().downgrade();
-                glib::idle_add_local_once(move || {
-                    if let Some(widget) = weak.upgrade() {
-                        widget.queue_resize();
-                    }
-                });
-            }
         }
 
         fn snapshot(&self, snapshot: &gtk::Snapshot) {
@@ -108,9 +128,22 @@ impl FitOrHide {
         this.imp().child.replace(Some(child.clone().upcast()));
         this.imp().row.set(Some(row.upcast_ref()));
         this.set_can_target(false);
-        // Expanding, it is re-allocated (and re-decides) whenever the row's
-        // width changes, even while it asks for no width.
-        this.set_hexpand(true);
         this
+    }
+
+    /// An empty widget for the row's flexible space. Expanding, it is
+    /// re-allocated whenever the row's width changes, and has this re-decide
+    /// then, even while this asks for no width and so is not re-allocated.
+    pub fn spacer(&self) -> gtk::Widget {
+        let spacer = gtk::DrawingArea::new();
+        spacer.set_hexpand(true);
+        spacer.set_can_target(false);
+        let weak = self.downgrade();
+        spacer.connect_resize(move |_, _, _| {
+            if let Some(this) = weak.upgrade() {
+                this.imp().decide();
+            }
+        });
+        spacer.upcast()
     }
 }

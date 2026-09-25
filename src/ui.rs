@@ -646,7 +646,7 @@ fn icon_button(name: &str, pixel_size: i32) -> gtk::Button {
 
 /// "[Ctrl] + [Enter] to queue", the footer hint while a run is active.
 fn queue_hint_content() -> gtk::Box {
-    let hint = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+    let hint = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     hint.add_css_class("queue-hint");
     hint.set_valign(gtk::Align::Center);
     for (index, key) in ["Ctrl", "Enter"].iter().enumerate() {
@@ -1629,16 +1629,16 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
     attach_button.add_css_class("composer-action");
 
     let model_button = gtk::Button::new();
-    let model_row = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+    let model_row = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    model_row.add_css_class("composer-menu-row");
     let model_button_label = gtk::Label::new(Some("Loading models..."));
     model_button_label.set_xalign(0.0);
-    model_button_label.set_hexpand(true);
     model_button_label.set_ellipsize(pango::EllipsizeMode::End);
+    model_button_label.set_max_width_chars(32);
     model_button_label.add_css_class("composer-menu-title");
 
     let model_chevron = chevron_down_icon(10);
     model_chevron.add_css_class("composer-menu-arrow");
-    model_chevron.set_halign(gtk::Align::End);
     model_chevron.set_valign(gtk::Align::Center);
 
     model_row.append(&model_button_label);
@@ -1647,7 +1647,6 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
     model_button.add_css_class("composer-menu");
     model_button.set_tooltip_text(Some("Select model (Ctrl+M)"));
     model_button.set_sensitive(false);
-    model_button.set_hexpand(true);
 
     let model_popover = gtk::Popover::new();
     model_popover.set_parent(&model_button);
@@ -1685,16 +1684,15 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
     model_popover.set_child(Some(&popover_box));
 
     let variant_button = gtk::Button::new();
-    let variant_row = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+    let variant_row = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    variant_row.add_css_class("composer-menu-row");
     let variant_button_label = gtk::Label::new(Some("Default"));
     variant_button_label.set_xalign(0.0);
-    variant_button_label.set_hexpand(true);
     variant_button_label.set_ellipsize(pango::EllipsizeMode::End);
     variant_button_label.add_css_class("composer-menu-title");
 
     let variant_chevron = chevron_down_icon(10);
     variant_chevron.add_css_class("composer-menu-arrow");
-    variant_chevron.set_halign(gtk::Align::End);
     variant_chevron.set_valign(gtk::Align::Center);
 
     variant_row.append(&variant_button_label);
@@ -1762,22 +1760,35 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
     ));
     stop_button.set_visible(false);
 
-    let composer_controls = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    // Settings on the left, status and actions on the right, the spare width
+    // between them; the gaps are CSS border-spacing and margins (style.css).
+    let composer_controls = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    composer_controls.add_css_class("composer-footer");
     composer_controls.set_overflow(gtk::Overflow::Hidden);
     // Hidden rather than squeezing the model menus when the footer is narrow.
+    // Its gap before it is its own margin, so it goes with it.
     let queue_hint = FitOrHide::new(&queue_hint_content(), &composer_controls);
     queue_hint.set_valign(gtk::Align::Center);
     queue_hint.set_visible(false);
-    let usage_row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-    usage_row.set_hexpand(true);
-    usage_row.append(&context_usage);
-    usage_row.append(&queue_hint);
-    composer_controls.append(&attach_button);
-    composer_controls.append(&model_button);
-    composer_controls.append(&variant_button);
-    composer_controls.append(&usage_row);
-    composer_controls.append(&stop_button);
-    composer_controls.append(&send_button);
+    let settings_group = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    settings_group.add_css_class("composer-footer-group");
+    settings_group.append(&attach_button);
+    settings_group.append(&model_button);
+    settings_group.append(&variant_button);
+    let status_row = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    status_row.append(&context_usage);
+    status_row.append(&queue_hint);
+    let action_group = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    action_group.add_css_class("composer-footer-group");
+    action_group.append(&stop_button);
+    action_group.append(&send_button);
+    let status_group = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    status_group.add_css_class("composer-footer-status");
+    status_group.append(&status_row);
+    status_group.append(&action_group);
+    composer_controls.append(&settings_group);
+    composer_controls.append(&queue_hint.spacer());
+    composer_controls.append(&status_group);
 
     let composer_box = gtk::Box::new(gtk::Orientation::Vertical, 8);
     composer_box.set_margin_start(14);
