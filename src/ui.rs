@@ -245,7 +245,7 @@ struct State {
     abort_requested: HashSet<String>,
     loading_messages: HashSet<String>,
     loading_models: HashSet<String>,
-    /// Inbox IDs with a tray request (switch, cancel, send now) in flight.
+    /// Inbox IDs with a tray request (switch, cancel, resume) in flight.
     inbox_requests: HashSet<String>,
 }
 
@@ -475,8 +475,11 @@ struct Widgets {
     form_notice_open: gtk::Button,
     tray: gtk::Box,
     tray_header: gtk::Label,
-    tray_clear: gtk::Button,
+    tray_paused: gtk::Box,
+    tray_resume: gtk::Button,
     tray_rows: gtk::Box,
+    resume_warning: gtk::Box,
+    resume_warning_label: gtk::Label,
     composer_stack: gtk::Stack,
     prompt_host: gtk::Box,
     composer: gtk::TextView,
@@ -604,8 +607,10 @@ struct Controller {
     connected_once: bool,
     event_connected: bool,
     tab_shortcut_hint: bool,
-    /// What the tray widgets show (session, parked, rows); rebuilt on change.
+    /// What the tray widgets show (session, paused, rows); rebuilt on change.
     tray_shown: Option<(String, bool, Vec<TrayRow>)>,
+    /// The composer's resume warning, when shown.
+    resume_warning_shown: Option<String>,
 }
 
 fn register_icons() {
@@ -1102,6 +1107,7 @@ pub fn launch(
         event_connected: false,
         tab_shortcut_hint: false,
         tray_shown: None,
+        resume_warning_shown: None,
     }));
     controller.borrow_mut().self_weak = Rc::downgrade(&controller);
     if (zoom_level - 1.0).abs() > 0.001 {
@@ -1644,7 +1650,7 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
     stop_button.add_css_class("composer-action");
     stop_button.add_css_class("composer-stop");
     stop_button.set_tooltip_text(Some(
-        "Stop the run; waiting messages stay parked until you send them",
+        "Stop the run; waiting messages stay parked until you resume",
     ));
     stop_button.set_visible(false);
     let steer_button = gtk::Button::new();
@@ -1767,22 +1773,43 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
     tray.set_visible(false);
     let tray_head = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     tray_head.add_css_class("queue-tray-header");
+    let tray_paused = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    tray_paused.add_css_class("queue-tray-paused");
+    tray_paused.set_valign(gtk::Align::Center);
+    tray_paused.set_visible(false);
     let tray_header = gtk::Label::new(None);
     tray_header.set_xalign(0.0);
     tray_header.set_hexpand(true);
     tray_header.add_css_class("queue-tray-title");
-    let tray_clear = gtk::Button::with_label("Clear");
-    tray_clear.add_css_class("queue-tray-button");
-    tray_clear.set_valign(gtk::Align::Center);
-    tray_clear.set_tooltip_text(Some("Cancel every waiting message"));
+    let tray_resume = gtk::Button::with_label("▶ Resume");
+    tray_resume.add_css_class("queue-tray-resume");
+    tray_resume.set_valign(gtk::Align::Center);
+    tray_resume.set_visible(false);
+    tray_head.append(&tray_paused);
     tray_head.append(&tray_header);
-    tray_head.append(&tray_clear);
+    tray_head.append(&tray_resume);
     let tray_rows = gtk::Box::new(gtk::Orientation::Vertical, 0);
     tray.append(&tray_head);
     tray.append(&tray_rows);
 
+    // While the tray is paused and the draft has input: sending wakes the
+    // session, so the parked messages run too; see `refresh_resume_warning`.
+    let resume_warning = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    resume_warning.add_css_class("resume-warning");
+    resume_warning.set_margin_start(18);
+    resume_warning.set_margin_end(18);
+    resume_warning.set_margin_bottom(8);
+    resume_warning.set_visible(false);
+    let resume_warning_label = gtk::Label::new(None);
+    resume_warning_label.set_xalign(0.0);
+    resume_warning_label.set_hexpand(true);
+    resume_warning_label.set_wrap(true);
+    resume_warning_label.add_css_class("resume-warning-label");
+    resume_warning.append(&resume_warning_label);
+
     main.append(&form_notice);
     main.append(&tray);
+    main.append(&resume_warning);
     main.append(&composer_stack);
     root.set_end_child(Some(&main));
 
@@ -1901,8 +1928,11 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
         form_notice_open,
         tray,
         tray_header,
-        tray_clear,
+        tray_paused,
+        tray_resume,
         tray_rows,
+        resume_warning,
+        resume_warning_label,
         composer_stack,
         prompt_host,
         composer,
@@ -2512,14 +2542,14 @@ fn wire_callbacks(controller: &Rc<RefCell<Controller>>) {
                 Controller::stop(&controller);
             }
         });
-    let (steer_button, steer_menu, steer_option, queue_option, tray_clear) = {
+    let (steer_button, steer_menu, steer_option, queue_option, tray_resume) = {
         let this = controller.borrow();
         (
             this.widgets.steer_button.clone(),
             this.widgets.steer_menu.clone(),
             this.widgets.steer_menu_steer.clone(),
             this.widgets.steer_menu_queue.clone(),
-            this.widgets.tray_clear.clone(),
+            this.widgets.tray_resume.clone(),
         )
     };
     let weak = Rc::downgrade(controller);
@@ -2542,9 +2572,9 @@ fn wire_callbacks(controller: &Rc<RefCell<Controller>>) {
         });
     }
     let weak = Rc::downgrade(controller);
-    tray_clear.connect_clicked(move |_| {
+    tray_resume.connect_clicked(move |_| {
         if let Some(controller) = weak.upgrade() {
-            Controller::clear_tray(&controller);
+            Controller::resume_tray(&controller);
         }
     });
 
@@ -4635,8 +4665,8 @@ impl Controller {
         self.widgets.form_notice.set_visible(true);
     }
 
-    /// The active session's tray rows, and whether the session is parked
-    /// (idle with messages left).
+    /// The active session's tray rows, and whether the tray is paused (the
+    /// session is idle with messages left).
     fn active_tray(&self) -> Option<(String, bool, Vec<TrayRow>)> {
         let active = self.state.active.clone()?;
         let rows = session_tray_rows(
@@ -4644,44 +4674,67 @@ impl Controller {
             self.state.optimistic_prompts.get(&active),
             &self.state.inbox_requests,
         );
-        let parked = !self.active_is_busy();
-        Some((active, parked, rows))
+        let paused = !self.active_is_busy();
+        Some((active, paused, rows))
     }
 
-    /// The tray above the composer: "N waiting" while the session runs, "N
-    /// parked" when it is idle with items left. Rows switch mode (or "Send
-    /// now" when parked) and cancel; hidden when empty. Rebuilt only when
-    /// what it shows changed.
+    /// The tray above the composer, rows grouped in run order
+    /// ([`tray::tray_groups`]): "N waiting" while the session runs, where rows
+    /// switch mode and cancel; "Paused · N waiting" with one Resume when it
+    /// is idle with items left, where rows cancel and steered ones can be
+    /// queued. Hidden when empty. Rebuilt only when what it shows changed.
     fn refresh_tray(&mut self) {
         let shown = self.active_tray().filter(|(_, _, rows)| !rows.is_empty());
-        if shown == self.tray_shown {
-            return;
+        if shown != self.tray_shown {
+            self.tray_shown = shown.clone();
+            self.rebuild_tray(shown);
         }
-        self.tray_shown = shown.clone();
+        self.refresh_resume_warning();
+    }
+
+    fn rebuild_tray(&self, shown: Option<(String, bool, Vec<TrayRow>)>) {
         clear_box(&self.widgets.tray_rows);
-        let Some((_, parked, rows)) = shown else {
+        let Some((_, paused, rows)) = shown else {
             self.widgets.tray.set_visible(false);
             return;
         };
         self.widgets
             .tray_header
-            .set_label(&tray::header_text(rows.len(), parked));
-        self.widgets
-            .tray_clear
-            .set_sensitive(rows.iter().any(|row| !row.sending && !row.in_flight));
-        if parked {
-            self.widgets.tray.add_css_class("parked");
+            .set_label(&tray::header_text(rows.len(), paused));
+        self.widgets.tray_paused.set_visible(paused);
+        let resume = &self.widgets.tray_resume;
+        resume.set_visible(paused);
+        if paused {
+            self.widgets.tray.add_css_class("paused");
+            let queued = rows
+                .iter()
+                .filter(|row| row.delivery == protocol::Delivery::Queue)
+                .count();
+            resume.set_tooltip_text(Some(&tray::resume_tooltip(rows.len() - queued, queued)));
+            resume.set_sensitive(tray::resume_request(&rows).is_some());
         } else {
-            self.widgets.tray.remove_css_class("parked");
+            self.widgets.tray.remove_css_class("paused");
         }
-        for row in &rows {
-            let widget = self.tray_row_widget(row, parked);
-            self.widgets.tray_rows.append(&widget);
+        for group in tray::tray_groups(&rows, !paused) {
+            let label = gtk::Label::new(Some(&group.label));
+            label.set_xalign(0.0);
+            label.add_css_class("queue-tray-group");
+            self.widgets.tray_rows.append(&label);
+            for row in &group.rows {
+                let widget = self.tray_row_widget(row, paused);
+                self.widgets.tray_rows.append(&widget);
+            }
         }
         self.widgets.tray.set_visible(true);
+        debug_log(format!(
+            "tray {} rows={} resume={}",
+            if paused { "paused" } else { "running" },
+            rows.len(),
+            paused && tray::resume_request(&rows).is_some()
+        ));
     }
 
-    fn tray_row_widget(&self, row: &TrayRow, parked: bool) -> gtk::Box {
+    fn tray_row_widget(&self, row: &TrayRow, paused: bool) -> gtk::Box {
         let widget = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         widget.add_css_class("queue-tray-row");
         if row.sending {
@@ -4708,31 +4761,20 @@ impl Controller {
         }));
         widget.append(&badge);
         widget.append(&text);
-        let (label, tooltip, action) = if parked {
-            (
-                "Send now",
-                tray::send_now_tooltip(row.delivery),
-                RowAction::SendNow,
-            )
-        } else {
-            (
-                tray::switch_label(row.delivery),
-                tray::switch_tooltip(row.delivery),
-                RowAction::Switch,
-            )
-        };
-        let switch = gtk::Button::with_label(label);
-        switch.add_css_class("queue-tray-button");
-        switch.set_valign(gtk::Align::Center);
-        switch.set_tooltip_text(Some(tooltip));
+        let mut buttons = Vec::new();
+        if tray::shows_switch(row.delivery, paused) {
+            let switch = gtk::Button::with_label(tray::switch_label(row.delivery));
+            switch.add_css_class("queue-tray-button");
+            switch.set_tooltip_text(Some(tray::switch_tooltip(row.delivery, paused)));
+            buttons.push((switch, RowAction::Switch));
+        }
         let cancel = icon_button(ICON_CLOSE, -1);
         cancel.add_css_class("queue-tray-cancel");
-        cancel.set_valign(gtk::Align::Center);
         cancel.set_tooltip_text(Some("Cancel this message"));
-        let enabled = tray::row_request(row, action).is_some();
-        switch.set_sensitive(enabled);
-        cancel.set_sensitive(enabled);
-        for (button, action) in [(&switch, action), (&cancel, RowAction::Cancel)] {
+        buttons.push((cancel, RowAction::Cancel));
+        for (button, action) in buttons {
+            button.set_valign(gtk::Align::Center);
+            button.set_sensitive(tray::row_request(row, action, paused).is_some());
             let weak = self.self_weak.clone();
             let id = row.id.clone();
             button.connect_clicked(move |_| {
@@ -4740,9 +4782,8 @@ impl Controller {
                     Self::tray_action(&controller, &id, action);
                 }
             });
+            widget.append(&button);
         }
-        widget.append(&switch);
-        widget.append(&cancel);
         widget
     }
 
@@ -4751,20 +4792,15 @@ impl Controller {
     fn tray_action(controller: &Rc<RefCell<Self>>, inbox_id: &str, action: RowAction) {
         let command = {
             let mut this = controller.borrow_mut();
-            let Some((session_id, parked, rows)) = this.active_tray() else {
+            let Some((session_id, paused, rows)) = this.active_tray() else {
                 return;
             };
             let Some(row) = rows.iter().find(|row| row.id == inbox_id) else {
                 return;
             };
-            let Some(request) = tray::row_request(row, action) else {
+            let Some(request) = tray::row_request(row, action, paused) else {
                 return;
             };
-            // Resuming is for a parked session only: on a running one it
-            // would interrupt the run.
-            if request == InboxRequest::Resume && !parked {
-                return;
-            }
             this.state.inbox_requests.insert(inbox_id.to_owned());
             Self::refresh_tray_later(&this.self_weak);
             Command::Inbox {
@@ -4776,7 +4812,33 @@ impl Controller {
         controller.borrow().api.send(command);
     }
 
-    /// Rebuilds the tray once the clicked row button's handler has returned
+    /// Resume on a paused tray: wakes the session for every parked message
+    /// ([`tray::resume_request`]). The tray stays inert until the answer.
+    fn resume_tray(controller: &Rc<RefCell<Self>>) {
+        let command = {
+            let mut this = controller.borrow_mut();
+            let Some((session_id, paused, rows)) = this.active_tray() else {
+                return;
+            };
+            if !paused {
+                return;
+            }
+            let Some((inbox_id, request)) = tray::resume_request(&rows) else {
+                return;
+            };
+            debug_log(format!("tray resume {inbox_id} {request:?}"));
+            this.state.inbox_requests.insert(inbox_id.clone());
+            Self::refresh_tray_later(&this.self_weak);
+            Command::Inbox {
+                session_id,
+                inbox_id,
+                request,
+            }
+        };
+        controller.borrow().api.send(command);
+    }
+
+    /// Rebuilds the tray once the clicked button's handler has returned
     /// (removing a button inside its own click leaves GTK's pressed state
     /// dangling).
     fn refresh_tray_later(weak: &Weak<RefCell<Self>>) {
@@ -4788,30 +4850,37 @@ impl Controller {
         });
     }
 
-    /// Clear: cancels every waiting message that can act.
-    fn clear_tray(controller: &Rc<RefCell<Self>>) {
-        let commands = {
-            let mut this = controller.borrow_mut();
-            let Some((session_id, _, rows)) = this.active_tray() else {
-                return;
-            };
-            let mut commands = Vec::new();
-            for row in &rows {
-                if tray::row_request(row, RowAction::Cancel).is_some() {
-                    this.state.inbox_requests.insert(row.id.clone());
-                    commands.push(Command::Inbox {
-                        session_id: session_id.clone(),
-                        inbox_id: row.id.clone(),
-                        request: InboxRequest::Cancel,
-                    });
-                }
-            }
-            Self::refresh_tray_later(&this.self_weak);
-            commands
+    /// The warning above the composer while the tray is paused and the draft
+    /// has input ([`tray::resume_warning`]).
+    fn refresh_resume_warning(&mut self) {
+        let paused_count = match &self.tray_shown {
+            Some((_, true, rows)) => rows.len(),
+            _ => 0,
         };
-        for command in commands {
-            controller.borrow().api.send(command);
+        let has_input = self.state.active.as_ref().is_some_and(|active| {
+            self.state
+                .drafts
+                .get(active)
+                .is_some_and(|draft| !draft.text.trim().is_empty() || !draft.attachments.is_empty())
+        });
+        let warning = tray::resume_warning(paused_count, has_input);
+        if warning == self.resume_warning_shown {
+            return;
         }
+        debug_log(match &warning {
+            Some(_) => format!("resume-warning shown count={paused_count}"),
+            None => "resume-warning hidden".to_owned(),
+        });
+        match &warning {
+            Some(text) => {
+                self.widgets
+                    .resume_warning_label
+                    .set_label(&format!("▶ {text}"));
+                self.widgets.resume_warning.set_visible(true);
+            }
+            None => self.widgets.resume_warning.set_visible(false),
+        }
+        self.resume_warning_shown = warning;
     }
 
     /// A tray request's answer. Success changes nothing here: the inbox
@@ -5246,6 +5315,7 @@ impl Controller {
                 .send_button
                 .set_tooltip_text(Some("Send prompt"));
             self.widgets.send_button.set_sensitive(false);
+            self.refresh_resume_warning();
             return;
         };
         let busy = self.state.statuses.get(active).is_some_and(|s| s.is_busy());
@@ -5282,6 +5352,7 @@ impl Controller {
         self.widgets.send_button.set_sensitive(can_send);
         self.widgets.steer_button.set_sensitive(can_send);
         self.widgets.steer_menu.set_sensitive(can_send);
+        self.refresh_resume_warning();
     }
 
     fn selected_model_supports_attachments(&self) -> bool {
@@ -5998,7 +6069,7 @@ impl Controller {
     }
 
     /// Stop: `POST /interrupt` without `resume`, so every waiting message
-    /// stays parked (the tray then offers Send now). A stop pressed while an
+    /// stays parked (the tray then offers Resume). A stop pressed while an
     /// idle session's first send is still unanswered waits for it.
     fn stop(controller: &Rc<RefCell<Self>>) {
         let command = {

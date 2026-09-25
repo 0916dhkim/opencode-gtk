@@ -1226,9 +1226,69 @@ button.steer-option {
   font-weight: 700;
 }
 
+.queue-tray-paused {
+  min-width: 0.55em;
+  min-height: 0.55em;
+  margin-left: 0.6em;
+  border-radius: 0.12em;
+  background: @oc_bg_queue_tray_paused;
+}
+
+.queue-tray.paused .queue-tray-header {
+  padding-left: 0;
+}
+
+button.queue-tray-resume {
+  min-height: 1.85em;
+  padding: 0 0.85em;
+  background: @oc_bg_queue_tray_resume;
+  background-image: none;
+  box-shadow: none;
+  border: none;
+  border-radius: 999em;
+  color: @oc_fg_queue_tray_resume;
+  font-size: 0.9em;
+  font-weight: 700;
+}
+
+button.queue-tray-resume:hover {
+  background: @oc_bg_queue_tray_resume_hover;
+}
+
+button.queue-tray-resume:disabled {
+  background: @oc_bg_queue_tray_resume_disabled;
+  color: @oc_fg_queue_tray_resume_disabled;
+}
+
+/* Group labels: when the rows under them run. */
+.queue-tray-group {
+  padding: 0.45em 0 0.05em 0.75em;
+  border-top: 1px solid @oc_border_queue_tray_row;
+  color: @oc_fg_queue_tray_group;
+  font-size: 0.72em;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+}
+
 .queue-tray-row {
   padding: 0.3em 0 0.3em 0.6em;
+}
+
+.queue-tray-row + .queue-tray-row {
   border-top: 1px solid @oc_border_queue_tray_row;
+}
+
+/* Sending while the tray is paused also resumes the parked messages. */
+.resume-warning {
+  padding: 0.35em 0.89em;
+  border: 1px solid @oc_border_resume_warning;
+  border-radius: 0.5em;
+  background: @oc_bg_resume_warning;
+}
+
+.resume-warning-label {
+  color: @oc_fg_resume_warning;
+  font-size: 0.9em;
 }
 
 .queue-tray-row.sending {

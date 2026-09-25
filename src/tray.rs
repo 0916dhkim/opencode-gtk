@@ -6,8 +6,9 @@
 //! the turn ends. `POST /interrupt` without `resume` parks every waiting
 //! item. On a parked session, switching an item to steer wakes the session,
 //! which then delivers every parked steer at once and afterwards runs the
-//! parked queue one turn at a time. `POST /interrupt?resume=true` wakes it for
-//! the parked steers only; queued items stay parked.
+//! parked queue one turn at a time; a new prompt wakes it the same way (it
+//! joins the parked steers). `POST /interrupt?resume=true` wakes it for the
+//! parked steers only: queued items stay parked, so the tray never uses it.
 
 use std::collections::HashSet;
 
@@ -45,23 +46,16 @@ pub fn enter_mode(busy: bool, ctrl: bool) -> SendMode {
     }
 }
 
-/// The other mode, for a row's switch button.
-pub fn switched(delivery: Delivery) -> Delivery {
-    match delivery {
-        Delivery::Queue => Delivery::Steer,
-        _ => Delivery::Queue,
-    }
+fn is_queue(delivery: Delivery) -> bool {
+    delivery == Delivery::Queue
 }
 
-/// "Send now" on a parked row. A queued item is switched to steer, which
-/// wakes the session (the rest of the parked items then follow, steers first).
-/// A parked steer already has that mode (a PATCH would be a 409 that wakes
-/// nothing), so the session is resumed instead, which delivers the parked
-/// steers and leaves queued items parked.
-pub fn send_now_request(delivery: Delivery) -> InboxRequest {
-    match delivery {
-        Delivery::Queue => InboxRequest::SetDelivery(Delivery::Steer),
-        _ => InboxRequest::Resume,
+/// The other mode, for a row's switch button.
+pub fn switched(delivery: Delivery) -> Delivery {
+    if is_queue(delivery) {
+        Delivery::Steer
+    } else {
+        Delivery::Queue
     }
 }
 
@@ -69,21 +63,52 @@ pub fn send_now_request(delivery: Delivery) -> InboxRequest {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RowAction {
     Switch,
-    SendNow,
     Cancel,
 }
 
+/// Whether a row shows its switch button. While paused a queued row has
+/// none: switching it to steer would wake the session and run everything.
+/// A steered row can still be queued (that wakes nothing).
+pub fn shows_switch(delivery: Delivery, paused: bool) -> bool {
+    !paused || !is_queue(delivery)
+}
+
 /// The request for a row action, or `None` while the row cannot act (its
-/// prompt is still being sent, or a request for it is in flight).
-pub fn row_request(row: &TrayRow, action: RowAction) -> Option<InboxRequest> {
+/// prompt is still being sent, or a request for it is in flight) or the
+/// action is not offered.
+pub fn row_request(row: &TrayRow, action: RowAction, paused: bool) -> Option<InboxRequest> {
     if row.sending || row.in_flight {
         return None;
     }
-    Some(match action {
-        RowAction::Switch => InboxRequest::SetDelivery(switched(row.delivery)),
-        RowAction::SendNow => send_now_request(row.delivery),
-        RowAction::Cancel => InboxRequest::Cancel,
-    })
+    match action {
+        RowAction::Switch if shows_switch(row.delivery, paused) => {
+            Some(InboxRequest::SetDelivery(switched(row.delivery)))
+        }
+        RowAction::Switch => None,
+        RowAction::Cancel => Some(InboxRequest::Cancel),
+    }
+}
+
+/// Resume on a paused tray: the item to act on and the request that wakes
+/// the session for every parked message ([`InboxRequest::Resume`]). With a
+/// parked steer, that steer is bounced (queue, then steer again); with only
+/// queued items, the first one is steered, so it runs as the next turn and
+/// the rest follow. `None` while any row is busy (a send or another tray
+/// request, including an earlier Resume, is in flight).
+pub fn resume_request(rows: &[TrayRow]) -> Option<(String, InboxRequest)> {
+    if rows.is_empty() || rows.iter().any(|row| row.sending || row.in_flight) {
+        return None;
+    }
+    let target = rows
+        .iter()
+        .find(|row| !is_queue(row.delivery))
+        .or_else(|| rows.first())?;
+    let delivery = if is_queue(target.delivery) {
+        Delivery::Queue
+    } else {
+        Delivery::Steer
+    };
+    Some((target.id.clone(), InboxRequest::Resume(delivery)))
 }
 
 /// What a tray request's answer means for the client.
@@ -102,51 +127,88 @@ pub fn settlement(request: InboxRequest, result: Result<Settled, String>) -> Set
     match result {
         Ok(Settled::Done) => Settlement::Done,
         Ok(Settled::AlreadyResolved) => Settlement::Reconcile,
-        Err(error) => {
-            let what = match request {
-                InboxRequest::SetDelivery(_) => "switch",
-                InboxRequest::Cancel => "cancel",
-                InboxRequest::Resume => "send",
-            };
-            Settlement::Failed(format!("Could not {what} the waiting message: {error}"))
-        }
+        Err(error) => Settlement::Failed(match request {
+            InboxRequest::SetDelivery(_) => {
+                format!("Could not switch the waiting message: {error}")
+            }
+            InboxRequest::Cancel => format!("Could not cancel the waiting message: {error}"),
+            InboxRequest::Resume(_) => format!("Could not resume the waiting messages: {error}"),
+        }),
     }
 }
 
-/// "2 waiting" while the session runs, "2 parked" once it is idle with
-/// items left (after Stop, or when a queued item waits behind nothing).
-pub fn header_text(count: usize, parked: bool) -> String {
-    format!("{count} {}", if parked { "parked" } else { "waiting" })
+/// "3 waiting" while the session runs, "Paused · 3 waiting" once it is idle
+/// with items left (after Stop, or when a queued item waits behind nothing).
+pub fn header_text(count: usize, paused: bool) -> String {
+    if paused {
+        format!("Paused · {count} waiting")
+    } else {
+        format!("{count} waiting")
+    }
+}
+
+/// Resume's tooltip: what runs, in which order.
+pub fn resume_tooltip(steers: usize, queued: usize) -> String {
+    let total = steers + queued;
+    let all = if total == 1 {
+        "Runs the waiting message".to_owned()
+    } else {
+        format!("Runs all {total} waiting messages")
+    };
+    match (steers, queued) {
+        (_, 0) if total == 1 => format!("{all} in the next turn."),
+        (_, 0) => format!("{all} together in the next turn."),
+        (0, 1) => format!("{all} as the next turn."),
+        (0, _) => format!("{all}, each as its own turn."),
+        (steers, queued) => format!(
+            "{all}: the steered {} first, then {} as its own turn.",
+            if steers == 1 { "one" } else { "ones" },
+            if queued == 1 {
+                "the queued one"
+            } else {
+                "each queued one"
+            },
+        ),
+    }
+}
+
+/// The line above the composer while the tray is paused and the draft has
+/// input: sending wakes the session, so the parked messages run too.
+/// `paused_count` is 0 unless the tray is paused.
+pub fn resume_warning(paused_count: usize, has_input: bool) -> Option<String> {
+    if paused_count == 0 || !has_input {
+        return None;
+    }
+    Some(if paused_count == 1 {
+        "Sending also resumes the paused message — your message joins the next turn.".to_owned()
+    } else {
+        format!(
+            "Sending also resumes the {paused_count} paused messages — your message joins the next turn."
+        )
+    })
 }
 
 pub fn badge_text(delivery: Delivery) -> &'static str {
-    match delivery {
-        Delivery::Queue => "⏸ QUEUE",
-        _ => "↪ STEER",
+    if is_queue(delivery) {
+        "⏸ QUEUE"
+    } else {
+        "↪ STEER"
     }
 }
 
 pub fn switch_label(delivery: Delivery) -> &'static str {
-    match switched(delivery) {
-        Delivery::Queue => "→ Queue",
-        _ => "→ Steer",
+    if is_queue(switched(delivery)) {
+        "→ Queue"
+    } else {
+        "→ Steer"
     }
 }
 
-pub fn switch_tooltip(delivery: Delivery) -> &'static str {
-    match switched(delivery) {
-        Delivery::Queue => "Queue it instead: sent as a new turn once this run finishes",
-        _ => "Steer it instead: the agent reads it at its next step",
-    }
-}
-
-/// "Send now" tooltips, true to what the server does with the rest.
-pub fn send_now_tooltip(delivery: Delivery) -> &'static str {
-    match delivery {
-        Delivery::Queue => {
-            "Steer it, which restarts the session: parked steers go with it, then the queued ones"
-        }
-        _ => "Resume the session with the parked steer messages; queued ones stay parked",
+pub fn switch_tooltip(delivery: Delivery, paused: bool) -> &'static str {
+    match (is_queue(switched(delivery)), paused) {
+        (true, false) => "Queue it instead: sent as a new turn once this run finishes",
+        (true, true) => "Queue it instead: it runs as its own turn after the steered messages",
+        (false, _) => "Steer it instead: the agent reads it at its next step",
     }
 }
 
@@ -196,7 +258,7 @@ pub struct TrayRow {
     pub summary: String,
     /// Not in the server's inbox yet (its POST is in flight).
     pub sending: bool,
-    /// A switch/cancel/send-now request for it is in flight.
+    /// A switch/cancel/resume request for it is in flight.
     pub in_flight: bool,
 }
 
@@ -234,6 +296,55 @@ pub fn tray_rows(
     rows
 }
 
+/// Rows that run together, under a label saying when.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TrayGroup {
+    pub label: String,
+    pub rows: Vec<TrayRow>,
+}
+
+/// A group's label from its turn number.
+///
+/// Turns are numbered from the one that takes the steered messages:
+/// - while running, that is the current run, turn 1 ("THIS RUN · AT ITS
+///   NEXT STEP"); the k-th queued message is turn k + 1, the first of them
+///   "AFTER THIS RUN · TURN 2";
+/// - while paused, it is the next turn, turn 1 ("NEXT TURN"). Without
+///   parked steers the first queued message is that next turn; otherwise the
+///   k-th queued message is turn k + 1. Later turns read "TURN n".
+pub fn turn_label(turn: usize, steers: bool, running: bool) -> String {
+    match (running, steers, turn) {
+        (true, true, _) => "THIS RUN · AT ITS NEXT STEP".to_owned(),
+        (true, false, 2) => "AFTER THIS RUN · TURN 2".to_owned(),
+        (false, _, 1) => "NEXT TURN".to_owned(),
+        _ => format!("TURN {turn}"),
+    }
+}
+
+/// The rows in run order: every steered message in one group (they run
+/// together), then each queued message as its own group, keeping the tray's
+/// order within each kind. See [`turn_label`] for the numbering.
+pub fn tray_groups(rows: &[TrayRow], running: bool) -> Vec<TrayGroup> {
+    let (queued, steers): (Vec<&TrayRow>, Vec<&TrayRow>) =
+        rows.iter().partition(|row| is_queue(row.delivery));
+    let mut groups = Vec::new();
+    if !steers.is_empty() {
+        groups.push(TrayGroup {
+            label: turn_label(1, true, running),
+            rows: steers.into_iter().cloned().collect(),
+        });
+    }
+    // Turn 1 is the current run while running, or the steers' next turn.
+    let first = if running || !groups.is_empty() { 2 } else { 1 };
+    for (index, row) in queued.into_iter().enumerate() {
+        groups.push(TrayGroup {
+            label: turn_label(first + index, false, running),
+            rows: vec![row.clone()],
+        });
+    }
+    groups
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -245,6 +356,35 @@ mod tests {
             text: text.into(),
             attachments,
         }
+    }
+
+    fn row(id: &str, delivery: Delivery) -> TrayRow {
+        TrayRow {
+            id: id.into(),
+            delivery,
+            summary: id.into(),
+            sending: false,
+            in_flight: false,
+        }
+    }
+
+    fn view(groups: &[TrayGroup]) -> Vec<(String, Vec<&str>)> {
+        groups
+            .iter()
+            .map(|group| {
+                (
+                    group.label.clone(),
+                    group.rows.iter().map(|row| row.id.as_str()).collect(),
+                )
+            })
+            .collect()
+    }
+
+    fn owned(expected: &[(&str, &[&'static str])]) -> Vec<(String, Vec<&'static str>)> {
+        expected
+            .iter()
+            .map(|(label, ids)| ((*label).to_owned(), ids.to_vec()))
+            .collect()
     }
 
     #[test]
@@ -263,48 +403,127 @@ mod tests {
     }
 
     #[test]
-    fn send_now_steers_a_queued_item_and_resumes_for_a_parked_steer() {
+    fn groups_run_steers_together_then_each_queued_message() {
+        // Server order interleaves kinds; the tray shows run order.
+        let rows = [
+            row("q1", Delivery::Queue),
+            row("s1", Delivery::Steer),
+            row("q2", Delivery::Queue),
+            row("s2", Delivery::Steer),
+            row("q3", Delivery::Queue),
+        ];
         assert_eq!(
-            send_now_request(Delivery::Queue),
-            InboxRequest::SetDelivery(Delivery::Steer)
+            view(&tray_groups(&rows, true)),
+            owned(&[
+                ("THIS RUN · AT ITS NEXT STEP", &["s1", "s2"]),
+                ("AFTER THIS RUN · TURN 2", &["q1"]),
+                ("TURN 3", &["q2"]),
+                ("TURN 4", &["q3"]),
+            ])
         );
-        assert_eq!(send_now_request(Delivery::Steer), InboxRequest::Resume);
+        assert_eq!(
+            view(&tray_groups(&rows, false)),
+            owned(&[
+                ("NEXT TURN", &["s1", "s2"]),
+                ("TURN 2", &["q1"]),
+                ("TURN 3", &["q2"]),
+                ("TURN 4", &["q3"]),
+            ])
+        );
     }
 
     #[test]
-    fn row_actions_map_to_inbox_requests_unless_busy() {
-        let row = |delivery, sending, in_flight| TrayRow {
-            id: "msg_1".into(),
-            delivery,
-            summary: String::new(),
-            sending,
-            in_flight,
-        };
-        let steer = row(Delivery::Steer, false, false);
+    fn without_steers_the_first_queued_message_is_the_next_turn() {
+        let rows = [row("q1", Delivery::Queue), row("q2", Delivery::Queue)];
         assert_eq!(
-            row_request(&steer, RowAction::Switch),
+            view(&tray_groups(&rows, true)),
+            owned(&[("AFTER THIS RUN · TURN 2", &["q1"]), ("TURN 3", &["q2"])])
+        );
+        assert_eq!(
+            view(&tray_groups(&rows, false)),
+            owned(&[("NEXT TURN", &["q1"]), ("TURN 2", &["q2"])])
+        );
+        let steers = [row("s1", Delivery::Steer)];
+        assert_eq!(
+            view(&tray_groups(&steers, true)),
+            owned(&[("THIS RUN · AT ITS NEXT STEP", &["s1"])])
+        );
+        assert!(tray_groups(&[], false).is_empty());
+    }
+
+    #[test]
+    fn turn_labels_follow_the_numbering() {
+        assert_eq!(turn_label(1, true, true), "THIS RUN · AT ITS NEXT STEP");
+        assert_eq!(turn_label(2, false, true), "AFTER THIS RUN · TURN 2");
+        assert_eq!(turn_label(3, false, true), "TURN 3");
+        assert_eq!(turn_label(1, true, false), "NEXT TURN");
+        assert_eq!(turn_label(1, false, false), "NEXT TURN");
+        assert_eq!(turn_label(2, false, false), "TURN 2");
+    }
+
+    #[test]
+    fn paused_rows_offer_cancel_and_only_steered_rows_can_be_queued() {
+        let steer = row("s", Delivery::Steer);
+        let queue = row("q", Delivery::Queue);
+        // Running: switch both ways, and cancel.
+        assert!(shows_switch(Delivery::Steer, false) && shows_switch(Delivery::Queue, false));
+        assert_eq!(
+            row_request(&steer, RowAction::Switch, false),
             Some(InboxRequest::SetDelivery(Delivery::Queue))
         );
         assert_eq!(
-            row_request(&row(Delivery::Queue, false, false), RowAction::Switch),
+            row_request(&queue, RowAction::Switch, false),
             Some(InboxRequest::SetDelivery(Delivery::Steer))
         );
+        // Paused: "→ Steer" would wake the session, so it is not offered.
+        assert!(shows_switch(Delivery::Steer, true));
+        assert!(!shows_switch(Delivery::Queue, true));
         assert_eq!(
-            row_request(&steer, RowAction::SendNow),
-            Some(InboxRequest::Resume)
+            row_request(&steer, RowAction::Switch, true),
+            Some(InboxRequest::SetDelivery(Delivery::Queue))
         );
+        assert_eq!(row_request(&queue, RowAction::Switch, true), None);
+        for paused in [false, true] {
+            assert_eq!(
+                row_request(&queue, RowAction::Cancel, paused),
+                Some(InboxRequest::Cancel)
+            );
+        }
+        // Busy rows cannot act.
+        let busy = TrayRow {
+            in_flight: true,
+            ..steer.clone()
+        };
+        assert_eq!(row_request(&busy, RowAction::Cancel, false), None);
+        let sending = TrayRow {
+            sending: true,
+            in_flight: true,
+            ..steer
+        };
+        assert_eq!(row_request(&sending, RowAction::Switch, false), None);
+    }
+
+    #[test]
+    fn resume_bounces_a_parked_steer_or_steers_the_first_queued_message() {
+        let rows = [
+            row("q1", Delivery::Queue),
+            row("s1", Delivery::Steer),
+            row("s2", Delivery::Steer),
+        ];
         assert_eq!(
-            row_request(&steer, RowAction::Cancel),
-            Some(InboxRequest::Cancel)
+            resume_request(&rows),
+            Some(("s1".to_owned(), InboxRequest::Resume(Delivery::Steer)))
         );
+        let queued = [row("q1", Delivery::Queue), row("q2", Delivery::Queue)];
         assert_eq!(
-            row_request(&row(Delivery::Steer, false, true), RowAction::Cancel),
-            None
+            resume_request(&queued),
+            Some(("q1".to_owned(), InboxRequest::Resume(Delivery::Queue)))
         );
-        assert_eq!(
-            row_request(&row(Delivery::Steer, true, true), RowAction::Switch),
-            None
-        );
+        assert_eq!(resume_request(&[]), None);
+        // Disabled while a request (e.g. this Resume) is in flight.
+        let mut busy = rows.to_vec();
+        busy[0].in_flight = true;
+        assert_eq!(resume_request(&busy), None);
     }
 
     #[test]
@@ -320,15 +539,67 @@ mod tests {
             Settlement::Reconcile
         );
         assert_eq!(
-            settlement(InboxRequest::Resume, Err("server returned 500".into())),
-            Settlement::Failed("Could not send the waiting message: server returned 500".into())
+            settlement(
+                InboxRequest::Resume(Delivery::Steer),
+                Ok(Settled::AlreadyResolved)
+            ),
+            Settlement::Reconcile
+        );
+        assert_eq!(
+            settlement(
+                InboxRequest::Resume(Delivery::Queue),
+                Err("server returned 500".into())
+            ),
+            Settlement::Failed("Could not resume the waiting messages: server returned 500".into())
+        );
+    }
+
+    #[test]
+    fn headers_and_tooltips_say_what_runs() {
+        assert_eq!(header_text(2, false), "2 waiting");
+        assert_eq!(header_text(3, true), "Paused · 3 waiting");
+        assert_eq!(
+            resume_tooltip(1, 2),
+            "Runs all 3 waiting messages: the steered one first, then each queued one as its own turn."
+        );
+        assert_eq!(
+            resume_tooltip(2, 1),
+            "Runs all 3 waiting messages: the steered ones first, then the queued one as its own turn."
+        );
+        assert_eq!(
+            resume_tooltip(1, 0),
+            "Runs the waiting message in the next turn."
+        );
+        assert_eq!(
+            resume_tooltip(2, 0),
+            "Runs all 2 waiting messages together in the next turn."
+        );
+        assert_eq!(
+            resume_tooltip(0, 1),
+            "Runs the waiting message as the next turn."
+        );
+        assert_eq!(
+            resume_tooltip(0, 3),
+            "Runs all 3 waiting messages, each as its own turn."
+        );
+    }
+
+    #[test]
+    fn the_composer_warns_only_when_paused_with_input() {
+        assert_eq!(resume_warning(0, true), None, "not paused");
+        assert_eq!(resume_warning(3, false), None, "nothing typed");
+        assert_eq!(
+            resume_warning(3, true).as_deref(),
+            Some("Sending also resumes the 3 paused messages — your message joins the next turn.")
+        );
+        assert_eq!(
+            resume_warning(1, true).as_deref(),
+            Some("Sending also resumes the paused message — your message joins the next turn.")
         );
     }
 
     #[test]
     fn labels_follow_the_mockup() {
-        assert_eq!(header_text(2, false), "2 waiting");
-        assert_eq!(header_text(1, true), "1 parked");
         assert_eq!(badge_text(Delivery::Steer), "↪ STEER");
         assert_eq!(badge_text(Delivery::Queue), "⏸ QUEUE");
         assert_eq!(switch_label(Delivery::Steer), "→ Queue");

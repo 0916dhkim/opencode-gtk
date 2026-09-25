@@ -145,10 +145,15 @@ pub enum InboxRequest {
     SetDelivery(protocol::Delivery),
     /// `DELETE .../inbox/{inboxID}`.
     Cancel,
-    /// `POST .../interrupt?resume=true` on an idle session: wakes it for its
-    /// parked steers only (queued items stay parked). "Send now" on a parked
-    /// steer is the only sender of `resume=true`.
-    Resume,
+    /// Resume on a parked session, acting on the item with the given current
+    /// delivery: it wakes the session for every parked item (steers together
+    /// in the next turn, then each queued one as its own turn). Only a switch
+    /// to steer wakes it that way, so a queued item is `PATCH`ed to steer and
+    /// a steer is bounced, `PATCH`ed to queue and back to steer (it keeps its
+    /// place: the inbox is ordered by enqueue sequence). The client never
+    /// sends `POST /interrupt?resume=true`: it wakes the session for the
+    /// parked steers only and leaves queued items parked.
+    Resume(protocol::Delivery),
 }
 
 #[derive(Debug)]
@@ -944,30 +949,25 @@ impl Api {
         request: InboxRequest,
     ) -> Result<Settled> {
         let item = protocol::session_inbox_item_path(session_id, inbox_id);
-        let result = match request {
-            InboxRequest::SetDelivery(delivery) => self.send_empty(
+        let set = |delivery| {
+            self.send_empty(
                 Method::PATCH,
                 &item,
                 &protocol::InboxUpdateBody { delivery },
-            ),
+            )
+        };
+        let result = match request {
+            InboxRequest::SetDelivery(delivery) => set(delivery),
             InboxRequest::Cancel => self
                 .request(Method::DELETE, self.url(&item, &[])?)
                 .send()
                 .context("request failed")
                 .and_then(expect_success)
                 .map(|_| ()),
-            InboxRequest::Resume => self
-                .request(
-                    Method::POST,
-                    self.url(
-                        &protocol::session_interrupt_path(session_id),
-                        &[("resume".to_owned(), "true".to_owned())],
-                    )?,
-                )
-                .send()
-                .context("request failed")
-                .and_then(decode_json::<protocol::InterruptResponse>)
-                .map(|_| ()),
+            InboxRequest::Resume(protocol::Delivery::Queue) => set(protocol::Delivery::Steer),
+            InboxRequest::Resume(_) => {
+                set(protocol::Delivery::Queue).and_then(|()| set(protocol::Delivery::Steer))
+            }
         };
         match result {
             Ok(()) => Ok(Settled::Done),
@@ -1835,7 +1835,7 @@ mod tests {
 
     #[test]
     fn inbox_requests_use_their_routes_and_treat_conflicts_as_resolved() {
-        let (base, requests, server) = serve(6, |request| {
+        let (base, requests, server) = serve(9, |request| {
             match (request.line.split(' ').next().unwrap(), request.target()) {
                 ("PATCH", "/api/session/ses_a/inbox/msg_gone") => (
                     409,
@@ -1847,7 +1847,6 @@ mod tests {
                     .to_string(),
                 ),
                 ("DELETE", "/api/session/ses_a/inbox/msg_proxy") => (404, String::new()),
-                ("POST", _) => ok(json!({ "interrupted": false })),
                 _ => (204, String::new()),
             }
         });
@@ -1881,10 +1880,35 @@ mod tests {
                 .is_err(),
             "a bare 404 is an error, not a resolved item"
         );
+        // Resume: a queued item is steered; a steer is bounced (queue, then
+        // steer). Never `interrupt?resume=true`.
         assert_eq!(
-            api.inbox_request("ses_a", "msg_1", InboxRequest::Resume)
-                .unwrap(),
+            api.inbox_request(
+                "ses_a",
+                "msg_q",
+                InboxRequest::Resume(protocol::Delivery::Queue)
+            )
+            .unwrap(),
             Settled::Done
+        );
+        assert_eq!(
+            api.inbox_request(
+                "ses_a",
+                "msg_s",
+                InboxRequest::Resume(protocol::Delivery::Steer)
+            )
+            .unwrap(),
+            Settled::Done
+        );
+        assert_eq!(
+            api.inbox_request(
+                "ses_a",
+                "msg_gone",
+                InboxRequest::Resume(protocol::Delivery::Steer)
+            )
+            .unwrap(),
+            Settled::AlreadyResolved,
+            "a bounce that finds the item gone stops at the first 409"
         );
         server.join().unwrap();
         let requests = requests.lock().unwrap();
@@ -1900,12 +1924,29 @@ mod tests {
                 "PATCH /api/session/ses_a/inbox/msg_gone HTTP/1.1",
                 "DELETE /api/session/ses_a/inbox/msg_1 HTTP/1.1",
                 "DELETE /api/session/ses_a/inbox/msg_proxy HTTP/1.1",
-                "POST /api/session/ses_a/interrupt?resume=true HTTP/1.1",
+                "PATCH /api/session/ses_a/inbox/msg_q HTTP/1.1",
+                "PATCH /api/session/ses_a/inbox/msg_s HTTP/1.1",
+                "PATCH /api/session/ses_a/inbox/msg_s HTTP/1.1",
+                "PATCH /api/session/ses_a/inbox/msg_gone HTTP/1.1",
             ]
         );
-        assert_eq!(requests[0].json(), json!({ "delivery": "steer" }));
-        assert_eq!(requests[1].json(), json!({ "delivery": "queue" }));
-        assert!(requests[3].body.is_empty() && requests[5].body.is_empty());
+        let bodies: Vec<Value> = [0, 1, 5, 6, 7, 8]
+            .into_iter()
+            .map(|index| requests[index].json())
+            .collect();
+        let delivery = |delivery: &str| json!({ "delivery": delivery });
+        assert_eq!(
+            bodies,
+            [
+                delivery("steer"),
+                delivery("queue"),
+                delivery("steer"),
+                delivery("queue"),
+                delivery("steer"),
+                delivery("queue"),
+            ]
+        );
+        assert!(requests[3].body.is_empty());
     }
 
     /// Accepts `hang_ups` connections and closes each after reading the whole

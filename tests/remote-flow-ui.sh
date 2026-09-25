@@ -225,6 +225,7 @@ GSETTINGS_BACKEND=memory \
 GDK_BACKEND=x11 \
 GTK_A11Y=none \
 NO_AT_BRIDGE=1 \
+OPENCODE_GTK_DEBUG=1 \
 OPENCODE_SERVER_PASSWORD="${password}" \
 "${binary}" --server "${address}" --username opencode >"${app_log}" 2>&1 &
 app_pid=$!
@@ -233,19 +234,69 @@ app_pid=$!
 #
 # While a run is active the composer shows Stop and the split Steer button (ui.rs refresh_send_button):
 # Enter steers (no `delivery`), Ctrl+Enter queues (`delivery: "queue"`). Waiting messages sit in the
-# tray right above the composer (ui.rs refresh_tray), oldest first; each row has a switch button
-# ("→ Queue" / "→ Steer", or "Send now" once parked) and ✕. Layout estimates, measured on a
-# 1180x820 Xvfb screenshot: Stop ~ W-165,H-51; the last tray row's centre ~ H-191, rows 34 px apart;
-# a row's switch/Send now button ~ W-93, its ✕ ~ W-41.
-tray_row_y() { echo $((HEIGHT - 191 - ($2 - $1) * 34)); }  # tray_row_y ROW COUNT (1-based)
-tray_points() {  # tray_points X ROW COUNT -> a few candidate points around the estimate
+# tray right above the composer (ui.rs refresh_tray), grouped in run order: the steered ones under one
+# label, then each queued one under its own. Running rows have a switch button ("→ Queue" /
+# "→ Steer") and ✕; paused rows only ✕ and, on steered rows, "→ Queue"; the paused header has Resume.
+# Layout estimates, measured on a 1180x820 Xvfb screenshot (one row per group): Stop ~ W-165,H-51;
+# the last row's centre ~ H-190, groups 53 px apart; a row's switch button ~ W-93, its ✕ ~ W-41;
+# Resume ~ W-68, 51 px above the first row. The resume warning above the composer (shown while the
+# tray is paused and the draft has text) moves the tray up, so it is cleared before any click.
+tray_row_y() { echo $((HEIGHT - 190 - ($2 - $1) * 53)); }  # tray_row_y GROUP COUNT (1-based)
+tray_points() {  # tray_points X GROUP COUNT -> a few candidate points around the estimate
   local x="$1" y
   y="$(tray_row_y "$2" "$3")"
   echo "${x},${y} $((x + 6)),${y} $((x - 6)),$((y + 3)) ${x},$((y - 4))"
 }
+resume_points() {  # resume_points COUNT -> candidate points on the paused header's Resume
+  local x=$((WIDTH - 68)) y
+  y=$(( $(tray_row_y 1 "$1") - 51 ))
+  echo "${x},${y} $((x + 8)),${y} $((x - 8)),$((y + 2)) ${x},$((y - 3))"
+}
+
+# The client's debug log (OPENCODE_GTK_DEBUG, in ${app_log}): app_mark, then app_expect NAME REGEX.
+app_line=0
+app_mark() { app_line="$(wc -l <"${app_log}")"; }
+app_expect() {
+  local name="$1" pattern="$2"
+  for _ in $(seq 1 30); do
+    if tail -n "+$((app_line + 1))" "${app_log}" | grep -Eq "${pattern}"; then
+      pass "${name}"
+      return 0
+    fi
+    sleep 0.2
+  done
+  fail "${name}" "no client log line matching ${pattern}"
+  return 1
+}
+
+# ev_order NAME EXPR_A EXPR_B -- both records exist after ${mark} and A comes first.
+ev_order() {
+  local name="$1" first second
+  first="$(logq wait "${log}" --after "${mark}" --timeout "${timeout_s}" --expr "$2")" || { fail "${name}" "missing: $2"; return 1; }
+  second="$(logq wait "${log}" --after "${mark}" --timeout "${timeout_s}" --expr "$3")" || { fail "${name}" "missing: $3"; return 1; }
+  if (( $(field "${first}" 'r["seq"]') < $(field "${second}" 'r["seq"]') )); then
+    pass "${name}"
+  else
+    fail "${name}" "out of order: ${first} / ${second}"
+  fi
+}
+
+stop_and_park() {  # stop_and_park LABEL
+  mark_now
+  click_until "$1.stop" \
+    "http and route == 'session.interrupt' and p.get('sessionID') == '${new_session}' and 'resume' not in q" \
+    "$((WIDTH - 165)),$((HEIGHT - 51)) $((WIDTH - 160)),$((HEIGHT - 46)) $((WIDTH - 170)),$((HEIGHT - 56))"
+  expect "$1.interrupted" "ev == 'session.execution.interrupted' and r.get('sessionID') == '${new_session}'"
+  mark_now
+  if stray="$(logq wait "${log}" --after "${mark}" --timeout 2 --expr "ev in ('session.inbox.delivered', 'session.execution.started') and r.get('sessionID') == '${new_session}'")"; then
+    fail "$1.nothing-runs" "a parked message ran after Stop: ${stray}"
+  else
+    pass "$1.nothing-runs"
+  fi
+}
 
 steer_queue_flow() {
-  local steer_id="" queue_id="" extra_id=""
+  local steer_id="" queue_id="" extra_id="" first_id="" second_id=""
   geometry
   mark_now
   key ctrl+g
@@ -264,6 +315,7 @@ steer_queue_flow() {
     queue_id="$(field "${found}" 'r["body"]["id"]')"
   fi
   sleep 1
+  # Groups: [steer], [queue]. Once queued, the steer is the first queued group: still group 1.
   mark_now
   click_until "tray.switch-to-queue" \
     "http and route == 'session.inbox.update' and p.get('inboxID') == '${steer_id}' and b.get('delivery') == 'queue' and r['status'] == 204" \
@@ -287,38 +339,64 @@ steer_queue_flow() {
     "http and route == 'session.inbox.cancel' and p.get('inboxID') == '${extra_id}' and r['status'] == 204" \
     "$(tray_points $((WIDTH - 41)) 3 3)"
   sleep 0.8
+  app_mark
+  stop_and_park "stop"
+  app_expect "tray.paused-header" "tray paused rows=2 resume=true"
+  # Paused: the queued row (group 2) has no "→ Steer"; its old place is empty.
   mark_now
-  click_until "stop.parks" \
-    "http and route == 'session.interrupt' and p.get('sessionID') == '${new_session}' and 'resume' not in q" \
-    "$((WIDTH - 165)),$((HEIGHT - 51)) $((WIDTH - 160)),$((HEIGHT - 46)) $((WIDTH - 170)),$((HEIGHT - 56))"
-  expect "stop.interrupted" "ev == 'session.execution.interrupted' and r.get('sessionID') == '${new_session}'"
-  mark_now
-  if stray="$(logq wait "${log}" --after "${mark}" --timeout 2 --expr "ev in ('session.inbox.delivered', 'session.execution.started') and r.get('sessionID') == '${new_session}'")"; then
-    fail "stop.nothing-runs" "a parked message ran after Stop: ${stray}"
+  click_at "$((WIDTH - 92))" "$(tray_row_y 2 2)"
+  if stray="$(logq wait "${log}" --after "${mark}" --timeout 2 --expr "http and route == 'session.inbox.update'")"; then
+    fail "paused.no-steer-switch" "a paused queued row switched: ${stray}"
   else
-    pass "stop.nothing-runs"
+    pass "paused.no-steer-switch"
   fi
+  # Typing while paused warns that sending resumes the parked messages.
+  app_mark
+  key ctrl+g
+  type_text "Warning check"
+  app_expect "paused.warning-shown" "resume-warning shown count=2"
+  app_mark
+  key ctrl+a
+  key BackSpace
+  app_expect "paused.warning-hidden" "resume-warning hidden"
+  sleep 0.5
+  # Resume with a parked steer bounces it (queue, then steer): everything runs, the steer first.
   mark_now
-  # Parked: row 1 (the steer) offers Send now, which resumes the session for its steers.
-  click_until "tray.send-now-steer" \
-    "http and route == 'session.interrupt' and p.get('sessionID') == '${new_session}' and q.get('resume') == 'true'" \
-    "$(tray_points $((WIDTH - 93)) 1 2)"
-  expect "send-now.steer-delivered" "ev == 'session.inbox.delivered' and r.get('inboxID') == '${steer_id}'"
-  if expect "send-now.queue-stays" "ev == 'session.execution.succeeded' and r.get('sessionID') == '${new_session}'" "${timeout_s}"; then
-    if logq wait "${log}" --after "${mark}" --timeout 0.5 --expr "ev == 'session.inbox.delivered' and r.get('inboxID') == '${queue_id}'" >/dev/null; then
-      fail "send-now.queue-parked" "resume delivered the queued message too"
-    else
-      pass "send-now.queue-parked"
-    fi
-  fi
+  click_until "tray.resume-bounce-queue" \
+    "http and route == 'session.inbox.update' and p.get('inboxID') == '${steer_id}' and b.get('delivery') == 'queue' and r['status'] == 204" \
+    "$(resume_points 2)"
+  expect "tray.resume-bounce-steer" "http and route == 'session.inbox.update' and p.get('inboxID') == '${steer_id}' and b.get('delivery') == 'steer' and r['status'] == 204"
+  ev_order "resume.steer-then-queue" \
+    "ev == 'session.inbox.delivered' and r.get('inboxID') == '${steer_id}'" \
+    "ev == 'session.inbox.delivered' and r.get('inboxID') == '${queue_id}'"
+  expect "resume.ran" "ev == 'session.execution.succeeded' and r.get('sessionID') == '${new_session}'" "$((timeout_s + 15))"
   sleep 1
+
+  # Only queued messages parked: Resume steers the first one; the other follows as its own turn.
   mark_now
-  # Parked again with the queued message alone: Send now switches it to steer, which wakes the session.
-  click_until "tray.send-now-queue" \
-    "http and route == 'session.inbox.update' and p.get('inboxID') == '${queue_id}' and b.get('delivery') == 'steer' and r['status'] == 204" \
-    "$(tray_points $((WIDTH - 93)) 1 1)"
-  expect "send-now.queue-delivered" "ev == 'session.inbox.delivered' and r.get('inboxID') == '${queue_id}'"
-  expect "send-now.queue-ran" "ev == 'session.execution.succeeded' and r.get('sessionID') == '${new_session}'" "${timeout_s}"
+  key ctrl+g
+  type_text "Second slow run [[scenario:slow]]"
+  key Return
+  expect "queue-only.run" "ev == 'session.text.delta' and r.get('sessionID') == '${new_session}'" "${timeout_s}"
+  sleep 0.5
+  for n in first second; do
+    mark_now
+    type_text "Queued ${n} note [[scenario:text]]"
+    key ctrl+Return
+    if expect "queue-only.post-${n}" "http and route == 'session.prompt' and 'Queued ${n} note' in (b.get('text') or '') and b.get('delivery') == 'queue'"; then
+      if [[ "${n}" == first ]]; then first_id="$(field "${found}" 'r["body"]["id"]')"; else second_id="$(field "${found}" 'r["body"]["id"]')"; fi
+    fi
+  done
+  sleep 1
+  stop_and_park "queue-only"
+  mark_now
+  click_until "tray.resume-queue-only" \
+    "http and route == 'session.inbox.update' and p.get('inboxID') == '${first_id}' and b.get('delivery') == 'steer' and r['status'] == 204" \
+    "$(resume_points 2)"
+  ev_order "resume.queue-in-order" \
+    "ev == 'session.inbox.delivered' and r.get('inboxID') == '${first_id}'" \
+    "ev == 'session.inbox.delivered' and r.get('inboxID') == '${second_id}'"
+  expect "resume.queue-ran" "ev == 'session.execution.succeeded' and r.get('sessionID') == '${new_session}'" "$((timeout_s + 15))"
 }
 
 # ------------------------------------------------------------ 1. bootstrap
@@ -518,6 +596,7 @@ expect_none "no.form-answer" 'http and route == "session.form.reply"' "never aut
 expect_none "no.blank-rename" 'http and route == "session.update" and not (b.get("title") or "").strip()' "R2.7"
 expect_none "no.server-errors" 'http and r["status"] >= 500'
 expect_none "no.prompt-resume" 'http and route == "session.prompt" and "resume" in b["keys"]' "prompts never carry resume"
+expect_none "no.interrupt-resume" 'http and route == "session.interrupt" and q.get("resume") == "true"' "Resume switches items to steer; interrupt?resume=true leaves queued items parked"
 expect_none "no.steer-delivery" 'http and route == "session.prompt" and b.get("delivery") not in (None, "queue")' "a steer omits delivery"
 
 # ------------------------------------------------------------ 11. persisted state

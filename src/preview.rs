@@ -76,14 +76,6 @@ struct Waiting {
     created: u64,
 }
 
-/// Which waiting prompts a wake may deliver (like the server's inbox):
-/// steers only, or steers first and then the queue, one turn at a time.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Wake {
-    Steers,
-    Input,
-}
-
 impl State {
     pub fn new() -> Self {
         let mut messages = HashMap::new();
@@ -113,6 +105,12 @@ impl State {
                     protocol::Delivery::Queue,
                     CREATED + 75_000,
                 ),
+                waiting(
+                    "msg_running_review",
+                    "open a PR for review",
+                    protocol::Delivery::Queue,
+                    CREATED + 76_000,
+                ),
             ],
         );
         inbox.insert(
@@ -129,6 +127,12 @@ impl State {
                     "then update the changelog",
                     protocol::Delivery::Queue,
                     CREATED + 75_000,
+                ),
+                waiting(
+                    "msg_parked_review",
+                    "open a PR for review",
+                    protocol::Delivery::Queue,
+                    CREATED + 76_000,
                 ),
             ],
         );
@@ -415,40 +419,27 @@ impl State {
                 created,
             });
         if !self.busy.contains(session_id) {
-            self.run(session_id, Wake::Input);
+            self.run(session_id);
         }
     }
 
-    /// A tray request: switch (a steer wakes an idle session), cancel, or
-    /// resume an idle session for its steers. Mirrors the server's 409 for
-    /// an item that is gone or already in that mode.
+    /// A tray request, like the client's API calls: switch (a switch to
+    /// steer wakes an idle session for everything), cancel, or Resume (a
+    /// queued item is steered; a steer is queued and steered again). Mirrors
+    /// the server's 409 for an item that is gone or already in that mode.
     fn inbox_request(
         &mut self,
         session_id: &str,
         inbox_id: &str,
         request: InboxRequest,
     ) -> Settled {
-        let busy = self.busy.contains(session_id);
-        let waiting = self.inbox.entry(session_id.to_owned()).or_default();
-        let index = waiting.iter().position(|item| item.id == inbox_id);
         match request {
             InboxRequest::SetDelivery(delivery) => {
-                let Some(index) = index.filter(|index| waiting[*index].delivery != delivery) else {
-                    return Settled::AlreadyResolved;
-                };
-                waiting[index].delivery = delivery;
-                self.push_event(
-                    session_id,
-                    CREATED + 85_000,
-                    "session.inbox.delivery.changed",
-                    json!({ "inboxID": inbox_id, "delivery": delivery }),
-                );
-                if delivery == protocol::Delivery::Steer && !busy {
-                    self.run(session_id, Wake::Input);
-                }
+                self.set_delivery(session_id, inbox_id, delivery)
             }
             InboxRequest::Cancel => {
-                if let Some(index) = index {
+                let waiting = self.inbox.entry(session_id.to_owned()).or_default();
+                if let Some(index) = waiting.iter().position(|item| item.id == inbox_id) {
                     waiting.remove(index);
                     self.push_event(
                         session_id,
@@ -457,20 +448,55 @@ impl State {
                         json!({ "inboxID": inbox_id }),
                     );
                 }
+                Settled::Done
             }
-            InboxRequest::Resume => {
-                if !busy {
-                    self.run(session_id, Wake::Steers);
+            InboxRequest::Resume(protocol::Delivery::Queue) => {
+                self.set_delivery(session_id, inbox_id, protocol::Delivery::Steer)
+            }
+            InboxRequest::Resume(_) => {
+                match self.set_delivery(session_id, inbox_id, protocol::Delivery::Queue) {
+                    Settled::Done => {
+                        self.set_delivery(session_id, inbox_id, protocol::Delivery::Steer)
+                    }
+                    resolved => resolved,
                 }
             }
+        }
+    }
+
+    /// `PATCH .../inbox/{id}`: a conditional switch from the other mode.
+    fn set_delivery(
+        &mut self,
+        session_id: &str,
+        inbox_id: &str,
+        delivery: protocol::Delivery,
+    ) -> Settled {
+        let busy = self.busy.contains(session_id);
+        let waiting = self.inbox.entry(session_id.to_owned()).or_default();
+        let Some(item) = waiting
+            .iter_mut()
+            .find(|item| item.id == inbox_id && item.delivery != delivery)
+        else {
+            return Settled::AlreadyResolved;
+        };
+        item.delivery = delivery;
+        self.push_event(
+            session_id,
+            CREATED + 85_000,
+            "session.inbox.delivery.changed",
+            json!({ "inboxID": inbox_id, "delivery": delivery }),
+        );
+        if delivery == protocol::Delivery::Steer && !busy {
+            self.run(session_id);
         }
         Settled::Done
     }
 
-    /// Delivers waiting prompts like the server's runner: every steer at
-    /// once, then (for an input wake) one queued prompt per turn, each with
-    /// a canned reply streamed as v2 events that match the stored entries.
-    fn run(&mut self, session_id: &str, wake: Wake) {
+    /// Delivers waiting prompts like the server's runner after a wake (a
+    /// prompt or a switch to steer): every steer at once, then one queued
+    /// prompt per turn, each with a canned reply streamed as v2 events that
+    /// match the stored entries.
+    fn run(&mut self, session_id: &str) {
         let mut started = false;
         loop {
             let waiting = self.inbox.entry(session_id.to_owned()).or_default();
@@ -481,7 +507,7 @@ impl State {
                 .collect();
             let batch = if !steers.is_empty() {
                 steers
-            } else if wake == Wake::Input && !waiting.is_empty() {
+            } else if !waiting.is_empty() {
                 vec![waiting[0].clone()]
             } else {
                 break;
@@ -1046,7 +1072,8 @@ mod tests {
             tray(&live),
             [
                 ("msg_running_steer".to_owned(), protocol::Delivery::Steer),
-                ("msg_running_queue".to_owned(), protocol::Delivery::Queue)
+                ("msg_running_queue".to_owned(), protocol::Delivery::Queue),
+                ("msg_running_review".to_owned(), protocol::Delivery::Queue)
             ]
         );
         let rows = render(&page.messages);
@@ -1065,7 +1092,7 @@ mod tests {
             delivery: Some(protocol::Delivery::Queue),
         });
         assert_eq!(replay(&mut state, &mut live), ["session.inbox.enqueued"]);
-        assert_eq!(live.tray_items().len(), 3);
+        assert_eq!(live.tray_items().len(), 4);
 
         // Switch, and a switch to the mode it already has.
         let switch = |state: &mut State, id: &str, delivery| {
@@ -1103,14 +1130,14 @@ mod tests {
             replay(&mut state, &mut live),
             ["session.execution.interrupted"]
         );
-        assert_eq!(live.tray_items().len(), 3);
+        assert_eq!(live.tray_items().len(), 4);
         switch(&mut state, "msg_more", protocol::Delivery::Steer);
         let types = replay(&mut state, &mut live);
         let delivered: Vec<_> = types
             .iter()
             .filter(|kind| *kind == "session.inbox.delivered")
             .collect();
-        assert_eq!(delivered.len(), 3);
+        assert_eq!(delivered.len(), 4);
         assert_eq!(types.last().unwrap(), "session.execution.succeeded");
         assert!(live.tray_items().is_empty());
         let mut reloaded = Conversation::default();
@@ -1121,31 +1148,89 @@ mod tests {
         );
     }
 
+    /// Resume as the tray sends it, and the inbox IDs delivered, in order.
+    fn resume(state: &mut State, live: &mut Conversation, session_id: &str) -> Vec<String> {
+        let rows = crate::tray::tray_rows(&live.tray_items(), None, None, &HashSet::new());
+        let (inbox_id, request) = crate::tray::resume_request(&rows).unwrap();
+        assert!(matches!(
+            state.handle(Command::Inbox {
+                session_id: session_id.into(),
+                inbox_id,
+                request,
+            }),
+            UiEvent::InboxSettled {
+                result: Ok(Settled::Done),
+                ..
+            }
+        ));
+        let mut delivered = Vec::new();
+        for event in state.take_server_events() {
+            let UiEvent::ServerEvent(envelope) = event else {
+                panic!("unexpected {event:?}");
+            };
+            live.apply_event(&envelope.payload);
+            if envelope.payload["type"] == "session.inbox.delivered" {
+                delivered.push(
+                    envelope.payload["data"]["inboxID"]
+                        .as_str()
+                        .unwrap()
+                        .to_owned(),
+                );
+            }
+        }
+        delivered
+    }
+
     #[test]
-    fn resuming_a_parked_session_sends_its_steers_only() {
+    fn resume_runs_every_parked_message_in_order() {
+        // A parked steer and two queued messages: the steer is bounced.
         let mut state = State::new();
         let page = state.message_page(PARKED_ID, None);
         let mut live = Conversation::default();
         live.replace_from_api(&page.messages, None);
         live.sync_queued(page.queued.as_deref().unwrap());
-        assert_eq!(live.tray_items().len(), 2);
+        assert_eq!(live.tray_items().len(), 3);
+        assert_eq!(
+            resume(&mut state, &mut live, PARKED_ID),
+            ["msg_parked_steer", "msg_parked_queue", "msg_parked_review"]
+        );
+        assert!(live.tray_items().is_empty());
+
+        // Only queued messages: the first is steered and the rest follow.
+        let page = state.message_page(RUNNING_ID, None);
+        let mut live = Conversation::default();
+        live.replace_from_api(&page.messages, None);
+        live.sync_queued(page.queued.as_deref().unwrap());
+        state.handle(Command::Abort {
+            session_id: RUNNING_ID.into(),
+        });
         state.handle(Command::Inbox {
-            session_id: PARKED_ID.into(),
-            inbox_id: "msg_parked_steer".into(),
-            request: InboxRequest::Resume,
+            session_id: RUNNING_ID.into(),
+            inbox_id: "msg_running_steer".into(),
+            request: InboxRequest::Cancel,
         });
         replay(&mut state, &mut live);
         assert_eq!(
             tray(&live),
-            [("msg_parked_queue".to_owned(), protocol::Delivery::Queue)]
+            [
+                ("msg_running_queue".to_owned(), protocol::Delivery::Queue),
+                ("msg_running_review".to_owned(), protocol::Delivery::Queue)
+            ]
         );
-        state.handle(Command::Inbox {
-            session_id: PARKED_ID.into(),
-            inbox_id: "msg_parked_queue".into(),
-            request: InboxRequest::Cancel,
-        });
-        assert_eq!(replay(&mut state, &mut live), ["session.inbox.cancelled"]);
+        assert_eq!(
+            resume(&mut state, &mut live, RUNNING_ID),
+            ["msg_running_queue", "msg_running_review"]
+        );
         assert!(live.tray_items().is_empty());
+        assert_eq!(
+            state.inbox_request(
+                RUNNING_ID,
+                "msg_running_queue",
+                InboxRequest::Resume(protocol::Delivery::Queue)
+            ),
+            Settled::AlreadyResolved,
+            "a delivered item is resolved"
+        );
     }
 
     #[test]

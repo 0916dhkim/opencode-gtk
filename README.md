@@ -23,9 +23,9 @@ Prompts always use the server's default agent; there is no agent picker. Forms (
 
 The composer stays usable while a session runs. It then shows **Stop** and a **Steer** button: `Enter` (or **Steer**) steers the message into the current run, and the agent reads it at its next step without stopping; `Ctrl+Enter` (or **Queue for after** in the button's menu) queues it as a new turn once the run finishes. On an idle session both keys simply send.
 
-Messages the server has not delivered yet wait in a tray above the composer, oldest first, with their mode. Each row can switch mode (**→ Queue** / **→ Steer**) or be cancelled (✕); **Clear** cancels them all. Delivered messages move into the transcript.
+Messages the server has not delivered yet wait in a tray above the composer, grouped in the order they will run: the steered ones together ("This run · at its next step"), then each queued one as its own turn ("After this run · Turn 2", "Turn 3", …). Each row can switch mode (**→ Queue** / **→ Steer**) or be cancelled (✕). Delivered messages move into the transcript.
 
-**Stop** ends the run and parks every waiting message, steered or queued; nothing runs until you act. The tray then reads "N parked" and offers **Send now** per row. As the server works, Send now on a steered message resumes the session with all parked steered messages (queued ones stay parked), and on a queued message it switches that message to steer, after which the other parked messages follow (steered first, then queued, one turn each). Sending a new message to a stopped session also delivers the parked ones.
+**Stop** ends the run and parks every waiting message, steered or queued; nothing runs until you act. The tray then reads "Paused · N waiting", with the groups relabeled "Next turn", "Turn 2", …, and offers one **Resume**: it runs all of them in the order shown, the steered ones together in the next turn and then each queued one as its own turn. That is what the server does once a stopped session wakes, so rows only offer actions that do not wake it: ✕, and **→ Queue** on steered rows. To run only some messages, cancel the others first. Sending a new message to a stopped session wakes it too, so the composer warns about it while you type: the new message joins the next turn and the paused ones follow.
 
 The client stores non-secret UI state under `${XDG_CONFIG_HOME:-~/.config}/opencode-gtk/state.json`. OpenCode Basic Auth passwords stay in memory. Tabs saved for sessions the server does not know (for example from an OpenCode 1.x server) are dropped quietly. Cloudflare Access service tokens are stored by the desktop's Secret Service provider, such as GNOME Keyring or KWallet, and are never added to the state file.
 
@@ -156,7 +156,7 @@ cargo clippy --all-targets -- -D warnings
 cargo test --all-targets
 ```
 
-`--preview` opens the real connected UI with canned OpenCode 2.x sessions, a permission request, a form, a running session with a steered and a queued message waiting, and a stopped one with parked messages, and no network:
+`--preview` opens the real connected UI with canned OpenCode 2.x sessions, a permission request, a form, a running session with steered and queued messages waiting, and a stopped one with paused messages (Resume, and the composer's warning when you type), and no network:
 
 ```bash
 cargo run -- --preview
@@ -165,7 +165,7 @@ cargo run -- --preview
 UI tests run only headless (Xvfb and D-Bus, for example in Docker), never on a live desktop:
 
 - `tests/smoke-ui.sh`: the window opens and survives the everyday shortcuts, in preview mode and against an unreachable server.
-- `tests/remote-flow-ui.sh`: a full flow (bootstrap, paging, rename, create, prompt with an attachment, steer, queue, tray switch/cancel, Stop and Send now, permissions, form cancel, reconnects) against `tests/fake_opencode_server.py`, a fake 2.x server built from real 2.0.8 captures. `python3 tests/fake_v2/selftest.py` checks the fake server itself.
+- `tests/remote-flow-ui.sh`: a full flow (bootstrap, paging, rename, create, prompt with an attachment, steer, queue, tray switch/cancel, Stop and Resume (with a parked steer, and with queued messages only), the paused composer warning, permissions, form cancel, reconnects) against `tests/fake_opencode_server.py`, a fake 2.x server built from real 2.0.8 captures. `python3 tests/fake_v2/selftest.py` checks the fake server itself.
 - `tests/v2/e2e.sh --state DIR`: runs against a real, isolated OpenCode 2.0.8 server with a scripted mock model provider in Docker (`tests/v2/README.md`). It runs the ignored live API test (`cargo test live_server_end_to_end -- --ignored`) and a GUI smoke test, then takes the server down. It builds its Docker image from the published CLI, so CI does not run it.
 
 The included `Dockerfile` provides a reproducible Debian build environment when GTK development libraries are not installed locally:

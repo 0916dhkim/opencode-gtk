@@ -140,6 +140,50 @@ impl Live {
         }
     }
 
+    /// The tray's Resume on a parked session: the request `tray::resume_request`
+    /// picks from the reloaded tray, which must act on `target`.
+    fn resume(&mut self, session_id: &str, target: &str) {
+        let items = self.reload(session_id).0.tray_items();
+        let rows = crate::tray::tray_rows(&items, None, None, &Default::default());
+        let (inbox_id, request) = crate::tray::resume_request(&rows).expect("resume");
+        assert_eq!(inbox_id, target, "{request:?}");
+        assert_eq!(
+            self.api
+                .inbox_request(session_id, &inbox_id, request)
+                .expect("resume"),
+            Settled::Done
+        );
+    }
+
+    /// Inbox IDs delivered to a session since `since`, one list per turn
+    /// (items delivered together, before the turn's first step).
+    fn turns_since(&mut self, since: usize, session_id: &str) -> Vec<Vec<String>> {
+        self.pump();
+        let mut turns: Vec<Vec<String>> = Vec::new();
+        let mut current = Vec::new();
+        for event in &self.log[since..] {
+            if event["data"]["sessionID"] != session_id {
+                continue;
+            }
+            match event["type"].as_str().unwrap_or_default() {
+                "session.inbox.delivered" => current.push(
+                    event["data"]["inboxID"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_owned(),
+                ),
+                "session.step.started" if !current.is_empty() => {
+                    turns.push(std::mem::take(&mut current));
+                }
+                _ => {}
+            }
+        }
+        if !current.is_empty() {
+            turns.push(current);
+        }
+        turns
+    }
+
     fn wait_quiet(&mut self, quiet: Duration, timeout: Duration) {
         let deadline = Instant::now() + timeout;
         while Instant::now() < deadline {
@@ -720,7 +764,7 @@ fn live_server_end_to_end() {
     assert_eq!(count_kind(&rows, "YOU", ""), 3);
     eprintln!("PASS steer mid-run, queue after");
 
-    step("stop parks; switch, cancel, send now");
+    step("stop parks; switch, cancel, resume with a parked steer");
     let parking = live.create();
     live.prompt(&parking.id, "Stream slowly. [[scenario:slow]]", &[]);
     live.wait_for("parking text delta", 30, |event| {
@@ -800,36 +844,17 @@ fn live_server_end_to_end() {
         )),
         "nothing ran while parked"
     );
-    // Send now on the parked steer resumes the session for its steers.
+    // Resume, as the tray sends it: with a parked steer, that steer is
+    // bounced (queue, then steer), which wakes the session for everything.
+    let resumed_at = live.mark();
+    live.resume(&parking.id, &steer);
+    live.wait_done(&parking.id, 2, 90);
+    assert!(tray(&live).is_empty(), "resume runs every parked message");
     assert_eq!(
-        live.api
-            .inbox_request(
-                &parking.id,
-                &steer,
-                crate::tray::send_now_request(protocol::Delivery::Steer)
-            )
-            .unwrap(),
-        Settled::Done
+        live.turns_since(resumed_at, &parking.id),
+        [vec![steer.clone(), queue2.clone()], vec![queue1.clone()]],
+        "the steers run together in the next turn, then the queued one"
     );
-    live.wait_done(&parking.id, 2, 60);
-    assert_eq!(
-        tray(&live),
-        [(queue1.clone(), protocol::Delivery::Queue)],
-        "resume delivers the parked steers; queued ones stay parked"
-    );
-    // Send now on the parked queued prompt switches it to steer, which wakes the session.
-    assert_eq!(
-        live.api
-            .inbox_request(
-                &parking.id,
-                &queue1,
-                crate::tray::send_now_request(protocol::Delivery::Queue)
-            )
-            .unwrap(),
-        Settled::Done
-    );
-    live.wait_done(&parking.id, 3, 60);
-    assert!(tray(&live).is_empty());
     assert_eq!(
         live.api
             .inbox_request(
@@ -841,9 +866,44 @@ fn live_server_end_to_end() {
         Settled::AlreadyResolved,
         "a delivered item is resolved"
     );
-    let rows = live.assert_live_matches_history("stop + send now", &parking.id);
+    let rows = live.assert_live_matches_history("stop + resume", &parking.id);
     assert_eq!(count_kind(&rows, "YOU", ""), 4);
-    eprintln!("PASS stop parks; switch, cancel, send now");
+    eprintln!("PASS stop parks; switch, cancel, resume with a parked steer");
+
+    step("stop parks; resume with only queued messages");
+    let queued_only = live.create();
+    live.prompt(&queued_only.id, "Stream slowly. [[scenario:slow]]", &[]);
+    live.wait_for("queued-only text delta", 30, |event| {
+        is_type(event, "session.text.delta", Some(&queued_only.id))
+    });
+    let queued =
+        |text: &str| live.prompt_with(&queued_only.id, text, &[], Some(protocol::Delivery::Queue));
+    let first = queued("Queued first. [[scenario:text]]");
+    let second = queued("Queued second. [[scenario:text]]");
+    let third = queued("Queued third. [[scenario:text]]");
+    assert!(
+        live.api.abort(&queued_only.id).expect("stop"),
+        "was running"
+    );
+    live.wait_for("queued-only interrupted", 30, |event| {
+        is_type(
+            event,
+            "session.execution.interrupted",
+            Some(&queued_only.id),
+        )
+    });
+    live.wait_quiet(Duration::from_secs(3), Duration::from_secs(30));
+    let resumed_at = live.mark();
+    live.resume(&queued_only.id, &first);
+    live.wait_done(&queued_only.id, 2, 90);
+    assert!(live.reload(&queued_only.id).0.tray_items().is_empty());
+    assert_eq!(
+        live.turns_since(resumed_at, &queued_only.id),
+        [vec![first], vec![second], vec![third]],
+        "each queued message runs as its own turn, in order"
+    );
+    live.assert_live_matches_history("queued-only resume", &queued_only.id);
+    eprintln!("PASS stop parks; resume with only queued messages");
 
     step("form notice data + cancel");
     let form_owner = live.create();

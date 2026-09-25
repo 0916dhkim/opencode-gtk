@@ -761,6 +761,26 @@ def delivered_order(reader, session_id, after):
     ]
 
 
+def delivered_turns(reader, session_id, after):
+    """Inbox IDs delivered since `after`, one list per turn (delivered together before a step)."""
+    turns, current = [], []
+    for e in reader.snapshot()[after:]:
+        if e["data"].get("sessionID") != session_id:
+            continue
+        if e["type"] == "session.inbox.delivered":
+            current.append(e["data"]["inboxID"])
+        elif e["type"] == "session.step.started" and current:
+            turns.append(current)
+            current = []
+    if current:
+        turns.append(current)
+    return turns
+
+
+def count_type(reader, session_id, after, event_type):
+    return sum(1 for e in reader.snapshot()[after:] if e["type"] == event_type and e["data"].get("sessionID") == session_id)
+
+
 def inbox_state(h, session_id):
     _, _, inbox, _ = h.client.get(f"/api/session/{session_id}/inbox")
     return [(item["id"], item["delivery"]) for item in inbox["data"]]
@@ -852,6 +872,49 @@ def test_steer_queue(h, reader):
     check(wait_terminal(reader, session_id, mark), "PATCH steer on a parked item wakes the session")
     settle(reader)
     check(delivered_order(reader, session_id, mark) == [queue1] and inbox_state(h, session_id) == [], "the switched item is delivered")
+
+    # The client's Resume never sends interrupt?resume=true (above: queued items stay parked).
+    section("Resume with a parked steer: bounce it; every parked item runs")
+    session_id, start = busy_session(h, reader)
+    steer1 = post(h, session_id, "Parked steer 1. [[scenario:text]]")
+    queue1 = post(h, session_id, "Parked queue 1. [[scenario:text]]", "queue")
+    steer2 = post(h, session_id, "Parked steer 2. [[scenario:text]]")
+    queue2 = post(h, session_id, "Parked queue 2. [[scenario:text]]", "queue")
+    h.client.post(f"/api/session/{session_id}/interrupt")
+    check(wait_terminal(reader, session_id, start), "stopped")
+    settle(reader)
+    mark = len(reader.snapshot())
+    status, _, _, _ = h.client.request("PATCH", f"/api/session/{session_id}/inbox/{steer1}", body={"delivery": "queue"})
+    check(status == 204, "bounce 1/2: PATCH the parked steer -> queue -> 204")
+    time.sleep(0.5)
+    check(not any(e["type"] == "session.execution.started" for e in reader.snapshot()[mark:]), "a switch to queue wakes nothing")
+    check(
+        inbox_state(h, session_id) == [(steer1, "queue"), (queue1, "queue"), (steer2, "steer"), (queue2, "queue")],
+        "the bounced item keeps its place",
+    )
+    status, _, _, _ = h.client.request("PATCH", f"/api/session/{session_id}/inbox/{steer1}", body={"delivery": "steer"})
+    check(status == 204, "bounce 2/2: PATCH it back -> steer -> 204")
+    check(wait_terminal(reader, session_id, mark), "the session wakes and finishes")
+    settle(reader)
+    turns = delivered_turns(reader, session_id, mark)
+    check(turns == [[steer1, steer2], [queue1], [queue2]], f"steers together, then each queued item as its own turn ({turns})")
+    check(inbox_state(h, session_id) == [], "nothing stays parked")
+    check(count_type(reader, session_id, mark, "session.execution.started") == 1, "one execution")
+
+    section("Resume with only queued items: steer the first; the rest follow")
+    session_id, start = busy_session(h, reader)
+    queued = [post(h, session_id, f"Parked queue {n}. [[scenario:text]]", "queue") for n in (1, 2, 3)]
+    h.client.post(f"/api/session/{session_id}/interrupt")
+    check(wait_terminal(reader, session_id, start), "stopped")
+    settle(reader)
+    mark = len(reader.snapshot())
+    status, _, _, _ = h.client.request("PATCH", f"/api/session/{session_id}/inbox/{queued[0]}", body={"delivery": "steer"})
+    check(status == 204, "PATCH the first queued item -> steer -> 204")
+    check(wait_terminal(reader, session_id, mark), "the session wakes and finishes")
+    settle(reader)
+    turns = delivered_turns(reader, session_id, mark)
+    check(turns == [[item] for item in queued], f"each queued item runs as its own turn, in order ({turns})")
+    check(inbox_state(h, session_id) == [], "nothing stays parked")
 
     section("a new prompt delivers the parked items")
     session_id, start = busy_session(h, reader)

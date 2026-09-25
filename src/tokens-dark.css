@@ -170,3 +170,13 @@
 @define-color oc_border_queue_tray_button #353b40;
 @define-color oc_fg_queue_tray_button #e2dfd8;
 @define-color oc_bg_queue_tray_button_hover #262b2f;
+@define-color oc_fg_queue_tray_group #8e938f;
+@define-color oc_bg_queue_tray_paused #7d837f;
+@define-color oc_bg_queue_tray_resume #d29b52;
+@define-color oc_fg_queue_tray_resume #17130e;
+@define-color oc_bg_queue_tray_resume_hover #c4923a;
+@define-color oc_bg_queue_tray_resume_disabled alpha(#d29b52, 0.35);
+@define-color oc_fg_queue_tray_resume_disabled alpha(#17130e, 0.6);
+@define-color oc_bg_resume_warning #2a2114;
+@define-color oc_border_resume_warning #4d3a1d;
+@define-color oc_fg_resume_warning #e7b977;
