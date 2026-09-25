@@ -470,7 +470,7 @@ button.session-id-copy.copied {
   min-height: 1.04em;
   -gtk-icon-size: 1.04em;
   color: @oc_bg_session_tab_status_idle;
-  animation: session-tab-gear-turn 2.5s linear infinite;
+  animation: session-tab-gear-turn 1s linear infinite;
 }
 
 .session-tab-status.gear.unread {
