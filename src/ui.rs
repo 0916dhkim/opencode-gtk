@@ -19,6 +19,7 @@ use crate::{
         MessagePage, ServerEnvelope, Settled, UiEvent,
     },
     credentials::{self, CloudflareAccessCredentials, PasswordTarget, SystemKeyring},
+    fit::FitOrHide,
     jobs, markdown,
     model::{
         displayed_model, event_run_status, format_context_usage, model_switch_for_pick,
@@ -509,11 +510,7 @@ struct Widgets {
     context_usage: gtk::Label,
     send_button: gtk::Button,
     stop_button: gtk::Button,
-    steer_split: gtk::Box,
-    steer_button: gtk::Button,
-    steer_menu: gtk::MenuButton,
-    steer_menu_steer: gtk::Button,
-    steer_menu_queue: gtk::Button,
+    queue_hint: FitOrHide,
     transcript_user_scrolling: Rc<Cell<bool>>,
     tab_dnd: Rc<RefCell<TabDnd>>,
 }
@@ -647,36 +644,21 @@ fn icon_button(name: &str, pixel_size: i32) -> gtk::Button {
     button
 }
 
-/// One row of the Steer menu: a title, what it does, and its key chips.
-fn send_option_button(title: &str, description: &str, keys: &[&str]) -> gtk::Button {
-    let button = gtk::Button::new();
-    button.add_css_class("flat");
-    button.add_css_class("steer-option");
-    let row = gtk::Box::new(gtk::Orientation::Horizontal, 12);
-    let text = gtk::Box::new(gtk::Orientation::Vertical, 2);
-    text.set_hexpand(true);
-    let heading = gtk::Label::new(Some(title));
-    heading.set_xalign(0.0);
-    heading.add_css_class("steer-option-title");
-    let detail = gtk::Label::new(Some(description));
-    detail.set_xalign(0.0);
-    detail.add_css_class("steer-option-detail");
-    text.append(&heading);
-    text.append(&detail);
-    let chips = gtk::Box::new(gtk::Orientation::Horizontal, 3);
-    chips.set_valign(gtk::Align::Start);
-    for (index, key) in keys.iter().enumerate() {
+/// "[Ctrl] + [Enter] to queue", the footer hint while a run is active.
+fn queue_hint_content() -> gtk::Box {
+    let hint = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+    hint.add_css_class("queue-hint");
+    hint.set_valign(gtk::Align::Center);
+    for (index, key) in ["Ctrl", "Enter"].iter().enumerate() {
         if index > 0 {
-            chips.append(&gtk::Label::new(Some("+")));
+            hint.append(&gtk::Label::new(Some("+")));
         }
         let chip = gtk::Label::new(Some(key));
         chip.add_css_class("key-chip");
-        chips.append(&chip);
+        hint.append(&chip);
     }
-    row.append(&text);
-    row.append(&chips);
-    button.set_child(Some(&row));
-    button
+    hint.append(&gtk::Label::new(Some("to queue")));
+    hint
 }
 
 fn copy_text_button(text: &str, tooltip: &str) -> gtk::Button {
@@ -1761,7 +1743,6 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
     let context_usage = gtk::Label::new(None);
     context_usage.add_css_class("composer-usage");
     context_usage.set_xalign(0.0);
-    context_usage.set_hexpand(true);
     context_usage.set_ellipsize(pango::EllipsizeMode::End);
     context_usage.set_valign(gtk::Align::Center);
     context_usage.set_visible(false);
@@ -1771,8 +1752,8 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
     send_button.set_tooltip_text(Some("Send prompt"));
     send_button.set_sensitive(false);
 
-    // While a run is active: Stop, then a split button whose main part
-    // steers (Enter) and whose menu also queues (Ctrl+Enter).
+    // While a run is active the same Send steers (Enter) and Stop shows;
+    // queueing is Ctrl+Enter only, named by the hint after the usage.
     let stop_button = icon_button(ICON_STOP, -1);
     stop_button.add_css_class("composer-action");
     stop_button.add_css_class("composer-stop");
@@ -1780,57 +1761,23 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
         "Stop the run; waiting messages stay parked until you resume",
     ));
     stop_button.set_visible(false);
-    let steer_button = gtk::Button::new();
-    let steer_content = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-    steer_content.append(&icon_image(ICON_SEND, -1));
-    steer_content.append(&gtk::Label::new(Some("Steer")));
-    steer_button.set_child(Some(&steer_content));
-    steer_button.add_css_class("steer-main");
-    steer_button.set_tooltip_text(Some(
-        "Steer into this run (Enter): the agent reads it at its next step",
-    ));
-    let steer_menu = gtk::MenuButton::new();
-    let steer_chevron = chevron_down_icon(10);
-    steer_chevron.set_valign(gtk::Align::Center);
-    steer_menu.set_child(Some(&steer_chevron));
-    steer_menu.add_css_class("steer-chevron");
-    steer_menu.set_tooltip_text(Some("Steer or queue"));
-    let steer_popover = gtk::Popover::new();
-    steer_popover.set_position(gtk::PositionType::Top);
-    steer_popover.set_offset(0, -6);
-    steer_popover.add_css_class("model-picker-popover");
-    steer_popover.add_css_class("steer-popover");
-    let steer_options = gtk::Box::new(gtk::Orientation::Vertical, 2);
-    let steer_menu_steer = send_option_button(
-        "Steer into this run",
-        "The agent reads it at its next step,\nwithout stopping.",
-        &["Enter"],
-    );
-    let steer_menu_queue = send_option_button(
-        "Queue for after",
-        "Sent as a new turn once\nthis run finishes.",
-        &["Ctrl", "Enter"],
-    );
-    steer_options.append(&steer_menu_steer);
-    steer_options.append(&steer_menu_queue);
-    steer_popover.set_child(Some(&steer_options));
-    steer_menu.set_popover(Some(&steer_popover));
-    let steer_split = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-    steer_split.add_css_class("steer-split");
-    steer_split.set_valign(gtk::Align::Center);
-    steer_split.append(&steer_button);
-    steer_split.append(&steer_menu);
-    steer_split.set_visible(false);
 
     let composer_controls = gtk::Box::new(gtk::Orientation::Horizontal, 6);
     composer_controls.set_overflow(gtk::Overflow::Hidden);
+    // Hidden rather than squeezing the model menus when the footer is narrow.
+    let queue_hint = FitOrHide::new(&queue_hint_content(), &composer_controls);
+    queue_hint.set_valign(gtk::Align::Center);
+    queue_hint.set_visible(false);
+    let usage_row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    usage_row.set_hexpand(true);
+    usage_row.append(&context_usage);
+    usage_row.append(&queue_hint);
     composer_controls.append(&attach_button);
     composer_controls.append(&model_button);
     composer_controls.append(&variant_button);
-    composer_controls.append(&context_usage);
-    composer_controls.append(&send_button);
+    composer_controls.append(&usage_row);
     composer_controls.append(&stop_button);
-    composer_controls.append(&steer_split);
+    composer_controls.append(&send_button);
 
     let composer_box = gtk::Box::new(gtk::Orientation::Vertical, 8);
     composer_box.set_margin_start(14);
@@ -2089,11 +2036,7 @@ fn build_widgets(application: &gtk::Application) -> Widgets {
         context_usage,
         send_button,
         stop_button,
-        steer_split,
-        steer_button,
-        steer_menu,
-        steer_menu_steer,
-        steer_menu_queue,
+        queue_hint,
         transcript_user_scrolling,
         tab_dnd: Rc::new(RefCell::new(TabDnd::default())),
     }
@@ -2659,7 +2602,7 @@ fn wire_callbacks(controller: &Rc<RefCell<Controller>>) {
         .send_button
         .connect_clicked(move |_| {
             if let Some(controller) = weak.upgrade() {
-                Controller::send_prompt(&controller, SendMode::Send);
+                Controller::send_draft(&controller, false);
             }
         });
     let weak = Rc::downgrade(controller);
@@ -2672,35 +2615,7 @@ fn wire_callbacks(controller: &Rc<RefCell<Controller>>) {
                 Controller::stop(&controller);
             }
         });
-    let (steer_button, steer_menu, steer_option, queue_option, tray_resume) = {
-        let this = controller.borrow();
-        (
-            this.widgets.steer_button.clone(),
-            this.widgets.steer_menu.clone(),
-            this.widgets.steer_menu_steer.clone(),
-            this.widgets.steer_menu_queue.clone(),
-            this.widgets.tray_resume.clone(),
-        )
-    };
-    let weak = Rc::downgrade(controller);
-    steer_button.connect_clicked(move |_| {
-        if let Some(controller) = weak.upgrade() {
-            Controller::send_prompt(&controller, SendMode::Steer);
-        }
-    });
-    for (option, mode) in [
-        (steer_option, SendMode::Steer),
-        (queue_option, SendMode::Queue),
-    ] {
-        let weak = Rc::downgrade(controller);
-        let menu = steer_menu.clone();
-        option.connect_clicked(move |_| {
-            menu.popdown();
-            if let Some(controller) = weak.upgrade() {
-                Controller::send_prompt(&controller, mode);
-            }
-        });
-    }
+    let tray_resume = controller.borrow().widgets.tray_resume.clone();
     let weak = Rc::downgrade(controller);
     tray_resume.connect_clicked(move |_| {
         if let Some(controller) = weak.upgrade() {
@@ -2777,7 +2692,7 @@ fn wire_callbacks(controller: &Rc<RefCell<Controller>>) {
             && !modifiers.contains(gdk::ModifierType::SHIFT_MASK)
         {
             if let Some(controller) = weak.upgrade() {
-                Controller::send_from_keyboard(
+                Controller::send_draft(
                     &controller,
                     modifiers.contains(gdk::ModifierType::CONTROL_MASK),
                 );
@@ -5566,13 +5481,13 @@ impl Controller {
         }
     }
 
-    /// Idle: the round Send. Running: Stop plus the Steer split button, which
-    /// (like Send) needs input, a usable model and no prompt POST in flight.
+    /// The round Send, which needs input, a usable model and no prompt POST
+    /// in flight. While running it steers, and Stop plus the Ctrl+Enter
+    /// queue hint show; it then has no tooltip.
     fn refresh_send_button(&mut self) {
         let Some(active) = self.state.active.as_ref() else {
-            self.widgets.send_button.set_visible(true);
             self.widgets.stop_button.set_visible(false);
-            self.widgets.steer_split.set_visible(false);
+            self.set_queue_hint_visible(false);
             self.widgets
                 .send_button
                 .set_tooltip_text(Some("Send prompt"));
@@ -5582,17 +5497,15 @@ impl Controller {
         };
         let busy = self.state.statuses.get(active).is_some_and(|s| s.is_busy());
         let sending = self.state.pending_prompts.contains_key(active);
-        self.widgets.send_button.set_visible(!busy);
         self.widgets.stop_button.set_visible(busy);
-        self.widgets.steer_split.set_visible(busy);
-        if !busy {
-            self.widgets.steer_menu.popdown();
-        }
-        self.widgets.send_button.set_tooltip_text(Some(if sending {
-            "Sending the previous prompt…"
+        self.set_queue_hint_visible(busy);
+        self.widgets.send_button.set_tooltip_text(if busy {
+            None
+        } else if sending {
+            Some("Sending the previous prompt…")
         } else {
-            "Send prompt (Enter)"
-        }));
+            Some("Send prompt (Enter)")
+        });
         let draft = self.state.drafts.get(active);
         let has_input = draft
             .is_some_and(|draft| !draft.text.trim().is_empty() || !draft.attachments.is_empty());
@@ -5612,9 +5525,14 @@ impl Controller {
         });
         let can_send = !sending && has_input && attachments_valid && model_ready;
         self.widgets.send_button.set_sensitive(can_send);
-        self.widgets.steer_button.set_sensitive(can_send);
-        self.widgets.steer_menu.set_sensitive(can_send);
         self.refresh_resume_warning();
+    }
+
+    fn set_queue_hint_visible(&self, visible: bool) {
+        if self.widgets.queue_hint.is_visible() != visible {
+            self.widgets.queue_hint.set_visible(visible);
+            debug_log(format!("queue-hint visible={visible}"));
+        }
     }
 
     fn selected_model_supports_attachments(&self) -> bool {
@@ -6294,8 +6212,9 @@ impl Controller {
             .is_some_and(RunStatus::is_busy)
     }
 
-    /// Enter in the composer (Ctrl+Enter with `ctrl`); see [`tray::enter_mode`].
-    fn send_from_keyboard(controller: &Rc<RefCell<Self>>, ctrl: bool) {
+    /// Send (the button or Enter) or, with `ctrl`, Ctrl+Enter: while running
+    /// they steer and queue; see [`tray::enter_mode`].
+    fn send_draft(controller: &Rc<RefCell<Self>>, ctrl: bool) {
         let busy = controller.borrow().active_is_busy();
         Self::send_prompt(controller, tray::enter_mode(busy, ctrl));
     }

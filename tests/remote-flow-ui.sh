@@ -241,12 +241,14 @@ app_pid=$!
 
 # ------------------------------------------------------------ steer / queue while running (step 6)
 #
-# While a run is active the composer shows Stop and the split Steer button (ui.rs refresh_send_button):
-# Enter steers (no `delivery`), Ctrl+Enter queues (`delivery: "queue"`). Waiting messages sit in the
+# While a run is active the composer shows Stop next to the same round Send (ui.rs refresh_send_button):
+# Enter (or Send) steers (no `delivery`), Ctrl+Enter queues (`delivery: "queue"`); there is no mouse
+# path to queue, so the footer shows a "Ctrl + Enter to queue" hint only while running (debug log
+# "queue-hint visible=true|false"). Waiting messages sit in the
 # tray right above the composer (ui.rs refresh_tray), grouped in run order: the steered ones under one
 # label, then each queued one under its own. Running rows have a switch button ("→ Queue" /
 # "→ Steer") and ✕; paused rows only ✕ and, on steered rows, "→ Queue"; the paused header has Resume.
-# Layout estimates, measured on a 1180x820 Xvfb screenshot (one row per group): Stop ~ W-165,H-51;
+# Layout estimates, measured on a 1180x820 Xvfb screenshot (one row per group): Stop ~ W-96,H-53;
 # the last row's centre ~ H-190, groups 53 px apart; a row's switch button ~ W-93, its ✕ ~ W-41;
 # Resume ~ W-68, 51 px above the first row. The resume warning above the composer (shown while the
 # tray is paused and the draft has text) moves the tray up, so it is cleared before any click.
@@ -291,11 +293,13 @@ ev_order() {
 }
 
 stop_and_park() {  # stop_and_park LABEL
+  app_mark
   mark_now
   click_until "$1.stop" \
     "http and route == 'session.interrupt' and p.get('sessionID') == '${new_session}' and 'resume' not in q" \
-    "$((WIDTH - 165)),$((HEIGHT - 51)) $((WIDTH - 160)),$((HEIGHT - 46)) $((WIDTH - 170)),$((HEIGHT - 56))"
+    "$((WIDTH - 96)),$((HEIGHT - 53)) $((WIDTH - 92)),$((HEIGHT - 48)) $((WIDTH - 100)),$((HEIGHT - 57))"
   expect "$1.interrupted" "ev == 'session.execution.interrupted' and r.get('sessionID') == '${new_session}'"
+  app_expect "$1.hint-hidden" "queue-hint visible=false"
   mark_now
   if stray="$(logq wait "${log}" --after "${mark}" --timeout 2 --expr "ev in ('session.inbox.delivered', 'session.execution.started') and r.get('sessionID') == '${new_session}'")"; then
     fail "$1.nothing-runs" "a parked message ran after Stop: ${stray}"
@@ -306,6 +310,7 @@ stop_and_park() {  # stop_and_park LABEL
 
 steer_queue_flow() {
   local steer_id="" queue_id="" extra_id="" first_id="" second_id=""
+  app_expect "queue-hint.running" "queue-hint visible=true"
   geometry
   mark_now
   key ctrl+g
@@ -348,7 +353,6 @@ steer_queue_flow() {
     "http and route == 'session.inbox.cancel' and p.get('inboxID') == '${extra_id}' and r['status'] == 204" \
     "$(tray_points $((WIDTH - 41)) 3 3)"
   sleep 0.8
-  app_mark
   stop_and_park "stop"
   app_expect "tray.paused-header" "tray paused rows=2 resume=true"
   # Paused: the queued row (group 2) has no "→ Steer"; its old place is empty.
@@ -370,6 +374,7 @@ steer_queue_flow() {
   app_expect "paused.warning-hidden" "resume-warning hidden"
   sleep 0.5
   # Resume with a parked steer bounces it (queue, then steer): everything runs, the steer first.
+  app_mark
   mark_now
   click_until "tray.resume-bounce-queue" \
     "http and route == 'session.inbox.update' and p.get('inboxID') == '${steer_id}' and b.get('delivery') == 'queue' and r['status'] == 204" \
@@ -379,14 +384,18 @@ steer_queue_flow() {
     "ev == 'session.inbox.delivered' and r.get('inboxID') == '${steer_id}'" \
     "ev == 'session.inbox.delivered' and r.get('inboxID') == '${queue_id}'"
   expect "resume.ran" "ev == 'session.execution.succeeded' and r.get('sessionID') == '${new_session}'" "$((timeout_s + 15))"
+  app_expect "resume.hint-shown" "queue-hint visible=true"
+  app_expect "resume.hint-hidden" "queue-hint visible=false"
   sleep 1
 
   # Only queued messages parked: Resume steers the first one; the other follows as its own turn.
   mark_now
   key ctrl+g
   type_text "Second slow run [[scenario:slow]]"
+  app_mark
   key Return
   expect "queue-only.run" "ev == 'session.text.delta' and r.get('sessionID') == '${new_session}'" "${timeout_s}"
+  app_expect "queue-only.hint-shown" "queue-hint visible=true"
   sleep 0.5
   for n in first second; do
     mark_now
@@ -547,6 +556,7 @@ if [[ -n "${window}" ]] && app_alive && [[ -n "${new_session}" ]]; then
   key ctrl+v
   sleep 0.5
   type_text "Flow prompt [[scenario:slow]]"
+  app_mark
   key Return
   if expect "prompt" "http and route == 'session.prompt' and p.get('sessionID') == '${new_session}' and 'Flow prompt' in (b.get('text') or '') and r['status'] == 200"; then
     prompt_record="${found}"

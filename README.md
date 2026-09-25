@@ -23,7 +23,7 @@ Prompts always use the server's default agent; there is no agent picker. Forms (
 
 ### Steer and queue
 
-The composer stays usable while a session runs. It then shows **Stop** and a **Steer** button: `Enter` (or **Steer**) steers the message into the current run, and the agent reads it at its next step without stopping; `Ctrl+Enter` (or **Queue for after** in the button's menu) queues it as a new turn once the run finishes. On an idle session both keys simply send.
+The composer stays usable while a session runs. It keeps the same round send button and adds **Stop** next to it: `Enter` (or the send button) steers the message into the current run, and the agent reads it at its next step without stopping; `Ctrl+Enter` queues it as a new turn once the run finishes. Queueing is keyboard-only, so while a run is active the footer shows a "Ctrl + Enter to queue" hint after the token count (it hides when the window is too narrow for it). On an idle session both keys simply send.
 
 Messages the server has not delivered yet wait in a tray above the composer, grouped in the order they will run: the steered ones together ("This run · at its next step"), then each queued one as its own turn ("After this run · Turn 2", "Turn 3", …). Each row can switch mode (**→ Queue** / **→ Steer**) or be cancelled (✕). Delivered messages move into the transcript.
 

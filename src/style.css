@@ -1224,7 +1224,7 @@ button.tab-picker-row.active {
   color: @oc_fg_key_chip;
 }
 
-/* Steer / queue: Stop and the split Steer button while a run is active,
+/* Steer / queue: Stop and the Ctrl+Enter hint while a run is active,
    and the tray of waiting messages above the composer. */
 
 .composer-frame button.composer-action.composer-stop {
@@ -1237,56 +1237,13 @@ button.tab-picker-row.active {
   -gtk-icon-size: 1.1em;
 }
 
-.steer-split > button,
-.steer-split > menubutton > button {
-  background: @oc_bg_steer_split;
-  background-image: none;
-  box-shadow: none;
-  border: none;
-  color: @oc_fg_steer_split;
-  min-height: 2.52em;
+.queue-hint {
+  color: @oc_fg_model_picker_item_subtext;
+  font-size: 0.82em;
 }
 
-.steer-split > button:hover,
-.steer-split > menubutton > button:hover {
-  background: @oc_bg_steer_split_hover;
-}
-
-.steer-split > button:disabled,
-.steer-split > menubutton > button:disabled {
-  background: @oc_bg_steer_split_disabled;
-  color: @oc_fg_steer_split_disabled;
-}
-
-.steer-split > button.steer-main {
-  padding: 0 0.85em 0 0.95em;
-  border-radius: 999em 0 0 999em;
-  font-weight: 700;
-}
-
-.steer-main image {
-  -gtk-icon-size: 1.05em;
-}
-
-.steer-split > menubutton > button {
-  min-width: 0;
-  padding: 0 0.6em 0 0.5em;
-  border-left: 1px solid @oc_border_steer_split_divider;
-  border-radius: 0 999em 999em 0;
-}
-
-button.steer-option {
-  padding: 0.5em 0.65em;
-  border-radius: 0.5em;
-}
-
-.steer-option-title {
-  font-weight: 700;
-}
-
-.steer-option-detail {
-  font-size: 0.85em;
-  color: @oc_fg_steer_option_detail;
+.queue-hint .key-chip {
+  font-size: 0.9em;
 }
 
 .queue-tray {

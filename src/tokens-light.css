@@ -148,13 +148,6 @@
 @define-color oc_border_message_image alpha(#242321, 0.14);
 @define-color oc_border_composer_stop #34312d;
 @define-color oc_fg_composer_stop #262421;
-@define-color oc_bg_steer_split #c4923a;
-@define-color oc_fg_steer_split #1a1713;
-@define-color oc_bg_steer_split_hover #b88732;
-@define-color oc_bg_steer_split_disabled alpha(#c4923a, 0.4);
-@define-color oc_fg_steer_split_disabled alpha(#1a1713, 0.55);
-@define-color oc_border_steer_split_divider alpha(#1a1713, 0.22);
-@define-color oc_fg_steer_option_detail #6f7471;
 @define-color oc_bg_queue_tray #f0eee9;
 @define-color oc_border_queue_tray #cbc7bf;
 @define-color oc_border_queue_tray_row #dedad2;
