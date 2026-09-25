@@ -25,6 +25,8 @@ const RUNNING_ID: &str = "ses_running";
 const PARKED_ID: &str = "ses_parked";
 /// A running background subagent of the active session.
 const CHILD_ID: &str = "ses_preview_child";
+/// An idle, read session with nothing running.
+const IDLE_ID: &str = "ses_idle";
 const CREATED: u64 = 1_704_067_200_000;
 
 pub fn server_state() -> ServerState {
@@ -50,10 +52,19 @@ pub fn server_state() -> ServerState {
                 directory: DIRECTORY.into(),
                 title: "Stopped with parked messages".into(),
             },
+            PersistedTab {
+                id: IDLE_ID.into(),
+                directory: DIRECTORY.into(),
+                title: "Release checklist".into(),
+            },
         ],
         active: Some(ACTIVE_ID.into()),
         selections: HashMap::new(),
-        unread: HashSet::new(),
+        // With the canned jobs, every tab indicator shows: the active tab's
+        // grey gear (jobs only), the other tab's blue gear (jobs, unread),
+        // the running tab's orange gear, the parked tab's blue dot (unread)
+        // and the idle tab's grey dot.
+        unread: HashSet::from([OTHER_ID.to_owned(), PARKED_ID.to_owned()]),
         busy: HashSet::new(),
     }
 }
@@ -159,6 +170,13 @@ impl State {
                     Some("Stopped with parked messages"),
                     CREATED - 10_800_000,
                     CREATED - 10_700_000,
+                ),
+                session_info(
+                    IDLE_ID,
+                    DIRECTORY,
+                    Some("Release checklist"),
+                    CREATED - 14_400_000,
+                    CREATED - 14_300_000,
                 ),
             ],
             messages,
@@ -661,7 +679,8 @@ fn now_ms() -> u64 {
 
 /// Running shells, as `GET /api/shell` lists them, started relative to now
 /// so the elapsed times read naturally: two of the active session (one its
-/// subagent started) and the running tab's test run.
+/// subagent started), the running tab's test run and the other tab's log
+/// tail.
 fn canned_shells() -> ShellSnapshot {
     let now = now_ms() as i64;
     let shell = |id: &str, command: &str, owner: &str, minutes: i64| {
@@ -682,6 +701,7 @@ fn canned_shells() -> ShellSnapshot {
             shell("sh_preview_dev", "pnpm dev --port 5173", ACTIVE_ID, 22),
             shell("sh_preview_grep", "rg -n 'api/v1' src", CHILD_ID, 2),
             shell("sh_preview_test", "cargo test api::", RUNNING_ID, 1),
+            shell("sh_preview_tail", "tail -f tunnel.log", OTHER_ID, 9),
         ],
         queried: [DIRECTORY.to_owned()].into(),
         covered: HashSet::from([DIRECTORY.to_owned()]),
@@ -1395,7 +1415,18 @@ mod tests {
             [row("cargo test api::", "shell · 1m")],
             "switching tabs shows another session's job"
         );
-        assert!(rows(OTHER_ID).is_empty(), "and hides the section");
+        assert_eq!(rows(OTHER_ID), [row("tail -f tunnel.log", "shell · 9m")]);
+        assert!(rows(IDLE_ID).is_empty(), "and hides the section");
+        let mut with_jobs: Vec<_> = jobs.sessions_with_jobs().into_iter().collect();
+        with_jobs.sort();
+        assert_eq!(
+            with_jobs,
+            [OTHER_ID, ACTIVE_ID, RUNNING_ID],
+            "the parked and idle tabs show a dot"
+        );
+        let unread = server_state().unread;
+        assert!(unread.contains(OTHER_ID) && unread.contains(PARKED_ID));
+        assert_eq!(unread.len(), 2);
     }
 
     #[test]

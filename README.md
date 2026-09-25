@@ -17,6 +17,7 @@ A lightweight GTK 4 desktop client for a remote [OpenCode](https://opencode.ai) 
 - Sends messages while the agent works: steer them into the current run or queue them for after it
 - Loads long conversations in pages
 - Lists running subagents and shell commands of the active session in a sidebar Background section
+- Shows each tab's state at a glance: a turning gear while the agent works or a background job (subagent or shell) runs, otherwise a dot; the gear or dot and the tab title are orange while the agent works, blue when the tab has unread output, and grey otherwise
 
 Prompts always use the server's default agent; there is no agent picker. Forms (input requests from tools, MCP servers or plugins) are not filled in here: a one-line notice above the composer names the waiting form and offers **Open web UI** and **Cancel** (`Ctrl+Shift+X`). The client never answers a form on its own.
 

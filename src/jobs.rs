@@ -469,6 +469,38 @@ impl Jobs {
         rows
     }
 
+    /// The sessions with at least one job, for every tab's indicator: the
+    /// session each job's starter leads up to, so a session is listed
+    /// exactly when [`Jobs::rows`] for it would not be empty.
+    pub fn sessions_with_jobs(&self) -> HashSet<String> {
+        let subagents = self.running.iter().filter_map(|id| {
+            let parent = self.sessions.get(id)?.parent_id.as_deref()?;
+            self.root_of(parent)
+        });
+        let shells = self
+            .shells
+            .values()
+            .filter_map(|shell| self.root_of(shell.session_id.as_deref()?));
+        subagents.chain(shells).map(str::to_owned).collect()
+    }
+
+    /// The topmost session above `id` the cache knows of: `id` itself when
+    /// it is not a known child.
+    fn root_of<'a>(&'a self, id: &'a str) -> Option<&'a str> {
+        let mut id = id;
+        for _ in 0..=MAX_PARENT_DEPTH {
+            match self
+                .sessions
+                .get(id)
+                .and_then(|session| session.parent_id.as_deref())
+            {
+                Some(parent) => id = parent,
+                None => return Some(id),
+            }
+        }
+        None
+    }
+
     /// Whether the session `id` that started a job belongs to `active`:
     /// `Some(None)` for `active` itself, `Some(title)` for a known
     /// descendant (walking `parentID` up), `None` otherwise.
@@ -732,6 +764,72 @@ mod tests {
         jobs.apply_event(JobEvent::ShellRemoved("sh_b".into()), &context);
         assert!(jobs.rows(Some("ses_b")).is_empty(), "hidden when none");
         assert_eq!(jobs.rows(Some("ses_a")).len(), 2);
+    }
+
+    #[test]
+    fn every_session_with_a_job_is_found_whatever_the_active_one() {
+        let roots = vec![
+            session("ses_a", None, "A", 1),
+            session("ses_b", None, "B", 2),
+            session("ses_c", None, "C", 3),
+            session("ses_d", None, "D", 4),
+        ];
+        let context = Context {
+            roots: &roots,
+            directories: &["/repo".to_owned()],
+        };
+        let mut jobs = Jobs::default();
+        assert!(jobs.sessions_with_jobs().is_empty());
+        for (id, parent) in [
+            ("ses_a1", "ses_a"),
+            ("ses_a2", "ses_a1"),
+            ("ses_b1", "ses_b"),
+            ("ses_d1", "ses_d"),
+        ] {
+            jobs.apply_event(
+                JobEvent::ChildCreated(session(id, Some(parent), id, 10)),
+                &context,
+            );
+        }
+        let with_jobs = |jobs: &Jobs| {
+            let mut ids: Vec<_> = jobs.sessions_with_jobs().into_iter().collect();
+            ids.sort();
+            ids
+        };
+        // A nested subagent of A; a shell B's (idle) child started; C's own
+        // shell; D's child is idle and starts nothing; a shell of no session.
+        jobs.apply_event(JobEvent::Started("ses_a2".into()), &context);
+        for (id, owner) in [
+            ("sh_b", Some("ses_b1")),
+            ("sh_c", Some("ses_c")),
+            ("sh_none", None),
+        ] {
+            jobs.apply_event(
+                JobEvent::ShellCreated(shell(id, "/repo", owner, "run", 20)),
+                &context,
+            );
+        }
+        assert_eq!(
+            with_jobs(&jobs),
+            ["ses_a", "ses_b", "ses_c"],
+            "nested children and shells a child started count; D does not"
+        );
+        for root in ["ses_a", "ses_b", "ses_c", "ses_d"] {
+            assert_eq!(
+                jobs.sessions_with_jobs().contains(root),
+                !jobs.rows(Some(root)).is_empty(),
+                "{root}: agrees with the Background rows"
+            );
+        }
+        jobs.apply_event(JobEvent::Ended("ses_a2".into()), &context);
+        jobs.apply_event(JobEvent::ShellRemoved("sh_b".into()), &context);
+        assert_eq!(
+            with_jobs(&jobs),
+            ["ses_c"],
+            "a finished job leaves its session"
+        );
+        jobs.apply_event(JobEvent::ShellRemoved("sh_c".into()), &context);
+        assert!(jobs.sessions_with_jobs().is_empty());
     }
 
     #[test]

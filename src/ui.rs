@@ -604,6 +604,8 @@ struct Controller {
     jobs: jobs::Jobs,
     /// Next elapsed-time refresh, only while the section is shown.
     jobs_tick: Option<glib::SourceId>,
+    /// What each tab's indicator shows.
+    tab_indicators: HashMap<String, TabIndicator>,
     app_modal: Option<AppModalKind>,
     app_modal_focus: Option<gtk::Widget>,
     session_picker: Option<(gtk::ListBox, gtk::Entry)>,
@@ -1200,6 +1202,7 @@ pub fn launch(
         child_parents: HashMap::new(),
         jobs: jobs::Jobs::default(),
         jobs_tick: None,
+        tab_indicators: HashMap::new(),
         app_modal: None,
         app_modal_focus: None,
         session_picker: None,
@@ -4379,6 +4382,7 @@ impl Controller {
         }
         self.widgets.tab_bar.remove_css_class("reordering");
         clear_box(&self.widgets.tab_bar);
+        let with_jobs = self.jobs.sessions_with_jobs();
         let mut previous_inactive = false;
         for (index, id) in self.state.tabs.clone().into_iter().enumerate() {
             let title = self
@@ -4389,8 +4393,6 @@ impl Controller {
             tab.add_css_class("session-tab");
             tab.set_widget_name(&id);
             let active = self.state.active.as_deref() == Some(id.as_str());
-            let unread = self.state.unread.contains(&id);
-            let busy = self.state.statuses.get(&id).is_some_and(|s| s.is_busy());
             if active {
                 tab.add_css_class("active");
                 previous_inactive = false;
@@ -4401,37 +4403,10 @@ impl Controller {
                 }
                 previous_inactive = true;
             }
-            if unread {
-                tab.add_css_class("unread");
-            }
-            if busy {
-                tab.add_css_class("busy");
-            }
-            let status = if busy {
-                let spinner = gtk::Spinner::new();
-                spinner.set_size_request(14, 14);
-                spinner.start();
-                spinner.upcast::<gtk::Widget>()
-            } else {
-                gtk::Box::new(gtk::Orientation::Horizontal, 0).upcast::<gtk::Widget>()
-            };
-            status.add_css_class("session-tab-status");
-            status.add_css_class(if busy {
-                "busy"
-            } else if unread {
-                "unread"
-            } else {
-                "idle"
-            });
-            status.set_halign(gtk::Align::Center);
-            status.set_valign(gtk::Align::Center);
-            status.set_tooltip_text(Some(if busy {
-                "Session is working"
-            } else if unread {
-                "Session has unread output"
-            } else {
-                "Session is idle"
-            }));
+            let indicator = self.tab_indicator(&id, &with_jobs);
+            indicator.attention.apply_to_tab(&tab);
+            self.remember_tab_indicator(&id, indicator);
+            let status = indicator.widget();
             let show_index = self.tab_shortcut_hint && index < 9;
             let hint = gtk::Box::new(gtk::Orientation::Horizontal, 0);
             hint.add_css_class("session-tab-hint");
@@ -4610,8 +4585,68 @@ impl Controller {
             tab.add_controller(drop_target);
             self.widgets.tab_bar.append(&tab);
         }
+        let tabs: HashSet<_> = self.state.tabs.iter().cloned().collect();
+        self.tab_indicators.retain(|id, _| tabs.contains(id));
         self.refresh_session_header();
         self.refresh_jobs();
+    }
+
+    fn tab_indicator(&self, id: &str, with_jobs: &HashSet<String>) -> TabIndicator {
+        tab_indicator(
+            self.state.statuses.get(id).is_some_and(|s| s.is_busy()),
+            self.state.unread.contains(id),
+            with_jobs.contains(id),
+        )
+    }
+
+    /// Records what a tab's indicator shows; logs the changes.
+    fn remember_tab_indicator(&mut self, id: &str, indicator: TabIndicator) {
+        if self.tab_indicators.insert(id.to_owned(), indicator) != Some(indicator) {
+            debug_log(format!(
+                "tab-indicator {id} activity={} attention={}",
+                indicator.activity.css_class(),
+                indicator.attention.color_name()
+            ));
+        }
+    }
+
+    /// Updates the tab indicators in place after the jobs changed; a full
+    /// [`Self::refresh_tabs`] would also cancel a tab drag in progress.
+    fn refresh_tab_indicators(&mut self) {
+        let with_jobs = self.jobs.sessions_with_jobs();
+        let mut changed = false;
+        let mut child = self.widgets.tab_bar.first_child();
+        while let Some(tab) = child {
+            child = tab.next_sibling();
+            if !tab.has_css_class("session-tab") {
+                continue;
+            }
+            let id = tab.widget_name().to_string();
+            let indicator = self.tab_indicator(&id, &with_jobs);
+            if self.tab_indicators.get(&id) == Some(&indicator) {
+                continue;
+            }
+            let Some(hint) = tab
+                .first_child()
+                .filter(|slot| slot.has_css_class("session-tab-hint"))
+                .and_then(|slot| slot.downcast::<gtk::Box>().ok())
+            else {
+                continue;
+            };
+            let Some(old) = hint.first_child() else {
+                continue;
+            };
+            let status = indicator.widget();
+            status.set_visible(old.is_visible());
+            hint.remove(&old);
+            hint.prepend(&status);
+            indicator.attention.apply_to_tab(&tab);
+            self.remember_tab_indicator(&id, indicator);
+            changed = true;
+        }
+        if changed {
+            self.refresh_session_header();
+        }
     }
 
     /// Rebuilds the "Background" section from the active session's jobs;
@@ -4619,6 +4654,7 @@ impl Controller {
     /// While it is shown, the elapsed times refresh every
     /// [`jobs::ELAPSED_REFRESH_SECONDS`].
     fn refresh_jobs(&mut self) {
+        self.refresh_tab_indicators();
         let rows = self.jobs.rows(self.state.active.as_deref());
         let now = unix_millis();
         self.widgets.jobs_section.set_visible(!rows.is_empty());
@@ -5717,42 +5753,12 @@ impl Controller {
                 .session_header_title
                 .set_tooltip_text(Some(active_title));
 
-            let busy = active_id.is_some_and(|id| {
-                self.state
-                    .statuses
-                    .get(id)
-                    .is_some_and(|status| status.is_busy())
+            let indicator = active_id.map_or(tab_indicator(false, false, false), |id| {
+                self.tab_indicator(id, &self.jobs.sessions_with_jobs())
             });
-            let unread = active_id.is_some_and(|id| self.state.unread.contains(id));
-
             clear_box(&self.widgets.session_header_status);
-            let status_widget = if busy {
-                let spinner = gtk::Spinner::new();
-                spinner.set_size_request(14, 14);
-                spinner.start();
-                spinner.upcast::<gtk::Widget>()
-            } else {
-                let dot = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-                dot.set_size_request(14, 14);
-                dot.upcast::<gtk::Widget>()
-            };
-            status_widget.add_css_class("session-tab-status");
-            status_widget.add_css_class(if busy {
-                "busy"
-            } else if unread {
-                "unread"
-            } else {
-                "idle"
-            });
-            status_widget.set_halign(gtk::Align::Center);
-            status_widget.set_valign(gtk::Align::Center);
-            status_widget.set_tooltip_text(Some(if busy {
-                "Session is working"
-            } else if unread {
-                "Session has unread output"
-            } else {
-                "Session is idle"
-            }));
+            let status_widget = indicator.widget();
+            status_widget.set_size_request(14, 14);
             self.widgets.session_header_status.append(&status_widget);
         }
     }
@@ -9241,11 +9247,6 @@ fn apply_tab_shortcut_hint(bar: &gtk::Box, held: bool) {
                     let show_index = held && number.is_some();
                     if let Some(status) = status {
                         status.set_visible(!show_index);
-                        if !show_index {
-                            if let Ok(spinner) = status.downcast::<gtk::Spinner>() {
-                                spinner.start();
-                            }
-                        }
                     }
                     if let Some(number) = number {
                         number.set_visible(show_index);
@@ -9556,6 +9557,120 @@ fn place_drop_slot(
     dnd_mut.slot = Some(slot);
 }
 
+/// A session tab's status: the icon tells whether anything runs, the colour
+/// (of the icon and the title) whether the tab wants attention.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct TabIndicator {
+    activity: TabActivity,
+    attention: TabAttention,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TabActivity {
+    /// The Settings gear, turning: the main turn or a background job runs.
+    Gear,
+    Dot,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TabAttention {
+    /// The main turn runs (tool calls, permission waits and retries too).
+    Orange,
+    /// Unread output.
+    Blue,
+    Grey,
+}
+
+fn tab_indicator(busy: bool, unread: bool, has_jobs: bool) -> TabIndicator {
+    TabIndicator {
+        activity: if busy || has_jobs {
+            TabActivity::Gear
+        } else {
+            TabActivity::Dot
+        },
+        attention: if busy {
+            TabAttention::Orange
+        } else if unread {
+            TabAttention::Blue
+        } else {
+            TabAttention::Grey
+        },
+    }
+}
+
+impl TabActivity {
+    fn css_class(self) -> &'static str {
+        match self {
+            Self::Gear => "gear",
+            Self::Dot => "dot",
+        }
+    }
+}
+
+impl TabAttention {
+    const CSS_CLASSES: [&'static str; 3] = ["busy", "unread", "read"];
+
+    fn css_class(self) -> &'static str {
+        match self {
+            Self::Orange => "busy",
+            Self::Blue => "unread",
+            Self::Grey => "read",
+        }
+    }
+
+    fn color_name(self) -> &'static str {
+        match self {
+            Self::Orange => "orange",
+            Self::Blue => "blue",
+            Self::Grey => "grey",
+        }
+    }
+
+    /// The tab's class for its title colour; exactly one applies.
+    fn apply_to_tab(self, tab: &impl IsA<gtk::Widget>) {
+        for class in Self::CSS_CLASSES {
+            tab.remove_css_class(class);
+        }
+        if self != Self::Grey {
+            tab.add_css_class(self.css_class());
+        }
+    }
+}
+
+impl TabIndicator {
+    fn tooltip(self) -> &'static str {
+        match (self.activity, self.attention) {
+            (_, TabAttention::Orange) => "Session is working",
+            (TabActivity::Gear, TabAttention::Blue) => {
+                "Background jobs are running; the session has unread output"
+            }
+            (TabActivity::Gear, TabAttention::Grey) => "Background jobs are running",
+            (TabActivity::Dot, TabAttention::Blue) => "Session has unread output",
+            (TabActivity::Dot, TabAttention::Grey) => "Session is idle",
+        }
+    }
+
+    fn widget(self) -> gtk::Widget {
+        let widget = match self.activity {
+            TabActivity::Gear => {
+                let gear = icon_image(ICON_SETTINGS, -1);
+                gear.set_size_request(14, 14);
+                gear.upcast::<gtk::Widget>()
+            }
+            TabActivity::Dot => {
+                gtk::Box::new(gtk::Orientation::Horizontal, 0).upcast::<gtk::Widget>()
+            }
+        };
+        widget.add_css_class("session-tab-status");
+        widget.add_css_class(self.activity.css_class());
+        widget.add_css_class(self.attention.css_class());
+        widget.set_halign(gtk::Align::Center);
+        widget.set_valign(gtk::Align::Center);
+        widget.set_tooltip_text(Some(self.tooltip()));
+        widget
+    }
+}
+
 fn tab_drag_preview(title: &str, active: bool) -> gtk::Box {
     let preview = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     preview.add_css_class("session-tab");
@@ -9829,6 +9944,38 @@ mod tests {
             button.set_child(Some(&labels));
             list.append(&button);
         }
+    }
+
+    #[test]
+    fn tab_indicator_shows_activity_as_the_icon_and_attention_as_the_colour() {
+        use TabActivity::{Dot, Gear};
+        use TabAttention::{Blue, Grey, Orange};
+        // (busy, unread, has_jobs) → (icon, colour)
+        let cases = [
+            ((true, false, false), (Gear, Orange)),
+            ((true, true, false), (Gear, Orange)),
+            ((true, false, true), (Gear, Orange)),
+            ((true, true, true), (Gear, Orange)),
+            ((false, false, true), (Gear, Grey)),
+            ((false, true, true), (Gear, Blue)),
+            ((false, true, false), (Dot, Blue)),
+            ((false, false, false), (Dot, Grey)),
+        ];
+        for ((busy, unread, has_jobs), (activity, attention)) in cases {
+            assert_eq!(
+                tab_indicator(busy, unread, has_jobs),
+                TabIndicator {
+                    activity,
+                    attention
+                },
+                "busy={busy} unread={unread} has_jobs={has_jobs}"
+            );
+        }
+        assert_eq!(
+            TabAttention::CSS_CLASSES,
+            [Orange, Blue, Grey].map(TabAttention::css_class),
+            "the classes apply_to_tab clears are every colour's"
+        );
     }
 
     #[test]

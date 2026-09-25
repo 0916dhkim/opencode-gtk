@@ -1179,6 +1179,7 @@ class Server:
                 body.get("command", "sleep 30"),
                 body.get("sessionID"),
                 started=now_ms() - ago if ago is not None else None,
+                shell_id=body.get("id"),
             )["id"]
         elif action == "exit_shell":
             self.exit_shell(body["id"], body.get("exit", 0), body.get("status", "exited"))

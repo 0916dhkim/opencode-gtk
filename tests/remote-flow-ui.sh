@@ -51,6 +51,7 @@ SES_CHILD="ses_f90000000003ffeChildOfMain"
 SES_BG_CHILD="ses_f90000000004ffeBgChildTask"
 SES_BG_OWNER="ses_f90000000005ffeBgShellOwnr"
 SH_BG_DEV="sh_f90000000001ffeBgDevServer"
+SH_TAB_JOB="sh_f90000000002ffeTabIndicatr"
 BOOT_PERMISSION="per_000000000001BootPermissn1"
 WORKSPACE="/state/workspace"
 OTHER_DIR="/state/other"
@@ -476,6 +477,21 @@ if [[ -n "${window}" ]] && app_alive; then
     "session.execution.started of an unknown child fetches its info"
   app_expect "jobs.live-child-row" "jobs active=${SES_MAIN} rows=3 ids=.*${SES_CHILD}"
   control "{\"action\": \"set_running\", \"sessionID\": \"${SES_CHILD}\", \"running\": false}"
+fi
+
+# ------------------------------------------------------------ 2c. tab indicator: background-only tab
+
+if [[ -n "${window}" ]] && app_alive; then
+  # Every tab shows a turning gear while its main turn or a background job runs, else a dot; the
+  # colour is orange only for the main turn (ui.rs tab_indicator). ui.rs logs each change as
+  # `tab-indicator <id> activity=<gear|dot> attention=<orange|blue|grey>`. A shell SES_OTHER (an
+  # idle, inactive tab) started turns its dot into a grey/blue gear, and back when it exits.
+  app_mark
+  control "{\"action\": \"create_shell\", \"id\": \"${SH_TAB_JOB}\", \"directory\": \"${OTHER_DIR}\", \"sessionID\": \"${SES_OTHER}\", \"command\": \"sleep 60\"}"
+  app_expect "tab.background-gear" "tab-indicator ${SES_OTHER} activity=gear attention=(grey|blue)\$"
+  app_mark
+  control "{\"action\": \"exit_shell\", \"id\": \"${SH_TAB_JOB}\"}"
+  app_expect "tab.background-dot" "tab-indicator ${SES_OTHER} activity=dot attention=(grey|blue)\$"
 fi
 
 # ------------------------------------------------------------ 3. older history via cursor

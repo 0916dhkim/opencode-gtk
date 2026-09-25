@@ -455,20 +455,40 @@ button.session-id-copy.copied {
   color: @oc_fg_session_tab_index;
 }
 
-.session-tab-status.idle {
+.session-tab-status.dot {
   border-radius: 999em;
   background: @oc_bg_session_tab_status_idle;
 }
 
-.session-tab-status.busy {
-  color: @oc_fg_session_tab_busy_session_tab_title;
-  min-width: 1.04em;
-  min-height: 1.04em;
+.session-tab-status.dot.unread {
+  background: @oc_bg_session_tab_status_unread;
 }
 
-.session-tab-status.unread {
-  border-radius: 999em;
-  background: @oc_bg_session_tab_status_unread;
+/* The Settings gear, turning while the session's main turn or a background job runs. */
+.session-tab-status.gear {
+  min-width: 1.04em;
+  min-height: 1.04em;
+  -gtk-icon-size: 1.04em;
+  color: @oc_bg_session_tab_status_idle;
+  animation: session-tab-gear-turn 2.5s linear infinite;
+}
+
+.session-tab-status.gear.unread {
+  color: @oc_bg_session_tab_status_unread;
+}
+
+.session-tab-status.gear.busy {
+  color: @oc_fg_session_tab_busy_session_tab_title;
+}
+
+@keyframes session-tab-gear-turn {
+  from {
+    -gtk-icon-transform: rotate(0turn);
+  }
+
+  to {
+    -gtk-icon-transform: rotate(1turn);
+  }
 }
 
 .transcript {
