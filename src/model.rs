@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::protocol;
 
@@ -145,7 +145,7 @@ impl ModelCatalog {
                 }
             })
             .collect();
-        options.sort_by(|left, right| left.label.to_lowercase().cmp(&right.label.to_lowercase()));
+        options.sort_by_key(|left| left.label.to_lowercase());
         let preferred = default
             .map(|model| ModelSelection {
                 provider_id: model.provider_id.clone(),
@@ -267,7 +267,7 @@ fn compact_tokens(n: u64) -> String {
     }
     if n < 100_000 {
         let tenths = (n + 50) / 100;
-        if tenths % 10 == 0 {
+        if tenths.is_multiple_of(10) {
             format!("{}k", tenths / 10)
         } else {
             format!("{}.{}k", tenths / 10, tenths % 10)
@@ -276,7 +276,7 @@ fn compact_tokens(n: u64) -> String {
         format!("{}k", (n + 500) / 1000)
     } else if n < 10_000_000 {
         let tenths = (n + 50_000) / 100_000;
-        if tenths % 10 == 0 {
+        if tenths.is_multiple_of(10) {
             format!("{}m", tenths / 10)
         } else {
             format!("{}.{}m", tenths / 10, tenths % 10)
@@ -398,7 +398,6 @@ impl ChatMessage {
         self.queued && self.role == Role::User
     }
 
-    #[cfg(test)]
     pub fn render(&self) -> String {
         let mut blocks = Vec::new();
         for segment in &self.segments {
@@ -575,10 +574,10 @@ impl Conversation {
         self.messages
             .retain(|message| !message.queued || ids.contains(message.id.as_str()));
         for entry in entries {
-            if !self.enqueue(&entry.id, &entry.item, millis(entry.time.created)) {
-                if let Some(delivery) = item_delivery(&entry.item) {
-                    self.change_delivery(&entry.id, delivery);
-                }
+            if !self.enqueue(&entry.id, &entry.item, millis(entry.time.created))
+                && let Some(delivery) = item_delivery(&entry.item)
+            {
+                self.change_delivery(&entry.id, delivery);
             }
         }
     }
@@ -2116,9 +2115,11 @@ mod tests {
             Some(selection("mock", "mock-model", None))
         );
         let debug = format!("{catalog:?}");
-        assert!(fixture_body("model.list")
-            .to_string()
-            .contains("dummy-not-a-secret"));
+        assert!(
+            fixture_body("model.list")
+                .to_string()
+                .contains("dummy-not-a-secret")
+        );
         assert!(!debug.contains("dummy-not-a-secret"), "{debug}");
         assert!(!debug.contains("baseURL") && !debug.contains("reasoning"));
     }
@@ -2587,19 +2588,23 @@ mod tests {
         assert_eq!(rows[1]["body"], "subagent · completed — Mock child task");
         assert_eq!(rows[1]["kind"], "tool");
         assert_eq!(rows[2]["body"], "Launched a background subagent.");
-        assert!(rows[3]["body"]
-            .as_str()
-            .unwrap()
-            .contains("Hello from the child subagent."));
+        assert!(
+            rows[3]["body"]
+                .as_str()
+                .unwrap()
+                .contains("Hello from the child subagent.")
+        );
         assert_eq!(
             (&rows[3]["role"], &rows[3]["kind"]),
             (&json!("AGENT"), &json!(""))
         );
         assert_eq!(rows[4]["body"], "Hello from the mock provider.");
-        assert!(conversation
-            .messages
-            .iter()
-            .all(|message| message.id.starts_with("msg_")));
+        assert!(
+            conversation
+                .messages
+                .iter()
+                .all(|message| message.id.starts_with("msg_"))
+        );
     }
 
     #[test]
@@ -2655,9 +2660,11 @@ mod tests {
                 "Beamed up",
             ]
         );
-        assert!(rows
-            .iter()
-            .all(|row| row["role"] == "AGENT" && row["kind"] == "" && row["images"] == json!([])));
+        assert!(
+            rows.iter().all(|row| row["role"] == "AGENT"
+                && row["kind"] == ""
+                && row["images"] == json!([]))
+        );
         assert_eq!(rows[0]["time"], 1);
         assert_eq!(rows[11]["time"], 14);
         assert_eq!(conversation.context_tokens(), None);
@@ -3484,13 +3491,15 @@ mod tests {
             "session.step.started",
             json!({ "assistantMessageID": "msg_b", "agent": "build", "started": 3 }),
         ));
-        assert!(conversation
-            .messages
-            .iter()
-            .find(|m| m.id == "msg_b")
-            .unwrap()
-            .error
-            .is_none());
+        assert!(
+            conversation
+                .messages
+                .iter()
+                .find(|m| m.id == "msg_b")
+                .unwrap()
+                .error
+                .is_none()
+        );
     }
 
     #[test]
@@ -3584,9 +3593,11 @@ mod tests {
             conversation.messages[7].id, "msg_compact",
             "compaction uses inputID"
         );
-        assert!(row_values(&conversation)
-            .iter()
-            .all(|row| row["role"] == "AGENT" && row["kind"] == ""));
+        assert!(
+            row_values(&conversation)
+                .iter()
+                .all(|row| row["role"] == "AGENT" && row["kind"] == "")
+        );
     }
 
     #[test]
@@ -4048,11 +4059,13 @@ mod tests {
             Some(selection("mock", "alt", Some("high")))
         );
         assert!(!selected.apply(&mut sessions), "an echo changes nothing");
-        assert!(!SessionChange::ModelSelected {
-            id: "ses_missing".into(),
-            model: SessionModel::from_selection(&selection("mock", "alt", None)),
-        }
-        .apply(&mut sessions));
+        assert!(
+            !SessionChange::ModelSelected {
+                id: "ses_missing".into(),
+                model: SessionModel::from_selection(&selection("mock", "alt", None)),
+            }
+            .apply(&mut sessions)
+        );
         assert_eq!(
             SessionChange::from_event(&session_event(
                 "session.agent.selected",
@@ -4105,11 +4118,15 @@ mod tests {
             switched.model.as_ref(),
             "the event and the refetched session agree on the model"
         );
-        assert!(sessions
-            .iter()
-            .all(|session| !session.directory.is_empty() && session.time.created > 0));
-        assert!(sessions
-            .iter()
-            .any(|session| session.title != "Untitled session"));
+        assert!(
+            sessions
+                .iter()
+                .all(|session| !session.directory.is_empty() && session.time.created > 0)
+        );
+        assert!(
+            sessions
+                .iter()
+                .any(|session| session.title != "Untitled session")
+        );
     }
 }

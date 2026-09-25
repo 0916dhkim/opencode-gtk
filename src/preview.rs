@@ -3,7 +3,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::{
     api::{Bootstrap, Command, InboxRequest, MessagePage, ServerEnvelope, Settled, UiEvent},
@@ -998,10 +998,12 @@ mod tests {
         assert_eq!(bootstrap.sessions[0].id, ACTIVE_ID);
         assert!(bootstrap.sessions_complete);
         let catalog = catalog();
-        assert!(catalog
-            .models
-            .iter()
-            .all(|model| model.supports_attachments));
+        assert!(
+            catalog
+                .models
+                .iter()
+                .all(|model| model.supports_attachments)
+        );
         assert_eq!(
             catalog.preferred.map(|model| model.model_id),
             Some("gpt-5.6".to_owned())
@@ -1045,10 +1047,12 @@ mod tests {
                 ("AGENT", "error")
             ]
         );
-        assert!(rows[2]["body"]
-            .as_str()
-            .unwrap()
-            .starts_with("The background subagent"));
+        assert!(
+            rows[2]["body"]
+                .as_str()
+                .unwrap()
+                .starts_with("The background subagent")
+        );
         assert_eq!(rows[3]["body"], "AI_APICallError: Not Found (404)");
     }
 

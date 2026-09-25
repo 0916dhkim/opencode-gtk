@@ -1,6 +1,6 @@
 use std::fmt;
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use keyring::{Entry, Error as KeyringError};
 use serde::{Deserialize, Serialize};
 use url::Url;

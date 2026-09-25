@@ -282,16 +282,16 @@ pub fn tray_rows(
             in_flight: in_flight.contains(&item.id),
         })
         .collect();
-    if let Some(pending) = pending {
-        if !items.iter().any(|item| item.id == pending.id) {
-            rows.push(TrayRow {
-                id: pending.id.clone(),
-                delivery: pending.delivery,
-                summary: pending.summary.clone(),
-                sending: !pending.accepted,
-                in_flight: true,
-            });
-        }
+    if let Some(pending) = pending
+        && !items.iter().any(|item| item.id == pending.id)
+    {
+        rows.push(TrayRow {
+            id: pending.id.clone(),
+            delivery: pending.delivery,
+            summary: pending.summary.clone(),
+            sending: !pending.accepted,
+            in_flight: true,
+        });
     }
     rows
 }

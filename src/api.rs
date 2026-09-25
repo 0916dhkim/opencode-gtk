@@ -4,21 +4,21 @@ use std::{
     io::{BufRead, BufReader, Read},
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicBool, Ordering},
         Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
     },
     thread,
     time::{Duration, Instant},
 };
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use async_channel::{Receiver, Sender};
 use reqwest::{
+    Method, StatusCode, Url,
     blocking::{Client, RequestBuilder, Response},
     header::HeaderValue,
-    Method, StatusCode, Url,
 };
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
 
 use crate::{
@@ -1568,10 +1568,12 @@ mod tests {
                     result: Ok(catalog),
                     ..
                 }) => {
-                    assert!(catalog
-                        .models
-                        .iter()
-                        .any(|model| model.supports_attachments));
+                    assert!(
+                        catalog
+                            .models
+                            .iter()
+                            .any(|model| model.supports_attachments)
+                    );
                     saw_models = true;
                 }
                 Ok(_) => {}
@@ -1631,10 +1633,10 @@ mod tests {
             if line == "\r\n" || line == "\n" {
                 break;
             }
-            if let Some((name, value)) = line.split_once(':') {
-                if name.eq_ignore_ascii_case("content-length") {
-                    content_length = value.trim().parse().unwrap();
-                }
+            if let Some((name, value)) = line.split_once(':')
+                && name.eq_ignore_ascii_case("content-length")
+            {
+                content_length = value.trim().parse().unwrap();
             }
         }
         let mut body = vec![0; content_length];
@@ -1784,7 +1786,10 @@ mod tests {
         let error = |paths: &[PathBuf]| format_error(check_attachments(paths).unwrap_err());
 
         assert!(check_attachments(std::slice::from_ref(&limit)).is_ok());
-        assert_eq!(error(&[over.clone()]), "over.bin is larger than 20 MiB");
+        assert_eq!(
+            error(std::slice::from_ref(&over)),
+            "over.bin is larger than 20 MiB"
+        );
         assert_eq!(
             format_error(encode_attachments(&[over]).unwrap_err()),
             "over.bin is larger than 20 MiB"
@@ -1812,8 +1817,10 @@ mod tests {
         let folder = directory.path().join("folder");
         fs::create_dir(&folder).unwrap();
         assert!(error(&[folder]).ends_with("is not a regular file"));
-        assert!(error(&[directory.path().join("missing.png")])
-            .starts_with("failed to inspect attachment"));
+        assert!(
+            error(&[directory.path().join("missing.png")])
+                .starts_with("failed to inspect attachment")
+        );
     }
 
     fn inbox_user(id: &str) -> Value {
@@ -2310,9 +2317,11 @@ mod tests {
         assert_eq!(requests[0].json(), captured["request"]["body"]);
         assert_eq!(requests[1].json(), json!({ "decision": "reject" }));
         assert_eq!(requests[2].json(), json!({ "decision": "always" }));
-        assert!(requests
-            .iter()
-            .all(|request| !request.target().contains('?')));
+        assert!(
+            requests
+                .iter()
+                .all(|request| !request.target().contains('?'))
+        );
     }
 
     #[test]
@@ -2371,10 +2380,12 @@ mod tests {
             requests[2].query(),
             HashMap::from([("location[directory]".to_owned(), "/my repo".to_owned())])
         );
-        assert!(requests
-            .iter()
-            .filter(|request| !request.path().contains("/global/"))
-            .all(|request| request.query().is_empty()));
+        assert!(
+            requests
+                .iter()
+                .filter(|request| !request.path().contains("/global/"))
+                .all(|request| request.query().is_empty())
+        );
     }
 
     #[test]
@@ -2591,9 +2602,11 @@ mod tests {
         assert_eq!(pages.len(), 3);
         assert_eq!(pages[0].get("parentID").map(String::as_str), Some("null"));
         assert_eq!(pages[0].get("order").map(String::as_str), Some("asc"));
-        assert!(pages
-            .iter()
-            .all(|query| query.get("limit") == Some(&SESSION_PAGE_SIZE.to_string())));
+        assert!(
+            pages
+                .iter()
+                .all(|query| query.get("limit") == Some(&SESSION_PAGE_SIZE.to_string()))
+        );
         assert_eq!(pages[1].get("cursor").map(String::as_str), Some("c1"));
         assert_eq!(pages[2].get("cursor").map(String::as_str), Some("c2"));
         let mut pending: Vec<_> = requests
@@ -2622,9 +2635,11 @@ mod tests {
             pending, expected,
             "the open tab's and the active session's locations only, never project /b or idle ses_b's"
         );
-        assert!(requests
-            .iter()
-            .all(|request| !request.query().contains_key("directory")));
+        assert!(
+            requests
+                .iter()
+                .all(|request| !request.query().contains_key("directory"))
+        );
     }
 
     #[test]
@@ -2974,11 +2989,13 @@ mod tests {
         );
         assert_eq!(child.time.created, 1_790_289_099_609);
         assert_eq!(results[1].0, "ses_gone");
-        assert!(results[1]
-            .1
-            .as_ref()
-            .unwrap_err()
-            .contains("Session not found"));
+        assert!(
+            results[1]
+                .1
+                .as_ref()
+                .unwrap_err()
+                .contains("Session not found")
+        );
         assert_eq!(
             statuses,
             HashMap::from([("ses_f2a743e02ffe9b0pzkusFTSsVL".to_owned(), RunStatus::Busy)])
@@ -3084,10 +3101,12 @@ mod tests {
                 && session.parent_id.is_none()
                 && session.time.updated >= session.time.created
         }));
-        assert!(bootstrap
-            .projects
-            .iter()
-            .all(|project| project.worktree.starts_with('/')));
+        assert!(
+            bootstrap
+                .projects
+                .iter()
+                .all(|project| project.worktree.starts_with('/'))
+        );
         assert_eq!(bootstrap.statuses.get(&running), Some(&RunStatus::Busy));
         assert_eq!(
             bootstrap.pending_covered,
@@ -3288,9 +3307,10 @@ mod tests {
         else {
             panic!("preview history failed");
         };
-        assert!(page
-            .messages
-            .iter()
-            .any(|entry| matches!(entry, protocol::SessionMessage::Assistant(_))));
+        assert!(
+            page.messages
+                .iter()
+                .any(|entry| matches!(entry, protocol::SessionMessage::Assistant(_)))
+        );
     }
 }

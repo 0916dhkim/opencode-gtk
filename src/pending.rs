@@ -8,7 +8,7 @@ use serde_json::Value;
 use crate::{
     model::Session,
     protocol::{
-        EventKind, FormInfo, JsonMap, PermissionRequest, PermissionSource, GLOBAL_FORM_OWNER,
+        EventKind, FormInfo, GLOBAL_FORM_OWNER, JsonMap, PermissionRequest, PermissionSource,
     },
 };
 

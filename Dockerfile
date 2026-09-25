@@ -1,9 +1,18 @@
-FROM rust:1.88-bookworm@sha256:af306cfa71d987911a781c37b59d7d67d934f49684058f96cf72079c3626bfe0
+FROM rust:bookworm
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends libdbus-1-dev libgtk-4-dev pkg-config \
+    && apt-get install -y --no-install-recommends \
+        cmake \
+        libdbus-1-dev \
+        libexpat1-dev \
+        libfontconfig1-dev \
+        libfreetype6-dev \
+        libgl1-mesa-dev \
+        libxkbcommon-dev \
+        libwayland-dev \
+        pkg-config \
     && rm -rf /var/lib/apt/lists/*
-RUN rustup component add clippy rustfmt
+RUN rustup toolchain install stable && rustup default stable && rustup component add clippy rustfmt
 
 WORKDIR /app
 COPY . .

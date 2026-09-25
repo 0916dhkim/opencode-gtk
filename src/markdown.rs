@@ -1,928 +1,199 @@
-use std::time::Duration;
+use cosmic::Element;
+use cosmic::iced::Length;
+use cosmic::widget::{button, column, container, row, text};
+use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 
-use gtk::{glib, pango, prelude::*};
-use pulldown_cmark::{Alignment, CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
-use url::Url;
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum BlockKind {
-    Paragraph,
-    Heading(u8),
-    Code(Option<String>),
+#[derive(Clone, Debug)]
+pub enum MarkdownBlock {
+    Paragraph(String),
+    Heading(u8, String),
+    Code(Option<String>, String),
+    List(Vec<String>),
+    Blockquote(String),
     Rule,
-    Table(TableBlock),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum CellAlign {
-    Default,
-    Left,
-    Center,
-    Right,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct TableBlock {
-    alignments: Vec<CellAlign>,
-    header: Vec<String>,
-    rows: Vec<Vec<String>>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct Block {
-    kind: BlockKind,
-    content: String,
-    marker: Option<String>,
-    list_depth: usize,
-    quote_depth: usize,
-}
-
-#[derive(Clone, Debug)]
-struct ListState {
-    next: Option<u64>,
-}
-
-#[derive(Clone, Debug)]
-struct OpenBlock {
-    kind: BlockKind,
-    content: String,
-    marker: Option<String>,
-    list_depth: usize,
-    quote_depth: usize,
-}
-
-#[derive(Default)]
-struct MarkdownParser {
-    blocks: Vec<Block>,
-    current: Option<OpenBlock>,
-    code: Option<OpenBlock>,
-    table: Option<OpenTable>,
-    lists: Vec<ListState>,
-    pending_marker: Option<String>,
-    quote_depth: usize,
-    link_markup: Vec<bool>,
-}
-
-#[derive(Clone, Debug)]
-struct OpenTable {
-    alignments: Vec<CellAlign>,
-    header: Vec<String>,
-    rows: Vec<Vec<String>>,
-    current_row: Vec<String>,
-}
-
-pub fn render_plain(text: &str, class: &str) -> gtk::Label {
-    rich_label(&autolink_markup(text), class)
-}
-
-pub fn render_into(container: &gtk::Box, source: &str) {
-    while let Some(child) = container.first_child() {
-        container.remove(&child);
-    }
-
-    for block in parse(source) {
-        append_block(container, block);
-    }
-}
-
-fn parse(source: &str) -> Vec<Block> {
+pub fn parse_markdown(source: &str) -> Vec<MarkdownBlock> {
     let mut options = Options::empty();
-    options
-        .insert(Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS | Options::ENABLE_TABLES);
-    let mut state = MarkdownParser::default();
+    options.insert(Options::ENABLE_TABLES);
+    options.insert(Options::ENABLE_STRIKETHROUGH);
+    options.insert(Options::ENABLE_TASKLISTS);
 
-    for event in Parser::new_ext(source, options) {
-        if state.code.is_some() {
-            match event {
-                Event::End(TagEnd::CodeBlock) => state.finish_code(),
-                Event::Text(text)
-                | Event::Code(text)
-                | Event::Html(text)
-                | Event::InlineHtml(text) => state.append_code(&text),
-                Event::SoftBreak | Event::HardBreak => state.append_code("\n"),
-                _ => {}
-            }
-            continue;
-        }
+    let parser = Parser::new_ext(source, options);
+    let mut blocks = Vec::new();
+    let mut current_text = String::new();
+    let mut current_code_lang = None;
+    let mut current_heading_level = None;
+    let mut in_blockquote = false;
+    let mut current_list_items = Vec::new();
+    let mut in_list = false;
 
+    for event in parser {
         match event {
-            Event::Start(tag) => state.start(tag),
-            Event::End(tag) => state.end(tag),
-            Event::Text(text) | Event::Html(text) | Event::InlineHtml(text) => {
-                state.append_escaped(&text)
+            Event::Start(Tag::Heading { level, .. }) => {
+                current_heading_level = Some(match level {
+                    HeadingLevel::H1 => 1,
+                    HeadingLevel::H2 => 2,
+                    HeadingLevel::H3 => 3,
+                    HeadingLevel::H4 => 4,
+                    HeadingLevel::H5 => 5,
+                    HeadingLevel::H6 => 6,
+                });
+                current_text.clear();
             }
-            Event::Code(text) => {
-                state.append_markup("<span font_family=\"monospace\">");
-                state.append_escaped(&text);
-                state.append_markup("</span>");
+            Event::End(TagEnd::Heading(_)) => {
+                if let Some(level) = current_heading_level.take() {
+                    blocks.push(MarkdownBlock::Heading(
+                        level,
+                        current_text.trim().to_string(),
+                    ));
+                    current_text.clear();
+                }
             }
-            Event::InlineMath(text) => {
-                state.append_markup("<i>");
-                state.append_escaped(&text);
-                state.append_markup("</i>");
-            }
-            Event::DisplayMath(text) => {
-                state.finish_current();
-                state.begin(BlockKind::Code(Some("math".to_owned())));
-                state.append_markup(&text);
-                state.finish_current();
-            }
-            Event::FootnoteReference(label) => {
-                state.append_escaped(&format!("[{label}]"));
-            }
-            Event::SoftBreak => state.append_markup("\n"),
-            Event::HardBreak => state.append_markup("\n"),
-            Event::Rule => {
-                state.finish_current();
-                state.begin(BlockKind::Rule);
-                state.finish_current();
-            }
-            Event::TaskListMarker(checked) => {
-                state.append_markup(if checked { "[x] " } else { "[ ] " });
-            }
-        }
-    }
-
-    state.finish_code();
-    state.finish_table();
-    state.finish_current();
-    state.blocks
-}
-
-impl MarkdownParser {
-    fn start(&mut self, tag: Tag<'_>) {
-        match tag {
-            Tag::Paragraph => self.begin(BlockKind::Paragraph),
-            Tag::Heading { level, .. } => self.begin(BlockKind::Heading(heading_level(level))),
-            Tag::BlockQuote(_) => {
-                self.finish_current();
-                self.quote_depth += 1;
-            }
-            Tag::CodeBlock(kind) => {
-                self.finish_current();
-                let language = match kind {
-                    CodeBlockKind::Indented => None,
-                    CodeBlockKind::Fenced(language) => {
-                        let language = language.trim();
-                        (!language.is_empty()).then(|| language.to_owned())
-                    }
-                };
-                self.code = Some(self.open_block(BlockKind::Code(language)));
-            }
-            Tag::List(start) => {
-                self.finish_current();
-                self.lists.push(ListState { next: start });
-            }
-            Tag::Item => {
-                self.finish_current();
-                let marker = self
-                    .lists
-                    .last_mut()
-                    .map(|list| match list.next.as_mut() {
-                        Some(next) => {
-                            let marker = format!("{next}.");
-                            *next += 1;
-                            marker
+            Event::Start(Tag::CodeBlock(kind)) => {
+                current_code_lang = match kind {
+                    CodeBlockKind::Fenced(lang) => {
+                        let l = lang.trim();
+                        if l.is_empty() {
+                            None
+                        } else {
+                            Some(l.to_string())
                         }
-                        None => "•".to_owned(),
-                    })
-                    .unwrap_or_else(|| "•".to_owned());
-                self.pending_marker = Some(marker);
+                    }
+                    CodeBlockKind::Indented => None,
+                };
+                current_text.clear();
             }
-            Tag::Emphasis => self.append_markup("<i>"),
-            Tag::Strong => self.append_markup("<b>"),
-            Tag::Strikethrough => self.append_markup("<span strikethrough=\"true\">"),
-            Tag::Superscript => self.append_markup("<sup>"),
-            Tag::Subscript => self.append_markup("<sub>"),
-            Tag::Link { dest_url, .. } => {
-                let safe = safe_link(&dest_url);
-                self.link_markup.push(safe);
-                if safe {
-                    self.append_markup("<a href=\"");
-                    self.append_markup(&glib::markup_escape_text(&dest_url));
-                    self.append_markup("\">");
+            Event::End(TagEnd::CodeBlock) => {
+                let lang = current_code_lang.take();
+                blocks.push(MarkdownBlock::Code(lang, current_text.clone()));
+                current_text.clear();
+            }
+            Event::Start(Tag::List(_)) => {
+                in_list = true;
+                current_list_items.clear();
+            }
+            Event::End(TagEnd::List(_)) => {
+                in_list = false;
+                if !current_list_items.is_empty() {
+                    blocks.push(MarkdownBlock::List(std::mem::take(&mut current_list_items)));
                 }
             }
-            Tag::Image { .. } => self.append_markup("Image: "),
-            Tag::Table(alignments) => {
-                self.finish_current();
-                self.table = Some(OpenTable {
-                    alignments: alignments.iter().copied().map(cell_align).collect(),
-                    header: Vec::new(),
-                    rows: Vec::new(),
-                    current_row: Vec::new(),
-                });
+            Event::Start(Tag::Item) => {
+                current_text.clear();
             }
-            Tag::TableHead | Tag::TableRow => {}
-            Tag::TableCell => {
-                self.current = Some(self.open_block(BlockKind::Paragraph));
+            Event::End(TagEnd::Item) => {
+                if in_list && !current_text.trim().is_empty() {
+                    current_list_items.push(current_text.trim().to_string());
+                }
+                current_text.clear();
+            }
+            Event::Start(Tag::BlockQuote(_)) => {
+                in_blockquote = true;
+                current_text.clear();
+            }
+            Event::End(TagEnd::BlockQuote(_)) => {
+                in_blockquote = false;
+                if !current_text.trim().is_empty() {
+                    blocks.push(MarkdownBlock::Blockquote(current_text.trim().to_string()));
+                }
+                current_text.clear();
+            }
+            Event::Start(Tag::Paragraph) => {
+                current_text.clear();
+            }
+            Event::End(TagEnd::Paragraph) => {
+                if !in_list && !in_blockquote && !current_text.trim().is_empty() {
+                    blocks.push(MarkdownBlock::Paragraph(current_text.trim().to_string()));
+                }
+                current_text.clear();
+            }
+            Event::Text(t) => {
+                current_text.push_str(&t);
+            }
+            Event::Code(c) => {
+                current_text.push('`');
+                current_text.push_str(&c);
+                current_text.push('`');
+            }
+            Event::SoftBreak | Event::HardBreak => {
+                current_text.push('\n');
+            }
+            Event::Rule => {
+                blocks.push(MarkdownBlock::Rule);
             }
             _ => {}
         }
     }
 
-    fn end(&mut self, tag: TagEnd) {
-        match tag {
-            TagEnd::Paragraph | TagEnd::Heading(_) => self.finish_current(),
-            TagEnd::BlockQuote(_) => {
-                self.finish_current();
-                self.quote_depth = self.quote_depth.saturating_sub(1);
+    if !current_text.trim().is_empty() {
+        blocks.push(MarkdownBlock::Paragraph(current_text.trim().to_string()));
+    }
+
+    blocks
+}
+
+pub fn render_markdown<'a, Message: Clone + 'static, F>(
+    source: &str,
+    on_copy: F,
+) -> Element<'a, Message>
+where
+    F: Fn(String) -> Message + Copy + 'static,
+{
+    let blocks = parse_markdown(source);
+    let mut elements = Vec::with_capacity(blocks.len());
+
+    for block in blocks {
+        match block {
+            MarkdownBlock::Paragraph(p) => {
+                elements.push(text(p).size(14).into());
             }
-            TagEnd::List(_) => {
-                self.finish_current();
-                self.lists.pop();
+            MarkdownBlock::Heading(level, h) => {
+                let size = match level {
+                    1 => 22,
+                    2 => 18,
+                    3 => 16,
+                    _ => 14,
+                };
+                elements.push(text(h).size(size).into());
             }
-            TagEnd::Item => {
-                self.finish_current();
-                self.pending_marker = None;
+            MarkdownBlock::Code(lang, code) => {
+                let lang_label = lang.unwrap_or_else(|| "code".to_string());
+                let header = row::with_children(vec![
+                    text(lang_label).size(12).width(Length::Fill).into(),
+                    button::text("Copy").on_press(on_copy(code.clone())).into(),
+                ])
+                .padding([4, 8]);
+
+                let code_text = text(code).font(cosmic::iced::Font::MONOSPACE).size(13);
+
+                let code_container = container(code_text).padding(8).width(Length::Fill);
+
+                let block_col =
+                    column::with_children(vec![header.into(), code_container.into()]).spacing(2);
+
+                elements.push(container(block_col).padding(4).into());
             }
-            TagEnd::Emphasis => self.append_markup("</i>"),
-            TagEnd::Strong => self.append_markup("</b>"),
-            TagEnd::Strikethrough => self.append_markup("</span>"),
-            TagEnd::Superscript => self.append_markup("</sup>"),
-            TagEnd::Subscript => self.append_markup("</sub>"),
-            TagEnd::Link => {
-                if self.link_markup.pop().unwrap_or(false) {
-                    self.append_markup("</a>");
+            MarkdownBlock::List(items) => {
+                let mut list_col = column::with_capacity(items.len()).spacing(4);
+                for item in items {
+                    let bullet_item = row::with_children(vec![
+                        text("• ").size(14).into(),
+                        text(item).size(14).width(Length::Fill).into(),
+                    ]);
+                    list_col = list_col.push(bullet_item);
                 }
+                elements.push(container(list_col).padding([2, 8]).into());
             }
-            TagEnd::TableCell => self.finish_table_cell(),
-            TagEnd::TableRow | TagEnd::TableHead => self.finish_table_row(),
-            TagEnd::Table => self.finish_table(),
-            _ => {}
-        }
-    }
-
-    fn begin(&mut self, kind: BlockKind) {
-        self.finish_current();
-        self.current = Some(self.open_block(kind));
-    }
-
-    fn open_block(&mut self, kind: BlockKind) -> OpenBlock {
-        OpenBlock {
-            kind,
-            content: String::new(),
-            marker: self.pending_marker.take(),
-            list_depth: self.lists.len(),
-            quote_depth: self.quote_depth,
-        }
-    }
-
-    fn ensure_current(&mut self) {
-        if self.current.is_none() {
-            self.current = Some(self.open_block(BlockKind::Paragraph));
-        }
-    }
-
-    fn append_markup(&mut self, text: &str) {
-        self.ensure_current();
-        if let Some(current) = &mut self.current {
-            current.content.push_str(text);
-        }
-    }
-
-    fn append_escaped(&mut self, text: &str) {
-        if self.link_markup.is_empty() {
-            self.append_markup(&autolink_markup(text));
-        } else {
-            self.append_markup(&glib::markup_escape_text(text));
-        }
-    }
-
-    fn append_code(&mut self, text: &str) {
-        if let Some(code) = &mut self.code {
-            code.content.push_str(text);
-        }
-    }
-
-    fn finish_current(&mut self) {
-        let Some(current) = self.current.take() else {
-            return;
-        };
-        if current.content.is_empty() && current.kind != BlockKind::Rule {
-            return;
-        }
-        self.blocks.push(Block {
-            kind: current.kind,
-            content: current.content,
-            marker: current.marker,
-            list_depth: current.list_depth,
-            quote_depth: current.quote_depth,
-        });
-    }
-
-    fn finish_code(&mut self) {
-        let Some(code) = self.code.take() else {
-            return;
-        };
-        self.blocks.push(Block {
-            kind: code.kind,
-            content: code.content,
-            marker: code.marker,
-            list_depth: code.list_depth,
-            quote_depth: code.quote_depth,
-        });
-    }
-
-    fn finish_table_cell(&mut self) {
-        let content = self
-            .current
-            .take()
-            .map(|block| block.content)
-            .unwrap_or_default();
-        if let Some(table) = &mut self.table {
-            table.current_row.push(content);
-        }
-    }
-
-    fn finish_table_row(&mut self) {
-        if self.current.is_some() {
-            self.finish_table_cell();
-        }
-        let Some(table) = &mut self.table else {
-            return;
-        };
-        let row = std::mem::take(&mut table.current_row);
-        if row.is_empty() {
-            return;
-        }
-        if table.header.is_empty() {
-            table.header = row;
-        } else {
-            table.rows.push(row);
-        }
-    }
-
-    fn finish_table(&mut self) {
-        if self.table.is_none() {
-            return;
-        }
-        self.finish_table_row();
-        let Some(table) = self.table.take() else {
-            return;
-        };
-        if table.header.is_empty() && table.rows.is_empty() {
-            return;
-        }
-        self.blocks.push(Block {
-            kind: BlockKind::Table(TableBlock {
-                alignments: table.alignments,
-                header: table.header,
-                rows: table.rows,
-            }),
-            content: String::new(),
-            marker: None,
-            list_depth: self.lists.len(),
-            quote_depth: self.quote_depth,
-        });
-    }
-}
-
-fn append_block(container: &gtk::Box, block: Block) {
-    let marker = block.marker.clone();
-    let list_depth = block.list_depth;
-    let quote_depth = block.quote_depth;
-    let content = block_widget(block);
-    content.set_hexpand(true);
-
-    let aligned = if let Some(marker) = marker {
-        let row = gtk::Box::new(gtk::Orientation::Horizontal, 9);
-        let marker = gtk::Label::new(Some(&marker));
-        marker.set_xalign(1.0);
-        marker.set_yalign(0.0);
-        marker.add_css_class("markdown-list-marker");
-        row.append(&marker);
-        row.append(&content);
-        row.upcast::<gtk::Widget>()
-    } else {
-        if list_depth > 0 {
-            content.set_margin_start(28);
-        }
-        content
-    };
-    aligned.set_margin_start((list_depth.saturating_sub(1) * 22) as i32);
-
-    if quote_depth > 0 {
-        let quote = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        quote.add_css_class("markdown-blockquote");
-        quote.set_margin_start((quote_depth.saturating_sub(1) * 14) as i32);
-        quote.append(&aligned);
-        container.append(&quote);
-    } else {
-        container.append(&aligned);
-    }
-}
-
-fn block_widget(block: Block) -> gtk::Widget {
-    let Block { kind, content, .. } = block;
-    match kind {
-        BlockKind::Paragraph => rich_label(&content, "markdown-paragraph").upcast(),
-        BlockKind::Heading(level) => {
-            let label = rich_label(&content, "markdown-heading");
-            label.add_css_class(&format!("markdown-heading-{level}"));
-            label.upcast()
-        }
-        BlockKind::Code(language) => {
-            let code_block = gtk::Box::new(gtk::Orientation::Vertical, 0);
-            code_block.add_css_class("markdown-code-block");
-            code_block.set_overflow(gtk::Overflow::Hidden);
-
-            let header = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-            header.add_css_class("markdown-code-header");
-
-            let lang_label = gtk::Label::new(language.as_deref());
-            lang_label.set_xalign(0.0);
-            lang_label.set_hexpand(true);
-            lang_label.add_css_class("markdown-code-language");
-            header.append(&lang_label);
-
-            let copy_button = gtk::Button::new();
-            copy_button.set_child(Some(&copy_icon(14)));
-            copy_button.set_tooltip_text(Some("Copy code"));
-            copy_button.set_valign(gtk::Align::Center);
-            copy_button.add_css_class("flat");
-            copy_button.add_css_class("markdown-code-copy");
-
-            let copy_text = content.clone();
-            copy_button.connect_clicked(move |btn| {
-                btn.display().clipboard().set_text(&copy_text);
-                btn.set_child(Some(&check_icon(14)));
-                btn.add_css_class("copied");
-                btn.set_tooltip_text(Some("Copied!"));
-
-                let btn = btn.clone();
-                glib::timeout_add_local_once(Duration::from_millis(2000), move || {
-                    btn.set_child(Some(&copy_icon(14)));
-                    btn.remove_css_class("copied");
-                    btn.set_tooltip_text(Some("Copy code"));
-                });
-            });
-            header.append(&copy_button);
-            code_block.append(&header);
-
-            let code = gtk::Label::new(Some(&content));
-            code.set_xalign(0.0);
-            code.set_yalign(0.0);
-            code.set_selectable(true);
-            code.set_wrap(false);
-            code.add_css_class("markdown-code-content");
-            let scroll = gtk::ScrolledWindow::builder()
-                .hscrollbar_policy(gtk::PolicyType::Automatic)
-                .vscrollbar_policy(gtk::PolicyType::Never)
-                .propagate_natural_width(false)
-                .hexpand(true)
-                .child(&code)
-                .build();
-            scroll.set_margin_start(12);
-            scroll.set_margin_end(12);
-            scroll.set_margin_top(10);
-            scroll.set_margin_bottom(12);
-            code_block.append(&scroll);
-            code_block.upcast()
-        }
-        BlockKind::Rule => gtk::Separator::new(gtk::Orientation::Horizontal).upcast(),
-        BlockKind::Table(table) => table_widget(table),
-    }
-}
-
-fn table_widget(table: TableBlock) -> gtk::Widget {
-    let columns = table_column_count(&table);
-    let grid = gtk::Grid::new();
-    grid.add_css_class("markdown-table");
-    grid.set_column_spacing(0);
-    grid.set_row_spacing(0);
-    let total_rows = if table.header.is_empty() {
-        table.rows.len()
-    } else {
-        table.rows.len() + 1
-    };
-    let mut row_index = 0;
-    if !table.header.is_empty() {
-        let is_last = total_rows == 1;
-        attach_table_row(
-            &grid,
-            &table.header,
-            &table.alignments,
-            columns,
-            0,
-            true,
-            is_last,
-        );
-        row_index = 1;
-    }
-    let rows_len = table.rows.len();
-    for (i, row) in table.rows.into_iter().enumerate() {
-        let is_last = i + 1 == rows_len;
-        attach_table_row(
-            &grid,
-            &row,
-            &table.alignments,
-            columns,
-            row_index,
-            false,
-            is_last,
-        );
-        row_index += 1;
-    }
-    let scroll = gtk::ScrolledWindow::builder()
-        .hscrollbar_policy(gtk::PolicyType::Automatic)
-        .vscrollbar_policy(gtk::PolicyType::Never)
-        .overlay_scrolling(false)
-        .propagate_natural_height(true)
-        .propagate_natural_width(true)
-        .hexpand(false)
-        .halign(gtk::Align::Start)
-        .child(&grid)
-        .build();
-    scroll.add_css_class("markdown-table-scroll");
-    scroll.upcast()
-}
-
-fn attach_table_row(
-    grid: &gtk::Grid,
-    cells: &[String],
-    alignments: &[CellAlign],
-    columns: usize,
-    row: i32,
-    header: bool,
-    is_last: bool,
-) {
-    for column in 0..columns {
-        let markup = cells.get(column).map(String::as_str).unwrap_or("");
-        let class = if header {
-            "markdown-table-header"
-        } else {
-            "markdown-table-cell"
-        };
-        let label = rich_label(markup, class);
-        label.set_wrap(false);
-        label.set_xalign(cell_xalign(
-            alignments
-                .get(column)
-                .copied()
-                .unwrap_or(CellAlign::Default),
-        ));
-        if column + 1 == columns {
-            label.add_css_class("markdown-table-last");
-        }
-        if is_last {
-            label.add_css_class("markdown-table-row-last");
-        }
-        grid.attach(&label, column as i32, row, 1, 1);
-    }
-}
-
-fn table_column_count(table: &TableBlock) -> usize {
-    table
-        .alignments
-        .len()
-        .max(table.header.len())
-        .max(table.rows.iter().map(Vec::len).max().unwrap_or(0))
-}
-
-fn cell_align(alignment: Alignment) -> CellAlign {
-    match alignment {
-        Alignment::None => CellAlign::Default,
-        Alignment::Left => CellAlign::Left,
-        Alignment::Center => CellAlign::Center,
-        Alignment::Right => CellAlign::Right,
-    }
-}
-
-fn cell_xalign(align: CellAlign) -> f32 {
-    match align {
-        CellAlign::Default | CellAlign::Left => 0.0,
-        CellAlign::Center => 0.5,
-        CellAlign::Right => 1.0,
-    }
-}
-
-fn rich_label(markup: &str, class: &str) -> gtk::Label {
-    let label = gtk::Label::new(None);
-    label.set_markup(markup);
-    label.set_xalign(0.0);
-    label.set_yalign(0.0);
-    label.set_wrap(true);
-    label.set_wrap_mode(pango::WrapMode::WordChar);
-    label.set_selectable(true);
-    label.add_css_class(class);
-    label.connect_activate_link(|label, uri| {
-        if !safe_link(uri) {
-            return glib::Propagation::Stop;
-        }
-        let parent = label.root().and_downcast::<gtk::Window>();
-        gtk::show_uri(parent.as_ref(), uri, 0);
-        glib::Propagation::Stop
-    });
-    label
-}
-
-fn autolink_markup(text: &str) -> String {
-    let mut markup = String::new();
-    let mut rest = text;
-    while let Some((start, end)) = next_url(rest) {
-        markup.push_str(&glib::markup_escape_text(&rest[..start]));
-        let url = &rest[start..end];
-        if safe_link(url) {
-            markup.push_str("<a href=\"");
-            markup.push_str(&glib::markup_escape_text(url));
-            markup.push_str("\">");
-            markup.push_str(&glib::markup_escape_text(url));
-            markup.push_str("</a>");
-        } else {
-            markup.push_str(&glib::markup_escape_text(url));
-        }
-        rest = &rest[end..];
-    }
-    markup.push_str(&glib::markup_escape_text(rest));
-    markup
-}
-
-fn next_url(text: &str) -> Option<(usize, usize)> {
-    let mut best: Option<(usize, usize)> = None;
-    let mut from = 0;
-    while let Some(relative) = text[from..].find("://") {
-        let separator = from + relative;
-        if let Some(start) = scheme_start(text, separator) {
-            let end = start + url_len(&text[start..]);
-            if end > separator + 3 {
-                consider_url(&mut best, start, end);
+            MarkdownBlock::Blockquote(quote) => {
+                let q = container(text(quote).size(14)).padding([4, 12]);
+                elements.push(q.into());
+            }
+            MarkdownBlock::Rule => {
+                elements.push(container(text("───").size(10)).padding(4).into());
             }
         }
-        from = separator + 1;
-    }
-    from = 0;
-    while let Some(relative) = text[from..].find("mailto:") {
-        let start = from + relative;
-        if start == 0 || !scheme_continue(text.as_bytes()[start - 1]) {
-            let end = start + url_len(&text[start..]);
-            if end > start + "mailto:".len() {
-                consider_url(&mut best, start, end);
-            }
-        }
-        from = start + 1;
-    }
-    best
-}
-
-fn consider_url(best: &mut Option<(usize, usize)>, start: usize, end: usize) {
-    if best.is_none_or(|(best_start, _)| start < best_start) {
-        *best = Some((start, end));
-    }
-}
-
-fn scheme_start(text: &str, separator: usize) -> Option<usize> {
-    let bytes = text.as_bytes();
-    if separator == 0 || separator + 2 >= bytes.len() || &bytes[separator..separator + 3] != b"://"
-    {
-        return None;
-    }
-    let mut start = separator;
-    while start > 0 && scheme_continue(bytes[start - 1]) {
-        start -= 1;
-    }
-    if start == separator || !bytes[start].is_ascii_alphabetic() {
-        return None;
-    }
-    Some(start)
-}
-
-fn scheme_continue(byte: u8) -> bool {
-    byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'.' | b'-')
-}
-
-fn url_len(text: &str) -> usize {
-    let mut end = text
-        .char_indices()
-        .take_while(|(_, ch)| !ch.is_whitespace() && *ch != '<' && *ch != '"')
-        .map(|(index, ch)| index + ch.len_utf8())
-        .last()
-        .unwrap_or(0);
-    while end > 0 {
-        let Some(previous) = text[..end].chars().next_back() else {
-            break;
-        };
-        if matches!(
-            previous,
-            '.' | ',' | ';' | ':' | '!' | '?' | ')' | ']' | '}' | '>'
-        ) {
-            end -= previous.len_utf8();
-        } else {
-            break;
-        }
-    }
-    end
-}
-
-fn heading_level(level: HeadingLevel) -> u8 {
-    match level {
-        HeadingLevel::H1 => 1,
-        HeadingLevel::H2 => 2,
-        HeadingLevel::H3 => 3,
-        HeadingLevel::H4 => 4,
-        HeadingLevel::H5 => 5,
-        HeadingLevel::H6 => 6,
-    }
-}
-
-fn safe_link(target: &str) -> bool {
-    Url::parse(target)
-        .is_ok_and(|url| !matches!(url.scheme(), "javascript" | "data" | "vbscript" | "file"))
-}
-
-pub(crate) fn copy_icon(pixel_size: i32) -> gtk::DrawingArea {
-    drawn_icon(pixel_size, draw_copy)
-}
-
-pub(crate) fn check_icon(pixel_size: i32) -> gtk::DrawingArea {
-    drawn_icon(pixel_size, draw_check)
-}
-
-fn drawn_icon(
-    pixel_size: i32,
-    draw: fn(&gtk::DrawingArea, &gtk::cairo::Context, i32, i32, i32),
-) -> gtk::DrawingArea {
-    let area = gtk::DrawingArea::builder()
-        .content_width(pixel_size)
-        .content_height(pixel_size)
-        .halign(gtk::Align::Center)
-        .valign(gtk::Align::Center)
-        .can_target(false)
-        .build();
-    area.set_draw_func(move |widget, cr, width, height| {
-        draw(widget, cr, width, height, pixel_size);
-    });
-    area
-}
-
-fn draw_copy(
-    widget: &gtk::DrawingArea,
-    cr: &gtk::cairo::Context,
-    width: i32,
-    height: i32,
-    pixel_size: i32,
-) {
-    let color = widget
-        .parent()
-        .map(|parent| parent.style_context().color())
-        .unwrap_or_else(|| widget.style_context().color());
-    cr.set_source_rgba(
-        f64::from(color.red()),
-        f64::from(color.green()),
-        f64::from(color.blue()),
-        f64::from(color.alpha()),
-    );
-    let size = f64::from(pixel_size);
-    let s = size / 14.0;
-    cr.save().ok();
-    cr.translate(
-        f64::from(width) / 2.0 - 7.0 * s,
-        f64::from(height) / 2.0 - 7.0 * s,
-    );
-    cr.set_line_width(1.3 * s);
-    cr.set_line_cap(gtk::cairo::LineCap::Round);
-    cr.set_line_join(gtk::cairo::LineJoin::Round);
-
-    cr.rectangle(2.2 * s, 4.2 * s, 7.2 * s, 8.0 * s);
-    let _ = cr.stroke();
-
-    cr.move_to(4.8 * s, 2.0 * s);
-    cr.line_to(11.8 * s, 2.0 * s);
-    cr.line_to(11.8 * s, 9.4 * s);
-    let _ = cr.stroke();
-
-    cr.restore().ok();
-}
-
-fn draw_check(
-    widget: &gtk::DrawingArea,
-    cr: &gtk::cairo::Context,
-    width: i32,
-    height: i32,
-    pixel_size: i32,
-) {
-    let color = widget
-        .parent()
-        .map(|parent| parent.style_context().color())
-        .unwrap_or_else(|| widget.style_context().color());
-    cr.set_source_rgba(
-        f64::from(color.red()),
-        f64::from(color.green()),
-        f64::from(color.blue()),
-        f64::from(color.alpha()),
-    );
-    let size = f64::from(pixel_size);
-    let s = size / 14.0;
-    cr.save().ok();
-    cr.translate(
-        f64::from(width) / 2.0 - 7.0 * s,
-        f64::from(height) / 2.0 - 7.0 * s,
-    );
-    cr.set_line_width(1.6 * s);
-    cr.set_line_cap(gtk::cairo::LineCap::Round);
-    cr.set_line_join(gtk::cairo::LineJoin::Round);
-
-    cr.move_to(2.8 * s, 7.2 * s);
-    cr.line_to(5.8 * s, 10.4 * s);
-    cr.line_to(11.6 * s, 4.0 * s);
-    let _ = cr.stroke();
-
-    cr.restore().ok();
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parses_common_markdown_blocks_and_inline_styles() {
-        let blocks = parse(
-            "# Heading\n\nA *small* **strong** [`link`](https://example.com?a=1&b=2).\n\n- first\n- second\n\n> quoted\n\n```rust\nfn main() {}\n```",
-        );
-
-        assert_eq!(blocks[0].kind, BlockKind::Heading(1));
-        assert_eq!(blocks[0].content, "Heading");
-        assert!(blocks[1].content.contains("<i>small</i>"));
-        assert!(blocks[1].content.contains("<b>strong</b>"));
-        assert!(blocks[1]
-            .content
-            .contains("<a href=\"https://example.com?a=1&amp;b=2\">"));
-        assert_eq!(blocks[2].marker.as_deref(), Some("•"));
-        assert_eq!(blocks[3].marker.as_deref(), Some("•"));
-        assert_eq!(blocks[4].quote_depth, 1);
-        assert_eq!(blocks[5].kind, BlockKind::Code(Some("rust".to_owned())));
-        assert_eq!(blocks[5].content, "fn main() {}\n");
     }
 
-    #[test]
-    fn escapes_markup_and_rejects_unsafe_links() {
-        let blocks = parse(
-            "<span foreground=\"red\">unsafe</span> and [file](file:///etc/passwd) with `</span>`",
-        );
-        let markup = &blocks[0].content;
-
-        assert!(markup.contains("&lt;span foreground=&quot;red&quot;&gt;"));
-        assert!(!markup.contains("href="));
-        assert!(markup.contains("&lt;/span&gt;"));
-    }
-
-    #[test]
-    fn incomplete_streaming_markdown_remains_renderable() {
-        assert_eq!(parse("**partial")[0].content, "**partial");
-        let blocks = parse("```rust\nfn main(");
-        assert_eq!(blocks[0].kind, BlockKind::Code(Some("rust".to_owned())));
-        assert_eq!(blocks[0].content, "fn main(");
-    }
-
-    #[test]
-    fn link_policy_allows_only_browser_safe_schemes() {
-        assert!(safe_link("https://example.com"));
-        assert!(safe_link("http://localhost:4096"));
-        assert!(safe_link("mailto:test@example.com"));
-        assert!(safe_link("obsidian://open?vault=notes"));
-        assert!(safe_link("vscode://file/tmp/foo.rs"));
-        assert!(!safe_link("file:///etc/passwd"));
-        assert!(!safe_link("javascript:alert(1)"));
-        assert!(!safe_link("not a url"));
-    }
-
-    #[test]
-    fn autolinks_bare_http_urls() {
-        let markup = autolink_markup("see https://example.com/path, please.");
-        assert!(
-            markup.contains("<a href=\"https://example.com/path\">https://example.com/path</a>")
-        );
-        assert!(markup.ends_with(", please."));
-        assert!(!autolink_markup("javascript:alert(1)").contains("href="));
-        let deep = autolink_markup("open obsidian://open?vault=notes now");
-        assert!(deep
-            .contains("<a href=\"obsidian://open?vault=notes\">obsidian://open?vault=notes</a>"));
-    }
-
-    #[test]
-    fn markdown_links_do_not_nest_autolinks() {
-        let markup = &parse("[Figma](https://www.figma.com/) and https://example.com")[0].content;
-        assert!(!markup.contains("<a href=\"<a"));
-        assert!(markup.contains("<a href=\"https://www.figma.com/\">Figma</a>"));
-        assert!(markup.contains("<a href=\"https://example.com\">https://example.com</a>"));
-    }
-
-    #[test]
-    fn parses_markdown_tables_with_alignment_and_inline_markup() {
-        let blocks = parse("| Name | Count |\n| :--- | ---: |\n| *alpha* | 2 |\n| beta | 3 |\n");
-        let BlockKind::Table(table) = &blocks[0].kind else {
-            panic!("expected table, got {:?}", blocks[0].kind);
-        };
-        assert_eq!(table.alignments, vec![CellAlign::Left, CellAlign::Right]);
-        assert_eq!(table.header, ["Name", "Count"]);
-        assert_eq!(table.rows.len(), 2);
-        assert_eq!(table.rows[0][0], "<i>alpha</i>");
-        assert_eq!(table.rows[0][1], "2");
-        assert_eq!(table.rows[1], ["beta", "3"]);
-    }
-
-    #[test]
-    fn incomplete_table_stays_renderable() {
-        assert!(!parse("| Name | Count |\n| ---").is_empty());
-    }
+    column::with_children(elements).spacing(8).into()
 }

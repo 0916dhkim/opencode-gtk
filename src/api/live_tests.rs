@@ -18,7 +18,7 @@
 
 use std::time::{Duration, Instant};
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use super::*;
 use crate::{
@@ -514,9 +514,11 @@ fn live_server_end_to_end() {
     let user = rows.iter().find(|row| row["role"] == "YOU").unwrap();
     let images = user["images"].as_array().expect("user row images");
     assert_eq!(images.len(), 1, "{user}");
-    assert!(images[0]
-        .as_str()
-        .is_some_and(|uri| uri.starts_with("data:image/png;base64,")));
+    assert!(
+        images[0]
+            .as_str()
+            .is_some_and(|uri| uri.starts_with("data:image/png;base64,"))
+    );
     let stored = live.entries(&attachment.id);
     let protocol::SessionMessage::User(message) = &stored[0] else {
         panic!("first entry is not the user prompt: {:?}", stored[0]);
@@ -621,11 +623,13 @@ fn live_server_end_to_end() {
     live.wait_done(&permission.id, 1, 60);
     let rows = live.assert_live_matches_history("permission", &permission.id);
     assert!(count_kind(&rows, "AGENT", "tool") >= 1, "{rows:?}");
-    assert!(!live
-        .pending()
-        .requests
-        .iter()
-        .any(|request| request.id() == request_id));
+    assert!(
+        !live
+            .pending()
+            .requests
+            .iter()
+            .any(|request| request.id() == request_id)
+    );
 
     step("subagent");
     let parent = live.create();
@@ -747,11 +751,13 @@ fn live_server_end_to_end() {
             .all(|row| row.id != child_id),
         "session.execution.succeeded removed the child"
     );
-    assert!(!live
-        .api
-        .load_statuses()
-        .expect("active")
-        .contains_key(&child_id));
+    assert!(
+        !live
+            .api
+            .load_statuses()
+            .expect("active")
+            .contains_key(&child_id)
+    );
     eprintln!("PASS foreground subagent gone after its run");
 
     step("background shell job");
@@ -1124,11 +1130,13 @@ fn live_server_end_to_end() {
     live.wait_for("form.cancelled", 10, |event| {
         event["type"] == "form.cancelled" && event["data"]["id"] == form_id.as_str()
     });
-    assert!(!live
-        .pending()
-        .requests
-        .iter()
-        .any(|request| request.id() == form_id));
+    assert!(
+        !live
+            .pending()
+            .requests
+            .iter()
+            .any(|request| request.id() == form_id)
+    );
     eprintln!("PASS form pending -> cancel");
 
     step("history paging");
@@ -1164,10 +1172,12 @@ fn live_server_end_to_end() {
         !again.sessions.iter().any(|session| session.id == child),
         "child sessions are not roots"
     );
-    assert!(again
-        .sessions
-        .iter()
-        .any(|listed| listed.id == session.id && listed.title == "Renamed by the live test"));
+    assert!(
+        again
+            .sessions
+            .iter()
+            .any(|listed| listed.id == session.id && listed.title == "Renamed by the live test")
+    );
 
     live.assert_no_malformed_events();
     eprintln!("PASS {} events decoded without errors", live.log.len());

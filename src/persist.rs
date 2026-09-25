@@ -89,7 +89,7 @@ impl PersistedState {
                 return Ok((Self::default(), None));
             }
             Err(error) => {
-                return Err(error).with_context(|| format!("failed to read {}", path.display()))
+                return Err(error).with_context(|| format!("failed to read {}", path.display()));
             }
         };
         match serde_json::from_slice(&contents) {
@@ -195,12 +195,16 @@ mod tests {
 
         assert!(warning.is_none());
         assert_eq!(loaded.servers["http://127.0.0.1:4096"].tabs[0].id, "ses_1");
-        assert!(loaded.servers["http://127.0.0.1:4096"]
-            .unread
-            .contains("ses_1"));
-        assert!(loaded.servers["http://127.0.0.1:4096"]
-            .busy
-            .contains("ses_1"));
+        assert!(
+            loaded.servers["http://127.0.0.1:4096"]
+                .unread
+                .contains("ses_1")
+        );
+        assert!(
+            loaded.servers["http://127.0.0.1:4096"]
+                .busy
+                .contains("ses_1")
+        );
         assert_eq!(loaded.connection, state.connection);
         assert_eq!(loaded.zoom_level, 1.0);
         let contents = fs::read_to_string(path).unwrap();
@@ -256,9 +260,11 @@ mod tests {
         );
         assert_eq!(server.selections["ses_2"].variant, None);
         loaded.save(&path).unwrap();
-        assert!(fs::read_to_string(&path)
-            .unwrap()
-            .contains("\"selections\""));
+        assert!(
+            fs::read_to_string(&path)
+                .unwrap()
+                .contains("\"selections\"")
+        );
 
         let mut fresh = PersistedState::default();
         fresh.servers.insert(
@@ -280,9 +286,10 @@ mod tests {
         assert!(loaded.servers.is_empty());
         assert!(warning.is_some());
         assert!(!path.exists());
-        assert!(path
-            .with_extension(format!("json.corrupt.{}", std::process::id()))
-            .exists());
+        assert!(
+            path.with_extension(format!("json.corrupt.{}", std::process::id()))
+                .exists()
+        );
     }
 
     #[cfg(unix)]

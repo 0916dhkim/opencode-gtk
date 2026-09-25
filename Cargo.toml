@@ -1,9 +1,9 @@
 [package]
 name = "opencode-gtk"
 version = "0.1.0"
-edition = "2021"
-rust-version = "1.88"
-description = "A power-efficient GTK client for OpenCode"
+edition = "2024"
+rust-version = "1.93"
+description = "A native COSMIC client for OpenCode"
 license = "MIT"
 readme = "README.md"
 repository = "https://github.com/0916dhkim/opencode-gtk"
@@ -14,19 +14,16 @@ async-channel = "2.3"
 base64 = "0.22"
 clap = { version = "4.5", features = ["derive", "env"] }
 dirs = "6.0"
-dark-light = { version = "3.0", default-features = false }
-cairo = { package = "cairo-rs", version = "0.20" }
-gtk = { package = "gtk4", version = "0.9", features = ["v4_6"] }
 keyring = { version = "3.6", features = ["crypto-rust", "sync-secret-service"] }
+libcosmic = { git = "https://github.com/pop-os/libcosmic.git", default-features = false, features = ["tokio", "winit", "wayland", "wgpu", "dbus-config"] }
+log = "0.4"
 mime_guess = "2.0"
 pulldown-cmark = { version = "0.13", default-features = false }
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls-native-roots"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+tokio = { version = "1", features = ["sync", "time", "rt"] }
 url = "2.5"
-
-[build-dependencies]
-glib-build-tools = "0.20"
 
 [dev-dependencies]
 tempfile = "3.14"

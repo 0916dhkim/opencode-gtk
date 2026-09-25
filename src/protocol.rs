@@ -3988,10 +3988,12 @@ mod tests {
                 }
                 ("GET", "/api/session/{sessionID}/inbox") => {
                     let inbox = strict::<InboxListResponse>(exchange);
-                    assert!(inbox
-                        .data
-                        .iter()
-                        .all(|entry| !matches!(entry.item, InboxItem::Unknown)));
+                    assert!(
+                        inbox
+                            .data
+                            .iter()
+                            .all(|entry| !matches!(entry.item, InboxItem::Unknown))
+                    );
                 }
                 ("GET", "/api/session/{sessionID}/message") => {
                     let page = strict::<MessageListResponse>(exchange);
@@ -4000,21 +4002,25 @@ mod tests {
                 }
                 ("GET", "/api/model") => {
                     let models = strict::<ModelListResponse>(exchange);
-                    assert!(models
-                        .data
-                        .iter()
-                        .all(|model| model.status != Some(ModelStatus::Unknown)));
+                    assert!(
+                        models
+                            .data
+                            .iter()
+                            .all(|model| model.status != Some(ModelStatus::Unknown))
+                    );
                 }
                 ("GET", "/api/model/default") => {
                     strict::<ModelDefaultResponse>(exchange);
                 }
                 ("GET", "/api/permission/request") => {
                     let requests = strict::<PermissionRequestListResponse>(exchange);
-                    assert!(requests
-                        .data
-                        .iter()
-                        .all(|request| !request.action.is_empty()
-                            && !matches!(request.source, Some(PermissionSource::Unknown))));
+                    assert!(
+                        requests
+                            .data
+                            .iter()
+                            .all(|request| !request.action.is_empty()
+                                && !matches!(request.source, Some(PermissionSource::Unknown)))
+                    );
                 }
                 ("GET", "/api/session/{sessionID}/permission") => {
                     strict::<SessionPermissionListResponse>(exchange);

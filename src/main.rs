@@ -1,6 +1,7 @@
+#![allow(dead_code)]
+
 mod api;
 mod credentials;
-mod fit;
 mod jobs;
 mod markdown;
 mod model;
@@ -12,62 +13,44 @@ mod tray;
 mod ui;
 
 use clap::Parser;
-use gtk::prelude::*;
+use cosmic::app::Settings;
 
 #[derive(Clone, Debug, Parser)]
 #[command(version, about)]
-struct Args {
+pub struct Args {
     /// OpenCode server URL.
     #[arg(long, env = "OPENCODE_SERVER_URL")]
-    server: Option<String>,
+    pub server: Option<String>,
 
     /// HTTP Basic Auth username used when a password is configured.
     #[arg(long, env = "OPENCODE_SERVER_USERNAME")]
-    username: Option<String>,
+    pub username: Option<String>,
 
-    /// HTTP Basic Auth password. Prefer OPENCODE_SERVER_PASSWORD over this flag.
+    /// HTTP Basic Auth password.
     #[arg(long, env = "OPENCODE_SERVER_PASSWORD")]
-    password: Option<String>,
+    pub password: Option<String>,
 
     /// Cloudflare Access service-token client ID.
     #[arg(long, env = "OPENCODE_CF_ACCESS_CLIENT_ID")]
-    cf_access_client_id: Option<String>,
+    pub cf_access_client_id: Option<String>,
 
-    /// Cloudflare Access service-token secret. Prefer the system keyring or environment variable.
+    /// Cloudflare Access service-token secret.
     #[arg(long, env = "OPENCODE_CF_ACCESS_CLIENT_SECRET")]
-    cf_access_client_secret: Option<String>,
+    pub cf_access_client_secret: Option<String>,
 
     /// Show canned UI without contacting a server.
     #[arg(long)]
-    preview: bool,
+    pub preview: bool,
 }
 
-fn main() -> gtk::glib::ExitCode {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
-    let application_id = if args.preview {
-        "ai.opencode.Gtk.Preview"
-    } else {
-        "ai.opencode.Gtk"
-    };
-    let application = gtk::Application::builder()
-        .application_id(application_id)
-        .build();
-
-    application.connect_activate(move |application| {
-        if let Some(window) = application.active_window() {
-            window.present();
-            return;
-        }
-        ui::launch(
-            application,
-            args.server.clone(),
-            args.username.clone(),
-            args.password.clone(),
-            args.cf_access_client_id.clone(),
-            args.cf_access_client_secret.clone(),
-            args.preview,
-        );
-    });
-
-    application.run_with_args(&["opencode-gtk"])
+    let mut settings = Settings::default();
+    settings = settings.size_limits(
+        cosmic::iced::Limits::NONE
+            .min_width(480.0)
+            .min_height(360.0),
+    );
+    cosmic::app::run::<ui::OpenCodeCosmic>(settings, args)?;
+    Ok(())
 }
