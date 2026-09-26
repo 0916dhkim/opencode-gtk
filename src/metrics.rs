@@ -22,6 +22,12 @@ pub fn space(factor: f32, zoom: f32) -> f32 {
     factor * BASE_FONT_PX * zoom
 }
 
+/// A GTK pixel value as an em factor (`13px` -> `1.0`).
+#[must_use]
+pub fn px(value: f32) -> f32 {
+    value / BASE_FONT_PX
+}
+
 /// A 1em em-space value at zoom 1.0, for tests and default sizing.
 #[must_use]
 pub const fn em_base(factor: f32) -> u32 {

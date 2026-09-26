@@ -470,10 +470,16 @@ impl Application for OpenCodeCosmic {
             button::icon(icons::sessions())
                 .on_press(Message::ToggleSidebar)
                 .into(),
-            text("OpenCode").size(14).into(),
-            text("·").size(12).into(),
-            inline_icon(icons::connection()).size(14).into(),
-            text(&self.connection_status).size(12).into(),
+            text("OpenCode")
+                .size(self.em(crate::metrics::px(14.0)))
+                .into(),
+            text("·").size(self.em(crate::metrics::px(12.0))).into(),
+            inline_icon(icons::connection(), self.zoom)
+                .size(self.em(crate::metrics::px(14.0)) as u16)
+                .into(),
+            text(&self.connection_status)
+                .size(self.em(crate::metrics::px(12.0)))
+                .into(),
         ]
     }
 
@@ -485,27 +491,31 @@ impl Application for OpenCodeCosmic {
         vec![
             button::custom(
                 row::with_children(vec![
-                    inline_icon(icons::sessions()).into(),
-                    text("Tabs (Ctrl+P)").size(12).into(),
+                    inline_icon(icons::sessions(), self.zoom).into(),
+                    text("Tabs (Ctrl+P)")
+                        .size(self.em(crate::metrics::px(12.0)))
+                        .into(),
                 ])
-                .spacing(6)
+                .spacing(self.space(crate::metrics::px(6.0)))
                 .align_y(Alignment::Center),
             )
             .on_press(Message::ToggleDrawer(DrawerPage::Sessions))
             .class(flat_button_class(self.zoom))
-            .padding([3, 8])
+            .padding([self.pad_px(3.0), self.pad_px(8.0)])
             .into(),
             button::custom(
                 row::with_children(vec![
-                    inline_icon(icons::settings()).into(),
-                    text("Settings (Ctrl+,)").size(12).into(),
+                    inline_icon(icons::settings(), self.zoom).into(),
+                    text("Settings (Ctrl+,)")
+                        .size(self.em(crate::metrics::px(12.0)))
+                        .into(),
                 ])
-                .spacing(6)
+                .spacing(self.space(crate::metrics::px(6.0)))
                 .align_y(Alignment::Center),
             )
             .on_press(Message::ToggleDrawer(DrawerPage::Settings))
             .class(flat_button_class(self.zoom))
-            .padding([3, 8])
+            .padding([self.pad_px(3.0), self.pad_px(8.0)])
             .into(),
         ]
     }
@@ -516,17 +526,28 @@ impl Application for OpenCodeCosmic {
 
         let new_session_btn = button::custom(
             row::with_children(vec![
-                inline_icon(icons::add()).into(),
-                text("New session").size(13).into(),
+                inline_icon(icons::add(), self.zoom).into(),
+                text("New session")
+                    .size(self.em(crate::metrics::px(13.0)))
+                    .into(),
             ])
-            .spacing(6)
+            .spacing(self.space(crate::metrics::px(6.0)))
             .align_y(Alignment::Center),
         )
         .on_press(Message::NewSession)
         .class(flat_button_class(self.zoom))
         .width(Length::Fill)
-        .padding([8, 12]);
-        sidebar_items.push(container(new_session_btn).padding([8, 8, 4, 8]).into());
+        .padding([self.pad_px(8.0), self.pad_px(12.0)]);
+        sidebar_items.push(
+            container(new_session_btn)
+                .padding([
+                    self.pad_px(8.0),
+                    self.pad_px(8.0),
+                    self.pad_px(4.0),
+                    self.pad_px(8.0),
+                ])
+                .into(),
+        );
 
         let mut tab_rows = Vec::new();
         let mut first_row = true;
@@ -549,7 +570,7 @@ impl Application for OpenCodeCosmic {
             };
 
             let status_marker: Element<'_, Message> = if is_busy {
-                inline_icon(icons::settings())
+                inline_icon(icons::settings(), self.zoom)
                     .size(self.em(0.92) as u16)
                     .into()
             } else if is_active {
@@ -604,7 +625,8 @@ impl Application for OpenCodeCosmic {
 
             let close_btn = button::icon(icons::close())
                 .on_press(Message::CloseTab(close_id))
-                .padding([self.space(0.2) as u16, self.space(0.4) as u16]);
+                .padding([self.space(0.2) as u16, self.space(0.4) as u16])
+                .class(close_button_class(self.space(0.81)));
 
             // GTK showed rename and close on the active tab.
             let rename_btn = button::icon(icons::edit())
@@ -649,13 +671,14 @@ impl Application for OpenCodeCosmic {
             first_row = false;
         }
 
-        let tab_list_col = column::with_children(tab_rows).spacing(2);
+        let tab_list_col =
+            column::with_children(tab_rows).spacing(self.space(crate::metrics::px(2.0)));
         let tab_scroll = scrollable(tab_list_col)
             .height(Length::Fill)
             .width(Length::Fill);
         sidebar_items.push(
             container(tab_scroll)
-                .padding([4, 4])
+                .padding([self.pad_px(4.0), self.pad_px(4.0)])
                 .height(Length::Fill)
                 .into(),
         );
@@ -670,7 +693,7 @@ impl Application for OpenCodeCosmic {
             let mut jobs_col_items = Vec::new();
             jobs_col_items.push(
                 text(format!("BACKGROUND ({})", job_rows.len()))
-                    .size(11)
+                    .size(self.em(crate::metrics::px(11.0)))
                     .into(),
             );
 
@@ -681,64 +704,88 @@ impl Application for OpenCodeCosmic {
                 };
 
                 let item = column::with_children(vec![
-                    text(format!("{kind_str} {}", row.title)).size(12).into(),
-                    text(row.subtitle(now)).size(10).into(),
+                    text(format!("{kind_str} {}", row.title))
+                        .size(self.em(crate::metrics::px(12.0)))
+                        .into(),
+                    text(row.subtitle(now))
+                        .size(self.em(crate::metrics::px(10.0)))
+                        .into(),
                 ])
-                .spacing(1);
+                .spacing(self.space(crate::metrics::px(1.0)));
 
-                let job_card =
-                    container(item)
-                        .padding([4, 8])
-                        .width(Length::Fill)
-                        .style(|_theme| container::Style {
-                            background: Some(palette::current().card_bg.into()),
-                            border: Border {
-                                color: palette::current().panel_border,
-                                width: 1.0,
-                                radius: 4.0.into(),
-                            },
-                            ..Default::default()
-                        });
+                let job_card = container(item)
+                    .padding([self.pad_px(4.0), self.pad_px(8.0)])
+                    .width(Length::Fill)
+                    .style(|_theme| container::Style {
+                        background: Some(palette::current().card_bg.into()),
+                        border: Border {
+                            color: palette::current().panel_border,
+                            width: 1.0,
+                            radius: 4.0.into(),
+                        },
+                        ..Default::default()
+                    });
 
                 jobs_col_items.push(job_card.into());
             }
 
-            let jobs_section =
-                container(column::with_children(jobs_col_items).spacing(4)).padding([6, 8]);
+            let jobs_section = container(
+                column::with_children(jobs_col_items).spacing(self.space(crate::metrics::px(4.0))),
+            )
+            .padding([self.pad_px(6.0), self.pad_px(8.0)]);
             sidebar_items.push(jobs_section.into());
         }
 
         let footer_buttons = column::with_children(vec![
             button::custom(
                 row::with_children(vec![
-                    inline_icon(icons::sessions()).into(),
-                    text("All Sessions (Ctrl+P)").size(13).into(),
+                    inline_icon(icons::sessions(), self.zoom).into(),
+                    text("All Sessions (Ctrl+P)")
+                        .size(self.em(crate::metrics::px(13.0)))
+                        .into(),
                 ])
-                .spacing(6)
+                .spacing(self.space(crate::metrics::px(6.0)))
                 .align_y(Alignment::Center),
             )
             .on_press(Message::ToggleDrawer(DrawerPage::Sessions))
             .class(flat_button_class(self.zoom))
             .width(Length::Fill)
-            .padding([6, 10])
+            .padding([
+                self.pad_px(11.0),
+                self.pad_px(9.0),
+                self.pad_px(11.0),
+                self.pad_px(8.0),
+            ])
             .into(),
             button::custom(
                 row::with_children(vec![
-                    inline_icon(icons::settings()).into(),
-                    text("Settings (Ctrl+,)").size(13).into(),
+                    inline_icon(icons::settings(), self.zoom).into(),
+                    text("Settings (Ctrl+,)")
+                        .size(self.em(crate::metrics::px(13.0)))
+                        .into(),
                 ])
-                .spacing(6)
+                .spacing(self.space(crate::metrics::px(6.0)))
                 .align_y(Alignment::Center),
             )
             .on_press(Message::ToggleDrawer(DrawerPage::Settings))
             .class(flat_button_class(self.zoom))
             .width(Length::Fill)
-            .padding([6, 10])
+            .padding([
+                self.pad_px(11.0),
+                self.pad_px(9.0),
+                self.pad_px(11.0),
+                self.pad_px(8.0),
+            ])
             .into(),
         ])
-        .spacing(4);
+        .spacing(self.space(crate::metrics::px(4.0)));
 
-        let footer_container = container(footer_buttons).padding([8, 8, 8, 8]);
+        let footer_container = container(footer_buttons).padding([
+            self.pad_px(8.0),
+            self.pad_px(8.0),
+            self.pad_px(8.0),
+            self.pad_px(8.0),
+        ]);
         sidebar_items.push(footer_container.into());
 
         // GTK measured ≈272px in the last screenshots.
@@ -767,13 +814,16 @@ impl Application for OpenCodeCosmic {
         // run starts.
         let banner_node = if let Some(err) = &self.error_banner {
             let banner = row::with_children(vec![
-                text(format!("⚠ {err}")).size(13).width(Length::Fill).into(),
+                text(format!("⚠ {err}"))
+                    .size(self.em(crate::metrics::px(13.0)))
+                    .width(Length::Fill)
+                    .into(),
                 button::text("Dismiss")
                     .on_press(Message::DismissError)
                     .into(),
             ])
             .padding(8)
-            .spacing(8);
+            .spacing(self.space(crate::metrics::px(8.0)));
 
             container(banner).padding(4)
         } else {
@@ -817,7 +867,7 @@ impl Application for OpenCodeCosmic {
                         .into(),
                     button::text(hint_str)
                         .on_press(Message::ToggleDrawer(DrawerPage::Settings))
-                        .padding([3, 8])
+                        .padding([self.pad_px(3.0), self.pad_px(8.0)])
                         .into(),
                 ])
                 .align_y(Alignment::Center)
@@ -1018,7 +1068,9 @@ impl Application for OpenCodeCosmic {
                                         container(
                                             cosmic::iced::widget::image(handle)
                                                 .content_fit(cosmic::iced::ContentFit::Contain)
-                                                .width(Length::Fixed(360.0)),
+                                                .width(Length::Fixed(
+                                                    self.space(crate::metrics::px(360.0)),
+                                                )),
                                         )
                                         .style(move |_theme: &cosmic::Theme| container::Style {
                                             border: Border {
@@ -1119,7 +1171,8 @@ impl Application for OpenCodeCosmic {
                 }
             }
 
-            let message_list = column::with_children(message_elements).spacing(0);
+            let message_list = column::with_children(message_elements)
+                .spacing(self.space(crate::metrics::px(0.0)));
 
             let transcript_scroll = scrollable(message_list)
                 .width(Length::Fill)
@@ -1137,8 +1190,12 @@ impl Application for OpenCodeCosmic {
             // composer keeps its widget state (and the caret) when a run
             // starts and the tray fills up.
             let tray_outer = if tray_items.is_empty() {
-                container(column::with_children(Vec::<Element<'_, Message>>::new()))
-                    .padding([0, 16, 0, 16])
+                container(column::with_children(Vec::<Element<'_, Message>>::new())).padding([
+                    self.pad_px(0.0),
+                    self.pad_px(16.0),
+                    self.pad_px(0.0),
+                    self.pad_px(16.0),
+                ])
             } else {
                 // GTK: `.queue-tray-header` with a bold, padded title, then
                 // hairline-separated rows.
@@ -1286,7 +1343,8 @@ impl Application for OpenCodeCosmic {
                 }
 
                 let tray_radius = self.space(0.67);
-                let tray_col = column::with_children(tray_rows).spacing(0);
+                let tray_col =
+                    column::with_children(tray_rows).spacing(self.space(crate::metrics::px(0.0)));
                 let tray_container = container(tray_col)
                     .padding([
                         self.space(0.25) as u16,
@@ -1305,7 +1363,12 @@ impl Application for OpenCodeCosmic {
                         ..Default::default()
                     });
 
-                container(tray_container).padding([0, 16, 6, 16])
+                container(tray_container).padding([
+                    self.pad_px(0.0),
+                    self.pad_px(16.0),
+                    self.pad_px(6.0),
+                    self.pad_px(16.0),
+                ])
             };
 
             main_items.push(tray_outer.into());
@@ -1453,7 +1516,7 @@ impl Application for OpenCodeCosmic {
                 .map(|(index, path)| {
                     container(
                         row::with_children(vec![
-                            inline_icon(icons::attach())
+                            inline_icon(icons::attach(), self.zoom)
                                 .size(self.em(0.76) as u16)
                                 .into(),
                             text(attachment_label(path))
@@ -1461,7 +1524,7 @@ impl Application for OpenCodeCosmic {
                                 .class(cosmic::theme::Text::Color(palette::current().tray_text))
                                 .into(),
                             button::icon(icons::close())
-                                .padding([1, 3])
+                                .padding([self.pad_px(1.0), self.pad_px(3.0)])
                                 .on_press(Message::RemoveAttachment(index))
                                 .into(),
                         ])
@@ -1536,16 +1599,18 @@ impl Application for OpenCodeCosmic {
             main_items.push(composer_outer.into());
         } else {
             let empty_view = column::with_children(vec![
-                text("Welcome to OpenCode COSMIC").size(20).into(),
+                text("Welcome to OpenCode COSMIC")
+                    .size(self.em(crate::metrics::px(20.0)))
+                    .into(),
                 text(format!("Status: {}", self.connection_status))
-                    .size(14)
+                    .size(self.em(crate::metrics::px(14.0)))
                     .into(),
                 button::text("Create New Session")
                     .on_press(Message::NewSession)
-                    .padding([8, 16])
+                    .padding([self.pad_px(8.0), self.pad_px(16.0)])
                     .into(),
             ])
-            .spacing(16)
+            .spacing(self.space(crate::metrics::px(16.0)))
             .padding(32)
             .align_x(Alignment::Center);
 
@@ -1736,6 +1801,27 @@ fn inline_image_bytes(uri: &str) -> Option<Vec<u8>> {
         .decode(data)
         .or_else(|_| base64::engine::general_purpose::URL_SAFE.decode(data))
         .ok()
+}
+
+/// GTK's `button.session-tab-close:hover`: a red fill with a white glyph.
+fn close_button_class(radius: f32) -> cosmic::theme::Button {
+    let base = move || cosmic::widget::button::Style {
+        background: None,
+        border_radius: radius.into(),
+        border_width: 0.0,
+        ..Default::default()
+    };
+    let hovered = move || cosmic::widget::button::Style {
+        background: Some(palette::current().tab_close_hover_bg.into()),
+        text_color: Some(palette::current().tab_close_hover_fg),
+        ..base()
+    };
+    cosmic::theme::Button::Custom {
+        active: Box::new(move |_focused, _theme| base()),
+        hovered: Box::new(move |_focused, _theme| hovered()),
+        pressed: Box::new(move |_focused, _theme| hovered()),
+        disabled: Box::new(move |_theme| base()),
+    }
 }
 
 /// GTK's `button.queue-tray-resume`: the accent fill with a pill radius.
@@ -1978,8 +2064,8 @@ fn tray_icon_button(
 }
 
 /// A bundled 16px icon painted in the theme's icon colour, for inline use.
-fn inline_icon(handle: cosmic::widget::icon::Handle) -> cosmic::widget::icon::Icon {
-    cosmic::widget::icon::icon(handle).size(16)
+fn inline_icon(handle: cosmic::widget::icon::Handle, zoom: f32) -> cosmic::widget::icon::Icon {
+    cosmic::widget::icon::icon(handle).size(crate::metrics::em(1.23, zoom) as u16)
 }
 
 /// A small drawn status dot. The GTK client drew these with CSS; before this,
@@ -2024,6 +2110,11 @@ impl OpenCodeCosmic {
     }
 
     /// `factor` em in the current zoom, as a logical pixel count for paddings.
+    /// A GTK pixel value as an em factor at this zoom.
+    fn pad_px(&self, px: f32) -> u16 {
+        self.space(crate::metrics::px(px)) as u16
+    }
+
     fn space(&self, factor: f32) -> f32 {
         crate::metrics::space(factor, self.zoom)
     }
@@ -2122,7 +2213,7 @@ impl OpenCodeCosmic {
 
         body_items.push(
             row::with_children(vec![
-                inline_icon(icons::search()).into(),
+                inline_icon(icons::search(), self.zoom).into(),
                 text_input("Search sessions...", &self.search_query)
                     .on_input(Message::SearchInput)
                     .width(Length::Fill)
@@ -2235,7 +2326,7 @@ impl OpenCodeCosmic {
         }
 
         let search_row: Element<'_, Message> = row::with_children(vec![
-            inline_icon(icons::search()).into(),
+            inline_icon(icons::search(), self.zoom).into(),
             text_input("Search locations...", &self.search_query)
                 .on_input(Message::SearchInput)
                 .width(Length::Fill)
@@ -2275,7 +2366,7 @@ impl OpenCodeCosmic {
                     .width(Length::Fill)
                     .into(),
                 button::icon(icons::copy())
-                    .padding([2, 4])
+                    .padding([self.pad_px(2.0), self.pad_px(4.0)])
                     .on_press(Message::CopyText(session_id.clone()))
                     .into(),
             ])
@@ -2377,7 +2468,7 @@ impl OpenCodeCosmic {
 
         let pill = container(
             row::with_children(vec![
-                inline_icon(icons::settings())
+                inline_icon(icons::settings(), self.zoom)
                     .size(self.em(0.92) as u16)
                     .into(),
                 text(label)

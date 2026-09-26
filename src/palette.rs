@@ -76,6 +76,8 @@ pub struct Palette {
     pub tab_index_text: Color,
     /// `@oc_bg_session_tab_button_session_tab_close_hover`
     pub tab_close_hover_bg: Color,
+    /// `@oc_fg_session_tab_button_session_tab_close_hover`
+    pub tab_close_hover_fg: Color,
     /// `@oc_bg_sidebar_new_session_hover` — session row hover.
     pub sidebar_hover_bg: Color,
     /// `@oc_bg_composer_action_hover`
@@ -180,6 +182,7 @@ pub const LIGHT: Palette = Palette {
     tab_unread_text: Color::from_rgb8(0x13, 0x5d, 0x83),
     tab_index_text: Color::from_rgb8(0x92, 0x99, 0x9f),
     tab_close_hover_bg: Color::from_rgb8(0xb8, 0x4b, 0x45),
+    tab_close_hover_fg: Color::from_rgb8(0xff, 0xff, 0xff),
     sidebar_hover_bg: Color::from_rgb8(0xe5, 0xe2, 0xdc),
     action_hover_bg: Color::from_rgb8(0xee, 0xeb, 0xe4),
     tray_row_divider: Color::from_rgb8(0xde, 0xda, 0xd2),
@@ -249,6 +252,7 @@ pub const DARK: Palette = Palette {
     tab_unread_text: Color::from_rgb8(0xd9, 0xef, 0xff),
     tab_index_text: Color::from_rgb8(0x92, 0x99, 0x9f),
     tab_close_hover_bg: Color::from_rgb8(0x8e, 0x37, 0x37),
+    tab_close_hover_fg: Color::from_rgb8(0xff, 0xff, 0xff),
     sidebar_hover_bg: Color::from_rgb8(0x19, 0x1d, 0x20),
     action_hover_bg: Color::from_rgb8(0x22, 0x26, 0x2a),
     tray_row_divider: Color::from_rgb8(0x26, 0x2b, 0x2f),
