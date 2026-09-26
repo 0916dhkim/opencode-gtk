@@ -73,6 +73,9 @@ pub struct OpenCodeCosmic {
     projects: Vec<model::Project>,
     /// The rename palette's title entry.
     rename_input: String,
+    /// A tray request (switch/cancel/resume) awaits its answer, so Resume
+    /// stays disabled the way GTK's did.
+    tray_in_flight: bool,
     /// Files picked with the paperclip for the next prompt.
     pending_attachments: Vec<PathBuf>,
     /// Set while the file dialog runs on its own thread.
@@ -99,6 +102,8 @@ pub enum Message {
     FocusComposer,
     /// Creates a session in a palette-chosen location.
     CreateSessionIn(String),
+    /// Resumes a parked tray (GTK's `queue-tray-resume`).
+    ResumeTray,
     /// Opens the rename palette for the active session.
     OpenRename,
     RenameInput(String),
@@ -184,6 +189,7 @@ impl Application for OpenCodeCosmic {
             zoom,
             projects: Vec::new(),
             rename_input: String::new(),
+            tray_in_flight: false,
             pending_attachments: Vec::new(),
             attachment_picker: None,
         };
@@ -315,6 +321,10 @@ impl Application for OpenCodeCosmic {
             Message::CreateSessionIn(directory) => {
                 self.active_drawer = None;
                 self.create_session(&directory);
+                Task::none()
+            }
+            Message::ResumeTray => {
+                self.resume_tray();
                 Task::none()
             }
             Message::OpenRename => {
@@ -994,8 +1004,35 @@ impl Application for OpenCodeCosmic {
                                 turn_items.push(tool_block.into());
                             }
                             model::SegmentKind::File => {
-                                let file_text = text(&segment.text).size(self.em(0.92));
-                                turn_items.push(file_text.into());
+                                // GTK rendered inline images (`.message-image`):
+                                // the model exposes them as `image_url`.
+                                let uri = segment
+                                    .image_url
+                                    .as_deref()
+                                    .unwrap_or(segment.text.as_str());
+                                if let Some(bytes) = inline_image_bytes(uri) {
+                                    let radius = self.space(0.59);
+                                    let handle =
+                                        cosmic::iced::widget::image::Handle::from_bytes(bytes);
+                                    turn_items.push(
+                                        container(
+                                            cosmic::iced::widget::image(handle)
+                                                .content_fit(cosmic::iced::ContentFit::Contain)
+                                                .width(Length::Fixed(360.0)),
+                                        )
+                                        .style(move |_theme: &cosmic::Theme| container::Style {
+                                            border: Border {
+                                                color: palette::current().message_border,
+                                                width: 1.0,
+                                                radius: radius.into(),
+                                            },
+                                            ..Default::default()
+                                        })
+                                        .into(),
+                                    );
+                                } else {
+                                    turn_items.push(text(&segment.text).size(self.em(0.92)).into());
+                                }
                             }
                         }
                     }
@@ -1105,24 +1142,62 @@ impl Application for OpenCodeCosmic {
             } else {
                 // GTK: `.queue-tray-header` with a bold, padded title, then
                 // hairline-separated rows.
+                // GTK: "3 waiting" while the run is active, "Paused · 3 waiting"
+                // with a dot and Resume once it is idle with items left.
+                let paused = !is_busy;
+                let mut header_items: Vec<Element<'_, Message>> = Vec::new();
+                if paused {
+                    let dot_radius = self.space(0.12);
+                    header_items.push(
+                        container(row::with_children(Vec::<Element<'_, Message>>::new()))
+                            .width(Length::Fixed(self.space(0.55)))
+                            .height(Length::Fixed(self.space(0.55)))
+                            .style(move |_theme: &cosmic::Theme| container::Style {
+                                background: Some(palette::current().tray_paused.into()),
+                                border: Border {
+                                    radius: dot_radius.into(),
+                                    ..Default::default()
+                                },
+                                ..Default::default()
+                            })
+                            .into(),
+                    );
+                }
+                header_items.push(
+                    text(crate::tray::header_text(tray_items.len(), paused))
+                        .size(self.em(0.96))
+                        .font(cosmic::iced::Font {
+                            weight: cosmic::iced::font::Weight::Bold,
+                            ..cosmic::iced::Font::DEFAULT
+                        })
+                        .class(cosmic::theme::Text::Color(
+                            palette::current().tray_title_text,
+                        ))
+                        .width(Length::Fill)
+                        .into(),
+                );
+                if paused {
+                    let resume_radius = self.space(0.59);
+                    header_items.push(
+                        button::custom(
+                            text("Resume")
+                                .size(self.em(0.96))
+                                .class(cosmic::theme::Text::Color(palette::current().accent_fg)),
+                        )
+                        .padding([self.space(0.3) as u16, self.space(0.85) as u16])
+                        .class(resume_button_class(resume_radius))
+                        .on_press_maybe((!self.tray_in_flight).then_some(Message::ResumeTray))
+                        .into(),
+                    );
+                }
+                header_items.push(tray_text_button("Clear all", self.zoom, Message::TrayClear));
+
                 let mut tray_rows = Vec::new();
                 tray_rows.push(
                     container(
-                        row::with_children(vec![
-                            text(format!("Waiting ({})", tray_items.len()))
-                                .size(self.em(0.96))
-                                .font(cosmic::iced::Font {
-                                    weight: cosmic::iced::font::Weight::Bold,
-                                    ..cosmic::iced::Font::DEFAULT
-                                })
-                                .class(cosmic::theme::Text::Color(
-                                    palette::current().tray_title_text,
-                                ))
-                                .width(Length::Fill)
-                                .into(),
-                            tray_text_button("Clear all", self.zoom, Message::TrayClear),
-                        ])
-                        .align_y(Alignment::Center),
+                        row::with_children(header_items)
+                            .spacing(self.space(0.44))
+                            .align_y(Alignment::Center),
                     )
                     .padding([self.space(0.1) as u16, self.space(0.6) as u16])
                     .into(),
@@ -1177,26 +1252,30 @@ impl Application for OpenCodeCosmic {
                         ..Default::default()
                     });
 
-                    let item_row = row::with_children(vec![
+                    let mut row_items: Vec<Element<'_, Message>> = vec![
                         badge.into(),
                         text(preview_text)
                             .size(self.em(0.96))
                             .class(cosmic::theme::Text::Color(palette::current().tray_text))
                             .width(Length::Fill)
                             .into(),
-                        tray_text_button(
+                    ];
+                    // GTK hides a queued row's switch while the tray is paused.
+                    if crate::tray::shows_switch(item.delivery, paused) {
+                        row_items.push(tray_text_button(
                             crate::tray::switch_label(item.delivery),
                             self.zoom,
                             Message::TrayAction(item.id.clone(), RowAction::Switch),
-                        ),
-                        tray_icon_button(
-                            icons::close(),
-                            self.zoom,
-                            Message::TrayAction(item.id.clone(), RowAction::Cancel),
-                        ),
-                    ])
-                    .spacing(self.space(0.59))
-                    .align_y(Alignment::Center);
+                        ));
+                    }
+                    row_items.push(tray_icon_button(
+                        icons::close(),
+                        self.zoom,
+                        Message::TrayAction(item.id.clone(), RowAction::Cancel),
+                    ));
+                    let item_row = row::with_children(row_items)
+                        .spacing(self.space(0.59))
+                        .align_y(Alignment::Center);
 
                     tray_rows.push(
                         container(item_row)
@@ -1642,6 +1721,39 @@ fn composer_id() -> cosmic::widget::Id {
 
 /// The GTK client's zoom ladder.
 const ZOOM_STEPS: [f32; 9] = [0.7, 0.8, 0.9, 1.0, 1.1, 1.2, 1.3, 1.5, 1.75];
+
+/// Decodes an inline `data:image/...;base64,...` URI (GTK's message images).
+fn inline_image_bytes(uri: &str) -> Option<Vec<u8>> {
+    use base64::Engine as _;
+
+    let rest = uri.strip_prefix("data:image/")?;
+    let (meta, data) = rest.split_once(',')?;
+    if !meta.to_lowercase().contains("base64") {
+        return None;
+    }
+    let data = data.trim();
+    base64::engine::general_purpose::STANDARD
+        .decode(data)
+        .or_else(|_| base64::engine::general_purpose::URL_SAFE.decode(data))
+        .ok()
+}
+
+/// GTK's `button.queue-tray-resume`: the accent fill with a pill radius.
+fn resume_button_class(radius: f32) -> cosmic::theme::Button {
+    let base = move || cosmic::widget::button::Style {
+        background: Some(palette::current().accent_bg.into()),
+        border_radius: radius.into(),
+        border_width: 0.0,
+        text_color: Some(palette::current().accent_fg),
+        ..Default::default()
+    };
+    cosmic::theme::Button::Custom {
+        active: Box::new(move |_focused, _theme| base()),
+        hovered: Box::new(move |_focused, _theme| base()),
+        pressed: Box::new(move |_focused, _theme| base()),
+        disabled: Box::new(move |_theme| base()),
+    }
+}
 
 /// A chip label for an attachment: the file name, middle-shortened when long.
 fn attachment_label(path: &std::path::Path) -> String {
@@ -2364,6 +2476,9 @@ impl OpenCodeCosmic {
     }
 
     fn drain_events(&mut self) {
+        // Any answer settles the previous tray request; GTK re-enabled Resume
+        // when the row's request came back.
+        self.tray_in_flight = false;
         let mut events = Vec::new();
         if let Some(mock) = &mut self.mock_server {
             events = mock.take_server_events();
@@ -2460,6 +2575,12 @@ impl OpenCodeCosmic {
                 let conv = self.conversations.entry(session_id).or_default();
                 if cursor.is_none() {
                     conv.replace_from_api(&page.messages, page.next_cursor);
+                    // The page carries the session's inbox: without it a
+                    // parked session (queued before this client looked) shows
+                    // an empty tray until some live event happens.
+                    if let Some(inbox) = &page.queued {
+                        conv.sync_queued(inbox);
+                    }
                 } else {
                     conv.prepend_from_api(&page.messages, page.next_cursor);
                 }
@@ -2713,6 +2834,48 @@ impl OpenCodeCosmic {
                 session_id: active_id,
             });
             self.handle_ui_event(event);
+        }
+    }
+
+    /// The active session's waiting prompts as the tray engine's rows.
+    fn tray_rows(&self) -> Vec<crate::tray::TrayRow> {
+        self.active_session_id
+            .as_ref()
+            .and_then(|id| self.conversations.get(id))
+            .map(|conversation| {
+                conversation
+                    .tray_items()
+                    .into_iter()
+                    .map(|item| crate::tray::TrayRow {
+                        id: item.id,
+                        delivery: item.delivery,
+                        summary: item.text,
+                        sending: false,
+                        in_flight: false,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// GTK's Resume: wakes a parked session for every waiting message.
+    fn resume_tray(&mut self) {
+        if self.tray_in_flight {
+            return;
+        }
+        let Some(active_id) = self.active_session_id.clone() else {
+            return;
+        };
+        let Some((inbox_id, request)) = crate::tray::resume_request(&self.tray_rows()) else {
+            return;
+        };
+        if let Some(api) = &self.api {
+            api.send(Command::Inbox {
+                session_id: active_id,
+                inbox_id,
+                request,
+            });
+            self.tray_in_flight = true;
         }
     }
 
@@ -3042,6 +3205,17 @@ mod tests {
         assert_eq!(crate::metrics::em(1.0, 1.0), 13);
         assert_eq!(crate::metrics::em(0.76, 1.75), 17);
         assert!((crate::metrics::space(1.19, 1.2) - 18.564).abs() < 0.01);
+    }
+
+    #[test]
+    fn inline_images_decode_only_base64_image_uris() {
+        assert_eq!(
+            inline_image_bytes("data:image/png;base64,aGk="),
+            Some(b"hi".to_vec())
+        );
+        assert_eq!(inline_image_bytes("data:text/plain;base64,aGk="), None);
+        assert_eq!(inline_image_bytes("data:image/png;base64,@@ nope @@"), None);
+        assert_eq!(inline_image_bytes("https://example.com/x.png"), None);
     }
 
     #[test]

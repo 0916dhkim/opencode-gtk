@@ -885,6 +885,18 @@ fn active_messages() -> Vec<protocol::SessionMessage> {
             "tokens": { "input": 12400, "output": 800, "reasoning": 200, "cache": { "read": 0, "write": 0 } }
         })),
         idle("msg_idle", CREATED + 50_000),
+        entry(json!({
+            "id": "msg_user_attachment",
+            "type": "user",
+            "time": { "created": CREATED + 55_000 },
+            "text": "Here is the clip rendered at 22px:",
+            "files": [{
+                "data": "iVBORw0KGgoAAAANSUhEUgAAAMgAAAB4EAIAAABoYPb/AAAABGdBTUEAALGPC/xhBQAAACBjSFJNAAB6JgAAgIQAAPoAAACA6AAAdTAAAOpgAAA6mAAAF3CculE8AAAABmJLR0T///////8JWPfcAAAAB3RJTUUH6gkaBgMBERhYKQAABvdJREFUeNrt3f9PVXUcx/EDXAEB844bKSOui82Ci4ROt5jTSXwxnYqzb1KNMv3FkRNKcTbtok60qU0ik9xy0zTTvoi4nCLitPjBOR0h32w0dZduwhS8KlwREPvh2A82dX7hns99e56PP+Dy+vDDc2eHwz0BDkdeXmmpBgB+L1D1AAB4WAQLgBgEC4AYBAuAGAQLgBgEC4AYBAuAGAQLgBgEC4AYBAuAGAQLgBiWgfqg3btHjaqsVH0cAP4rO7u+PjPzST6BKywAYhAsAGIQLABiECwAYhAsAGIQLABiECwAYhAsAGIQLABiECwAYhAsAGIQLABiECwAYhAsAGIQLABiECwAYhAsAGIQLABiECwAYhAsAGIQLABiECwAYhAsAGIQLABiECwAYhAsAGIQLABiECwAYhAsAGIQLABiECwAYhAsAGIQLABiECwAYhAsAGIQLABiECwAYhAsAGIQLABiECwAYhAsAGIQLABiECwAYhAsAGIQLABiECwAYhAsAGIQLABiECwAYhAsAGIQLABiECwAYhAsAGIQLABiWAbqg7Kz6+szM1UfB8DTjCssAGIQLABiECwAYhAsAGIQLABiECwAYgzYYw0wkTgtShtiGxtxOWRyws/R6dbc5N/seyKjE0NjKqxZ9qWRWeGJYR8HL7d0eTf2rO4Ld63t2N/V0HDDPdlTXpvqyu5obXrz4lHP5vbTnbabh7Vz2iXtuuojQYYAhyMvr7RU9Qz4u9D1g7KCJqZujy8aHrsgOj0uwRv2afBKS/eTfKa3qMfZF7LpctWFpvBjOWeXtbZ0L+4tv/W76rPCfxEs3FfQG4HWgLRpc5PPxJbkD87c5Fjs659Y3FX5UeP6A9tqR7fk3/ql/8rtKtW/A/gX7mHhHuyzbU0RheU3FramW41JlS4/PPNrR0H5tYV/pw+xz7adjShU/ZuAf+EKC3eZcGtk2rAjq47PGjdmg+otmqZpzkllp2oWVwc1H23LUL0F6nGFhTumjEo6E/OO/6RKp++ZkpRUF/Ou6i1Qj2DhzlXVkpKpO5OuqN5yb0u+nLojqWNC/8i0YUdUb4FKBMvU9HtV/nZVdT+rjs0aN2YD97bMjGCZlP4XwM2dOS+k1Kne8mg2X8sZkVIX9HqgNSBN9RYYjWCZ1LR5yWdiS8IWBTstXtVbHk1YQXChxTttfnJ97Feqt8BoBMt09EdA80ONe1jBF/ItmSWORaHrBmUFTVC9BcYhWKaTuj2+aPjzqlcM0Fm+i189PFb1ChiHYJlJnBalDVkQnR6XcEP1lIGxwJ7+YsJN/Vyqt8AIBMtEbGMj2kMmP/n/APqPsMXBTovXNi6iPeQ11VtgBIJlIgk/RadZc1Wv8MG5dkenWuerXgEjECwTSa62/xgZrXqFD8510r438im5K4cHI1gmkhgSU2GdqXqFD84VHFNhzVK9AkYgWCZiXxo5I9yhegXnwuMjWCaifwuo6hU+ONfS4BVPy58R8GAEy0T0LyxWvYJz4fERLBPRv1td9QofnGt1x76uetUrYASCZSL6ayBUr/DBua650z1lqlfACATLRPQ31qhe4YNzjXe91fGP6hUwAsEyEf3lWqpX+OBc71087tmiegWMQLBMRH8PoP5yLdVbBoZ3Xc/KvsHtJzsjbx5SvQVGIFhmck67pF3fdLnqQlOE6ikDY5O76q+mwbyK1TwIlukcyzm7rNWlesUAneX9s8taW1SvgHEIlunob1cu7qrMbVyvesvjK75RuaBxfXdB737eFG0mBMukDmyrHdOS713bU9gXqnrLo/Gu6XH2hR7YWvtyS57qLTAawTIp/UXwubYdLSeSVW95NLlRO9wnRt/a2++5fVT1FhiNYJmaa3d7fOdKZ2rZqRoB3+/uzCirqSlw/dD+UucK1VugBsGCVh3YfLQtY13ewZy6SNVb7m3dJwc/qLNV9zdXtqWr3gKVCBbuOFRXl+Te5Xy17LQ/XW0508pO1xQc+qMu0f296i1Qj2DhLtUBzVVtGXO2bJ1b/Yr+WKbxG7xFPZ/1hcz5duu86pRqrbmKqyr8h2DhHlx72uM7V84MK4muulrcW7mw8Qtjfq7+sMXMoSWxVdddu7hXhf8LiopKSZk+XfUM+KPbTbe7tfN/7mx95upzexJP2s4Pd3/uyfcOG9M4osEWOGh80KTA3if5fP0BhY37Dm9vGFr07K8JZy43fOhu83TrP1f16eGPAhyOvLzSUtUzIEqcFqUN0V+upb+xRn8NRGJITIU1y740ckZ4Ylh+8HJLp3djz+q+CNeajvKu+oYud6ZnX+1E19sdF5uyLx7zfNN+qtN2s4J/rMHDI1gAxOAeFgAxCBYAMQgWADEIFgAxCBYAMQgWADEIFgAxCBYAMf4FY3H/zJC2dPMAAAAldEVYdGRhdGU6Y3JlYXRlADIwMjYtMDktMjZUMDY6MDM6MDErMDA6MDDKJjfmAAAAJXRFWHRkYXRlOm1vZGlmeQAyMDI2LTA5LTI2VDA2OjAzOjAxKzAwOjAwu3uPWgAAAABJRU5ErkJggg==",
+                "mime": "image/png",
+                "name": "clip-22px.png",
+                "source": { "type": "inline" }
+            }]
+        })),
     ]
 }
 
@@ -1024,7 +1036,9 @@ mod tests {
     #[test]
     fn canned_messages_render_as_transcript_rows() {
         let rows = render(&active_messages());
-        assert_eq!(rows.len(), 4, "the idle entry renders nothing");
+        // user, reasoning, text, tool, then the user's image attachment turn
+        // (its text and image share one row); the idle entry renders nothing.
+        assert_eq!(rows.len(), 5);
         assert_eq!(rows[0]["role"], "YOU");
         assert_eq!(rows[1]["kind"], "reasoning");
         assert_eq!(rows[1]["time"], CREATED + 31_000);
@@ -1032,6 +1046,21 @@ mod tests {
         assert_eq!(rows[3]["kind"], "tool");
         assert_eq!(rows[3]["body"], "shell · completed — cargo test composer");
         assert_eq!(rows[3]["time"], CREATED + 45_000);
+        assert_eq!(rows[4]["role"], "YOU");
+        assert!(
+            rows[4]["body"]
+                .as_str()
+                .unwrap()
+                .contains("rendered at 22px")
+        );
+        assert!(
+            rows[4]["images"][0]
+                .as_str()
+                .unwrap()
+                .starts_with("data:image/png;base64,"),
+            "the attachment exposes its image URL: {}",
+            rows[4]
+        );
 
         let rows = render(&other_messages());
         let kinds: Vec<_> = rows
