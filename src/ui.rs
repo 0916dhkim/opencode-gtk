@@ -452,6 +452,7 @@ impl Application for OpenCodeCosmic {
             Message::PointerRelease => {
                 if let Some(drag) = self.tab_drag.take() {
                     reorder_tabs(&mut self.tabs, drag.from, drag.to);
+                    self.persist_tabs();
                     return Task::none();
                 }
                 if let Some(tab) = self.hovered_tab.clone()
@@ -2288,6 +2289,23 @@ fn shortcut(key: &Key, modifiers: Modifiers) -> Option<Message> {
     }
 }
 
+/// GTK restored the open tabs and their order from the saved state on start;
+/// ids the server no longer reports are dropped.
+fn restore_tabs(
+    saved: Option<&crate::persist::ServerState>,
+    known: &std::collections::HashSet<String>,
+) -> Vec<String> {
+    let Some(saved) = saved else {
+        return Vec::new();
+    };
+    saved
+        .tabs
+        .iter()
+        .filter(|tab| known.contains(&tab.id))
+        .map(|tab| tab.id.clone())
+        .collect()
+}
+
 /// GTK's drag-to-reorder: the dragged session lands at `to`, the rows between
 /// shift by one. Reports whether anything moved.
 fn reorder_tabs(tabs: &mut Vec<String>, from: usize, to: usize) -> bool {
@@ -3210,6 +3228,16 @@ impl OpenCodeCosmic {
                 self.jobs
                     .apply_snapshot(Some(&active_statuses), bootstrap.shells, &ctx);
 
+                let saved = self.state.servers.get(&self.state.connection.server);
+                if self.tabs.is_empty() {
+                    let known: std::collections::HashSet<String> =
+                        self.sessions.keys().cloned().collect();
+                    self.tabs = restore_tabs(saved, &known);
+                    if let Some(unread) = saved.map(|state| state.unread.clone()) {
+                        self.unread = unread;
+                        self.unread.retain(|id| self.tabs.contains(id));
+                    }
+                }
                 if self.tabs.is_empty() {
                     let mut roots: Vec<_> = self
                         .sessions
@@ -3223,9 +3251,14 @@ impl OpenCodeCosmic {
                 }
 
                 if self.active_session_id.is_none() {
-                    self.active_session_id = self.tabs.first().cloned();
+                    // GTK reopened the tab that was active, when it still exists.
+                    self.active_session_id = saved
+                        .and_then(|state| state.active.clone())
+                        .filter(|id| self.tabs.contains(id))
+                        .or_else(|| self.tabs.first().cloned());
                     self.focus_composer = self.active_session_id.is_some();
                 }
+                self.persist_tabs();
 
                 if let Some(active_id) = &self.active_session_id {
                     let dir = self
@@ -3374,10 +3407,48 @@ impl OpenCodeCosmic {
         }
     }
 
+    /// GTK saved the open tabs, their order, the active one and the unread
+    /// markers per server, so the next start reopens the same sessions.
+    fn persist_tabs(&mut self) {
+        // The preview drives a mock server: never write its tabs into the real
+        // state file.
+        if self.mock_server.is_some() {
+            return;
+        }
+        let key = self.state.connection.server.clone();
+        if key.is_empty() {
+            return;
+        }
+        let tabs: Vec<crate::persist::PersistedTab> = self
+            .tabs
+            .iter()
+            .map(|id| {
+                let session = self.sessions.get(id);
+                crate::persist::PersistedTab {
+                    id: id.clone(),
+                    directory: session
+                        .map(|session| session.directory.clone())
+                        .unwrap_or_default(),
+                    title: session
+                        .map(|session| session.title.clone())
+                        .unwrap_or_default(),
+                }
+            })
+            .collect();
+        let unread: std::collections::HashSet<String> = self.unread.clone();
+        let active = self.active_session_id.clone();
+        let entry = self.state.servers.entry(key).or_default();
+        entry.tabs = tabs;
+        entry.active = active;
+        entry.unread = unread;
+        let _ = self.state.save(&default_path());
+    }
+
     fn set_active_session(&mut self, id: &str) {
         self.active_session_id = Some(id.to_string());
         self.focus_composer = true;
         self.unread.remove(id);
+        self.persist_tabs();
         if !self.conversations.contains_key(id) {
             if let Some(api) = &self.api {
                 api.send(Command::LoadMessages {
@@ -3399,6 +3470,7 @@ impl OpenCodeCosmic {
         if self.active_session_id.as_deref() == Some(id) {
             self.active_session_id = self.tabs.first().cloned();
         }
+        self.persist_tabs();
     }
 
     /// Moves the active tab by `delta` positions, wrapping around.
@@ -4131,6 +4203,26 @@ mod tests {
             );
         }
         assert!(message(&ch("q"), Modifiers::CTRL).is_none());
+    }
+
+    #[test]
+    fn saved_tabs_are_restored_without_sessions_the_server_lost() {
+        let known: std::collections::HashSet<String> =
+            ["a".to_string(), "c".to_string()].into_iter().collect();
+        let saved = crate::persist::ServerState {
+            tabs: ["c", "gone", "a"]
+                .iter()
+                .map(|id| crate::persist::PersistedTab {
+                    id: (*id).to_string(),
+                    directory: "/repo".to_string(),
+                    title: (*id).to_string(),
+                })
+                .collect(),
+            ..Default::default()
+        };
+
+        assert_eq!(restore_tabs(Some(&saved), &known), vec!["c", "a"]);
+        assert!(restore_tabs(None, &known).is_empty());
     }
 
     #[test]
