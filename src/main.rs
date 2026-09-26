@@ -5,6 +5,7 @@ mod credentials;
 mod jobs;
 mod markdown;
 mod model;
+mod palette;
 mod pending;
 mod persist;
 mod preview;

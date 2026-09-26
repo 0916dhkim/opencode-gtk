@@ -1,7 +1,9 @@
 use cosmic::Element;
-use cosmic::iced::{Border, Color, Length};
+use cosmic::iced::{Border, Length};
 use cosmic::widget::{button, column, container, row, text};
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
+
+use crate::palette;
 
 #[derive(Clone, Debug)]
 pub enum MarkdownBlock {
@@ -171,13 +173,13 @@ where
                 )
                 .padding([4, 10])
                 .style(|_theme| container::Style {
-                    background: Some(Color::from_rgb8(0x14, 0x17, 0x1a).into()),
+                    background: Some(palette::current().code_header_bg.into()),
                     border: Border {
-                        color: Color::from_rgb8(0x28, 0x2c, 0x30),
+                        color: palette::current().panel_border,
                         width: 1.0,
                         radius: 0.0.into(),
                     },
-                    text_color: Some(Color::from_rgb8(0x89, 0x91, 0x98)),
+                    text_color: Some(palette::current().code_language_text),
                     ..Default::default()
                 });
 
@@ -188,7 +190,7 @@ where
                         .padding(10)
                         .width(Length::Fill)
                         .style(|_theme| container::Style {
-                            text_color: Some(Color::from_rgb8(0xe1, 0xdd, 0xd5)),
+                            text_color: Some(palette::current().code_content_text),
                             ..Default::default()
                         });
 
@@ -198,9 +200,9 @@ where
                     container(block_col)
                         .width(Length::Fill)
                         .style(|_theme| container::Style {
-                            background: Some(Color::from_rgb8(0x17, 0x1a, 0x1d).into()),
+                            background: Some(palette::current().code_block_bg.into()),
                             border: Border {
-                                color: Color::from_rgb8(0x30, 0x35, 0x3a),
+                                color: palette::current().code_block_border,
                                 width: 1.0,
                                 radius: 6.0.into(),
                             },
@@ -224,13 +226,13 @@ where
                 let q = container(text(quote).size(13))
                     .padding([6, 12])
                     .style(|_theme| container::Style {
-                        background: Some(Color::from_rgba8(255, 255, 255, 0.02).into()),
+                        background: Some(palette::current().overlay_bg.into()),
                         border: Border {
-                            color: Color::from_rgb8(0x6f, 0x77, 0x80),
+                            color: palette::current().quote_border,
                             width: 1.0,
                             radius: 4.0.into(),
                         },
-                        text_color: Some(Color::from_rgb8(0xbc, 0xc1, 0xc4)),
+                        text_color: Some(palette::current().quote_text),
                         ..Default::default()
                     });
                 elements.push(q.into());
@@ -240,7 +242,7 @@ where
                     .height(1)
                     .width(Length::Fill)
                     .style(|_theme| container::Style {
-                        background: Some(Color::from_rgb8(0x28, 0x2c, 0x30).into()),
+                        background: Some(palette::current().panel_border.into()),
                         ..Default::default()
                     });
                 elements.push(rule.into());

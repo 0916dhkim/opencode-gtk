@@ -6,7 +6,7 @@ use std::{
 use async_channel::Receiver;
 use cosmic::app::{ContextDrawer, Core, Task, context_drawer};
 use cosmic::iced::{
-    Alignment, Border, Color, Event, Length, Subscription,
+    Alignment, Border, Event, Length, Subscription,
     event::listen_with,
     keyboard::{self, Key, Modifiers, key::Named},
 };
@@ -21,6 +21,7 @@ use crate::{
     jobs::{self, JobKind},
     markdown,
     model::{self, Conversation, ModelCatalog, Role, RunStatus, Session, TrayItem},
+    palette,
     persist::{PersistedState, default_path},
     preview, protocol,
     tray::{RowAction, SendMode, enter_mode},
@@ -420,9 +421,9 @@ impl Application for OpenCodeCosmic {
                 .style(move |_theme| {
                     if is_active {
                         container::Style {
-                            background: Some(Color::from_rgb8(0x22, 0x26, 0x2a).into()),
+                            background: Some(palette::current().sidebar_row_active_bg.into()),
                             border: Border {
-                                color: Color::from_rgb8(0x2b, 0x30, 0x34),
+                                color: palette::current().nav_separator,
                                 width: 1.0,
                                 radius: 6.0.into(),
                             },
@@ -482,9 +483,9 @@ impl Application for OpenCodeCosmic {
                         .padding([4, 8])
                         .width(Length::Fill)
                         .style(|_theme| container::Style {
-                            background: Some(Color::from_rgb8(0x18, 0x1c, 0x21).into()),
+                            background: Some(palette::current().card_bg.into()),
                             border: Border {
-                                color: Color::from_rgb8(0x28, 0x2c, 0x30),
+                                color: palette::current().panel_border,
                                 width: 1.0,
                                 radius: 4.0.into(),
                             },
@@ -523,9 +524,9 @@ impl Application for OpenCodeCosmic {
         let sidebar = container(sidebar_column)
             .height(Length::Fill)
             .style(|_theme| container::Style {
-                background: Some(Color::from_rgb8(0x0d, 0x0f, 0x11).into()),
+                background: Some(palette::current().sidebar_bg.into()),
                 border: Border {
-                    color: Color::from_rgb8(0x24, 0x28, 0x2c),
+                    color: palette::current().sidebar_border,
                     width: 1.0,
                     radius: 0.0.into(),
                 },
@@ -592,9 +593,9 @@ impl Application for OpenCodeCosmic {
             )
             .width(Length::Fill)
             .style(|_theme| container::Style {
-                background: Some(Color::from_rgb8(0x13, 0x16, 0x19).into()),
+                background: Some(palette::current().inset_bg.into()),
                 border: Border {
-                    color: Color::from_rgb8(0x23, 0x27, 0x2c),
+                    color: palette::current().inset_border,
                     width: 1.0,
                     radius: 0.0.into(),
                 },
@@ -650,15 +651,13 @@ impl Application for OpenCodeCosmic {
                                         .padding([8, 12])
                                         .width(Length::Fill)
                                         .style(|_theme| container::Style {
-                                            background: Some(
-                                                Color::from_rgba8(255, 255, 255, 0.02).into(),
-                                            ),
+                                            background: Some(palette::current().overlay_bg.into()),
                                             border: Border {
-                                                color: Color::from_rgb8(0x6f, 0x77, 0x80),
+                                                color: palette::current().quote_border,
                                                 width: 1.0,
                                                 radius: 4.0.into(),
                                             },
-                                            text_color: Some(Color::from_rgb8(0x8d, 0x95, 0x9d)),
+                                            text_color: Some(palette::current().muted_text),
                                             ..Default::default()
                                         });
 
@@ -711,9 +710,9 @@ impl Application for OpenCodeCosmic {
 
                                 let is_completed = status == "COMPLETED";
                                 let badge_color = if is_completed {
-                                    Color::from_rgb8(0x56, 0xd3, 0x64)
+                                    palette::current().status_ok
                                 } else {
-                                    Color::from_rgb8(0xe5, 0xb5, 0x67)
+                                    palette::current().status_busy
                                 };
 
                                 let tool_header = row::with_children(vec![
@@ -725,7 +724,7 @@ impl Application for OpenCodeCosmic {
                                         .padding([1, 6])
                                         .style(move |_theme| container::Style {
                                             background: Some(
-                                                Color::from_rgba8(255, 255, 255, 0.05).into(),
+                                                palette::current().badge_overlay_bg.into(),
                                             ),
                                             border: Border {
                                                 color: badge_color,
@@ -751,13 +750,13 @@ impl Application for OpenCodeCosmic {
                                     .padding([6, 10])
                                     .width(Length::Fill)
                                     .style(|_theme| container::Style {
-                                        background: Some(Color::from_rgb8(0x0d, 0x0f, 0x11).into()),
+                                        background: Some(palette::current().code_block_bg.into()),
                                         border: Border {
-                                            color: Color::from_rgb8(0x24, 0x28, 0x2c),
+                                            color: palette::current().code_block_border,
                                             width: 1.0,
                                             radius: 4.0.into(),
                                         },
-                                        text_color: Some(Color::from_rgb8(0x89, 0x91, 0x98)),
+                                        text_color: Some(palette::current().code_language_text),
                                         ..Default::default()
                                     });
                                     tool_box_items.push(out_box.into());
@@ -769,9 +768,9 @@ impl Application for OpenCodeCosmic {
                                     .padding(10)
                                     .width(Length::Fill)
                                     .style(|_theme| container::Style {
-                                        background: Some(Color::from_rgb8(0x14, 0x17, 0x1a).into()),
+                                        background: Some(palette::current().code_header_bg.into()),
                                         border: Border {
-                                            color: Color::from_rgb8(0x28, 0x2c, 0x30),
+                                            color: palette::current().panel_border,
                                             width: 1.0,
                                             radius: 6.0.into(),
                                         },
@@ -792,13 +791,13 @@ impl Application for OpenCodeCosmic {
                             .padding([8, 12])
                             .width(Length::Fill)
                             .style(|_theme| container::Style {
-                                background: Some(Color::from_rgba8(248, 81, 73, 0.08).into()),
+                                background: Some(palette::current().error_card_bg.into()),
                                 border: Border {
-                                    color: Color::from_rgba8(248, 81, 73, 0.32),
+                                    color: palette::current().error_card_border,
                                     width: 1.0,
                                     radius: 4.0.into(),
                                 },
-                                text_color: Some(Color::from_rgb8(248, 81, 73)),
+                                text_color: Some(palette::current().error_text),
                                 ..Default::default()
                             });
                         turn_items.push(err_box.into());
@@ -812,9 +811,9 @@ impl Application for OpenCodeCosmic {
                         .style(move |_theme| {
                             if is_user {
                                 container::Style {
-                                    background: Some(Color::from_rgb8(0x1c, 0x24, 0x2b).into()),
+                                    background: Some(palette::current().user_message_bg.into()),
                                     border: Border {
-                                        color: Color::from_rgba8(255, 255, 255, 0.08),
+                                        color: palette::current().message_border,
                                         width: 1.0,
                                         radius: 8.0.into(),
                                     },
@@ -822,9 +821,9 @@ impl Application for OpenCodeCosmic {
                                 }
                             } else {
                                 container::Style {
-                                    background: Some(Color::from_rgb8(0x13, 0x16, 0x19).into()),
+                                    background: Some(palette::current().inset_bg.into()),
                                     border: Border {
-                                        color: Color::from_rgba8(255, 255, 255, 0.04),
+                                        color: palette::current().overlay_border,
                                         width: 1.0,
                                         radius: 8.0.into(),
                                     },
@@ -852,13 +851,13 @@ impl Application for OpenCodeCosmic {
                     container(busy_indicator)
                         .padding([8, 14])
                         .style(|_theme| container::Style {
-                            background: Some(Color::from_rgb8(0x18, 0x1c, 0x21).into()),
+                            background: Some(palette::current().card_bg.into()),
                             border: Border {
-                                color: Color::from_rgb8(0x30, 0x35, 0x3a),
+                                color: palette::current().panel_border,
                                 width: 1.0,
                                 radius: 6.0.into(),
                             },
-                            text_color: Some(Color::from_rgb8(0xe5, 0xb5, 0x67)),
+                            text_color: Some(palette::current().status_busy),
                             ..Default::default()
                         });
 
@@ -914,12 +913,12 @@ impl Application for OpenCodeCosmic {
                     let badge = container(text(delivery_label).size(10))
                         .padding([2, 6])
                         .style(|_theme| container::Style {
-                            background: Some(Color::from_rgb8(0xd2, 0x9b, 0x52).into()),
+                            background: Some(palette::current().accent_bg.into()),
                             border: Border {
                                 radius: 4.0.into(),
                                 ..Default::default()
                             },
-                            text_color: Some(Color::from_rgb8(0x17, 0x13, 0x0e)),
+                            text_color: Some(palette::current().accent_fg),
                             ..Default::default()
                         });
 
@@ -942,9 +941,9 @@ impl Application for OpenCodeCosmic {
                         container(item_row)
                             .padding([4, 8])
                             .style(|_theme| container::Style {
-                                background: Some(Color::from_rgb8(0x18, 0x1c, 0x21).into()),
+                                background: Some(palette::current().card_bg.into()),
                                 border: Border {
-                                    color: Color::from_rgb8(0x28, 0x2c, 0x30),
+                                    color: palette::current().panel_border,
                                     width: 1.0,
                                     radius: 4.0.into(),
                                 },
@@ -960,9 +959,9 @@ impl Application for OpenCodeCosmic {
                         .padding(10)
                         .width(Length::Fill)
                         .style(|_theme| container::Style {
-                            background: Some(Color::from_rgb8(0x14, 0x17, 0x1a).into()),
+                            background: Some(palette::current().tray_bg.into()),
                             border: Border {
-                                color: Color::from_rgb8(0x2a, 0x2e, 0x32),
+                                color: palette::current().tray_border,
                                 width: 1.0,
                                 radius: 6.0.into(),
                             },
@@ -1012,9 +1011,9 @@ impl Application for OpenCodeCosmic {
             )
             .width(Length::Fill)
             .style(|_theme| container::Style {
-                background: Some(Color::from_rgb8(0x19, 0x1c, 0x1f).into()),
+                background: Some(palette::current().composer_bg.into()),
                 border: Border {
-                    color: Color::from_rgb8(0x30, 0x35, 0x3a),
+                    color: palette::current().composer_border,
                     width: 1.0,
                     radius: 8.0.into(),
                 },
@@ -1066,7 +1065,7 @@ impl Application for OpenCodeCosmic {
             .width(Length::Fill)
             .height(Length::Fill)
             .style(|_theme| container::Style {
-                background: Some(Color::from_rgb8(0x10, 0x12, 0x14).into()),
+                background: Some(palette::current().window_bg.into()),
                 ..Default::default()
             })
             .into()
@@ -1109,9 +1108,9 @@ impl Application for OpenCodeCosmic {
                                 .padding([8, 12])
                                 .width(Length::Fill)
                                 .style(|_theme| container::Style {
-                                    background: Some(Color::from_rgb8(0x18, 0x1c, 0x21).into()),
+                                    background: Some(palette::current().card_bg.into()),
                                     border: Border {
-                                        color: Color::from_rgb8(0x28, 0x2c, 0x30),
+                                        color: palette::current().panel_border,
                                         width: 1.0,
                                         radius: 6.0.into(),
                                     },
