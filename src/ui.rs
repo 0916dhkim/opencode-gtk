@@ -776,6 +776,13 @@ impl Application for OpenCodeCosmic {
             };
 
             let close_id = tab_id.clone();
+            let row_hint = self
+                .sessions
+                .get(tab_id)
+                .map(|session| format!("{}\nOpen session", session.directory))
+                .unwrap_or_else(|| "Open session".to_string());
+            let hovered = self.hovered_tab.as_deref() == Some(tab_id.as_str());
+            let show_actions = is_active || hovered || self.tab_drag.is_some();
 
             let tab_btn = container(
                 row::with_children(vec![
@@ -797,29 +804,23 @@ impl Application for OpenCodeCosmic {
             .width(Length::Fill)
             .padding([0, self.space(0.59) as u16]);
 
-            let close_btn = button::icon(icons::close())
-                .on_press(Message::CloseTab(close_id))
-                .padding([self.space(0.2) as u16, self.space(0.4) as u16]);
-
             // GTK kept rename and close on every row, dimmed until the row is
             // active or hovered.
+            let close_btn = button::icon(icons::close())
+                .on_press(Message::CloseTab(close_id))
+                .padding([self.space(0.2) as u16, self.space(0.4) as u16])
+                .class(close_button_class(show_actions, self.space(0.81)));
             let rename_btn = button::icon(icons::edit())
                 .padding([self.space(0.2) as u16, self.space(0.2) as u16])
-                .on_press(Message::OpenRenameFor(tab_id.clone()));
+                .on_press(Message::OpenRenameFor(tab_id.clone()))
+                .class(tab_action_class(show_actions, self.space(0.81)));
 
-            let hovered = self.hovered_tab.as_deref() == Some(tab_id.as_str());
-            let show_actions = is_active || hovered || self.tab_drag.is_some();
+            let close_btn = hinted(close_btn, "Close tab");
+            let rename_btn = hinted(rename_btn, "Rename session (F2)");
+
             let mut tab_row_items = vec![tab_btn.into()];
-            tab_row_items.push(
-                rename_btn
-                    .class(tab_action_class(show_actions, self.space(0.81)))
-                    .into(),
-            );
-            tab_row_items.push(
-                close_btn
-                    .class(close_button_class(show_actions, self.space(0.81)))
-                    .into(),
-            );
+            tab_row_items.push(rename_btn);
+            tab_row_items.push(close_btn);
             let tab_row = row::with_children(tab_row_items)
                 .align_y(Alignment::Center)
                 .spacing(self.space(0.15));
@@ -877,6 +878,7 @@ impl Application for OpenCodeCosmic {
             // cursor crosses, so a drop lands where the cursor is.
             let hover_id = tab_id.clone();
             let leave_id = tab_id.clone();
+            let tab_card: Element<'_, Message> = tab_card.into();
             let tab_card = cosmic::iced::widget::mouse_area(tab_card)
                 .on_enter(Message::TabHover {
                     tab: hover_id,
@@ -888,12 +890,13 @@ impl Application for OpenCodeCosmic {
                 })
                 .on_drag(Message::TabDragStart(position))
                 .on_move(move |_point| Message::TabDragOver(position));
+            let tab_card = hinted(tab_card, row_hint);
 
             // GTK separates inactive rows with a hairline.
             if !first_row && !is_active && !previous_active {
                 tab_rows.push(hairline(palette::current().nav_separator));
             }
-            tab_rows.push(tab_card.into());
+            tab_rows.push(tab_card);
             previous_active = is_active;
             first_row = false;
         }
@@ -964,14 +967,15 @@ impl Application for OpenCodeCosmic {
         }
 
         let footer_buttons = column::with_children(vec![
-            button::custom(
+            button::custom(hinted(
                 row::with_children(vec![
                     inline_icon(icons::sessions(), self.zoom).into(),
                     text("Tabs").size(self.em(crate::metrics::px(13.0))).into(),
                 ])
                 .spacing(self.space(crate::metrics::px(6.0)))
                 .align_y(Alignment::Center),
-            )
+                "Search tabs (Ctrl+P)",
+            ))
             .on_press(Message::ToggleDrawer(DrawerPage::Sessions))
             .class(flat_button_class(self.zoom))
             .width(Length::Fill)
@@ -982,7 +986,7 @@ impl Application for OpenCodeCosmic {
                 self.pad_px(8.0),
             ])
             .into(),
-            button::custom(
+            button::custom(hinted(
                 row::with_children(vec![
                     inline_icon(icons::settings(), self.zoom).into(),
                     text("Settings")
@@ -991,7 +995,8 @@ impl Application for OpenCodeCosmic {
                 ])
                 .spacing(self.space(crate::metrics::px(6.0)))
                 .align_y(Alignment::Center),
-            )
+                "Server connection (Ctrl+,)",
+            ))
             .on_press(Message::ToggleDrawer(DrawerPage::Settings))
             .class(flat_button_class(self.zoom))
             .width(Length::Fill)
@@ -2627,6 +2632,20 @@ fn inline_icon(handle: cosmic::widget::icon::Handle, zoom: f32) -> cosmic::widge
 
 /// A small drawn status dot. The GTK client drew these with CSS; before this,
 /// the port used the text glyphs `●` / `○`, which depend on the font.
+/// GTK labelled every row, action and footer entry with a tooltip; libcosmic's
+/// wrapper carries them again.
+fn hinted<'a>(
+    content: impl Into<Element<'a, Message>>,
+    hint: impl Into<String>,
+) -> Element<'a, Message> {
+    cosmic::widget::tooltip::tooltip(
+        content,
+        text(hint.into()).size(13.0),
+        cosmic::widget::tooltip::Position::Bottom,
+    )
+    .into()
+}
+
 /// GTK ellipsized a row's title at the row's width; iced clips instead, so the
 /// port shortens it to roughly what fits a 272px sidebar next to its actions.
 fn truncate_title(title: &str, limit: usize) -> String {
