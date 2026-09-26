@@ -102,6 +102,15 @@ pub struct OpenCodeCosmic {
     /// The session row under the cursor, for GTK's row hover (and its tab
     /// actions, which only show for the active or hovered row).
     hovered_tab: Option<String>,
+    /// Sessions whose run finished while they were not active: GTK's unread
+    /// marker (a blue dot and title until the session is opened).
+    unread: std::collections::HashSet<String>,
+    /// The session the rename palette edits (the active one unless a row's
+    /// rename action set it).
+    rename_target: Option<String>,
+    /// Alt is held: GTK swapped every row's status marker for its shortcut
+    /// number.
+    shortcut_hint: bool,
     /// Files picked with the paperclip for the next prompt.
     pending_attachments: Vec<PathBuf>,
     /// Set while the file dialog runs on its own thread.
@@ -138,6 +147,8 @@ pub enum Message {
     },
     /// Cancels the form the notice points at (GTK's `Ctrl+Shift+X`).
     CancelVisibleForm,
+    /// Alt was pressed or released: GTK's tab shortcut hint.
+    AltHint(bool),
     /// The cursor entered or left a session row.
     TabHover {
         tab: String,
@@ -155,6 +166,8 @@ pub enum Message {
     TranscriptScrolled(cosmic::iced::widget::scrollable::Viewport),
     /// Opens the rename palette for the active session.
     OpenRename,
+    /// A row's rename action, for that row's session.
+    OpenRenameFor(String),
     RenameInput(String),
     ApplyRename,
     /// Opens the file dialog for the composer's attachments.
@@ -247,6 +260,9 @@ impl Application for OpenCodeCosmic {
             history_loading: false,
             tab_drag: None,
             hovered_tab: None,
+            unread: std::collections::HashSet::new(),
+            rename_target: None,
+            shortcut_hint: false,
             pending_attachments: Vec::new(),
             attachment_picker: None,
         };
@@ -468,8 +484,23 @@ impl Application for OpenCodeCosmic {
                 Task::none()
             }
             Message::OpenRename => {
+                self.rename_target = self.active_session_id.clone();
                 self.rename_input = self.active_session_title();
                 self.active_drawer = Some(DrawerPage::Rename);
+                Task::none()
+            }
+            Message::OpenRenameFor(id) => {
+                self.rename_target = Some(id.clone());
+                self.rename_input = self
+                    .sessions
+                    .get(&id)
+                    .map(|session| session.title.clone())
+                    .unwrap_or_default();
+                self.active_drawer = Some(DrawerPage::Rename);
+                Task::none()
+            }
+            Message::AltHint(alt) => {
+                self.shortcut_hint = alt;
                 Task::none()
             }
             Message::RenameInput(value) => {
@@ -689,6 +720,7 @@ impl Application for OpenCodeCosmic {
                 .into(),
         );
 
+        let jobs_sessions = self.jobs.sessions_with_jobs();
         let mut tab_rows = Vec::new();
         let mut first_row = true;
         let mut previous_active = true;
@@ -701,84 +733,109 @@ impl Application for OpenCodeCosmic {
 
             let is_busy = self.is_session_busy(tab_id);
             let is_active = self.active_session_id.as_deref() == Some(tab_id.as_str());
-
-            let display_title = if title.chars().count() > 20 {
-                let s: String = title.chars().take(19).collect();
-                format!("{s}…")
-            } else {
-                title.to_string()
-            };
-
-            let status_marker: Element<'_, Message> = if is_busy {
-                inline_icon(icons::settings(), self.zoom)
-                    .size(self.em(0.92) as u16)
-                    .into()
-            } else if is_active {
-                status_dot(palette::current().status_unread, true)
-            } else {
-                status_dot(palette::current().status_idle, false)
-            };
-
-            // GTK: unread/attention and busy recolour the title, busy is bold.
-            let title_color = if is_busy {
+            let is_unread = self.unread.contains(tab_id);
+            // GTK showed the Settings gear while the turn or a job ran, and a
+            // coloured dot otherwise; the colour carries the attention.
+            let has_jobs = jobs_sessions.contains(tab_id);
+            let attention = if is_busy {
                 palette::current().status_busy
-            } else if is_active {
-                palette::current().header_title_text
+            } else if is_unread {
+                palette::current().status_unread
             } else {
-                palette::current().muted_text
+                palette::current().status_idle
+            };
+
+            let display_title = truncate_title(title, 28);
+
+            let mut marker_items: Vec<Element<'_, Message>> = Vec::new();
+            if is_busy || has_jobs {
+                marker_items.push(
+                    inline_icon(icons::settings(), self.zoom)
+                        .size(self.em(1.04) as u16)
+                        .class(cosmic::theme::Svg::custom(move |_theme: &cosmic::Theme| {
+                            cosmic::iced::widget::svg::Style {
+                                color: Some(attention),
+                            }
+                        }))
+                        .into(),
+                );
+            } else {
+                marker_items.push(status_dot(attention, true));
+            }
+            // GTK swapped the marker for the row's number while Alt was held.
+            let status_marker: Element<'_, Message> = if self.shortcut_hint && position < 9 {
+                text((position + 1).to_string())
+                    .size(self.em(0.78))
+                    .font(cosmic::iced::Font {
+                        weight: cosmic::iced::font::Weight::Bold,
+                        ..cosmic::iced::Font::DEFAULT
+                    })
+                    .class(cosmic::theme::Text::Color(
+                        palette::current().tab_index_text,
+                    ))
+                    .into()
+            } else {
+                row::with_children(marker_items).into()
+            };
+
+            // GTK: a finished run or unread output recolours the title (both
+            // bold), the active row uses the header title colour, the rest the
+            // sidebar's own foreground.
+            let title_class = if is_busy {
+                cosmic::theme::Text::Color(palette::current().status_busy)
+            } else if is_unread {
+                cosmic::theme::Text::Color(palette::current().tab_unread_text)
+            } else if is_active {
+                cosmic::theme::Text::Color(palette::current().header_title_text)
+            } else {
+                cosmic::theme::Text::Default
+            };
+            let title_weight = if is_busy || is_unread {
+                cosmic::iced::font::Weight::Bold
+            } else {
+                cosmic::iced::font::Weight::Normal
             };
 
             let close_id = tab_id.clone();
-            let index = position + 1;
 
             let tab_btn = container(
                 row::with_children(vec![
                     status_marker,
-                    text(index.to_string())
-                        .size(self.em(0.76))
-                        .class(cosmic::theme::Text::Color(
-                            palette::current().tab_index_text,
-                        ))
-                        .into(),
                     text(display_title)
-                        .size(self.em(0.96))
+                        .size(self.em(1.0))
+                        .wrapping(cosmic::iced::widget::text::Wrapping::None)
                         .font(cosmic::iced::Font {
-                            weight: if is_busy {
-                                cosmic::iced::font::Weight::Bold
-                            } else {
-                                cosmic::iced::font::Weight::Normal
-                            },
+                            weight: title_weight,
                             ..cosmic::iced::Font::DEFAULT
                         })
-                        .class(cosmic::theme::Text::Color(title_color))
+                        .class(title_class)
                         .width(Length::Fill)
                         .into(),
                 ])
-                .spacing(self.space(0.3))
+                .spacing(self.space(0.22))
                 .align_y(Alignment::Center),
             )
             .width(Length::Fill)
-            .padding([self.space(0.35) as u16, self.space(0.59) as u16]);
+            .padding([0, self.space(0.59) as u16]);
 
             let close_btn = button::icon(icons::close())
                 .on_press(Message::CloseTab(close_id))
                 .padding([self.space(0.2) as u16, self.space(0.4) as u16]);
 
-            // GTK showed rename and close on the active tab.
+            // GTK kept rename and close on every row, dimmed until the row is
+            // active or hovered.
             let rename_btn = button::icon(icons::edit())
                 .padding([self.space(0.2) as u16, self.space(0.2) as u16])
-                .on_press(Message::OpenRename);
+                .on_press(Message::OpenRenameFor(tab_id.clone()));
 
             let hovered = self.hovered_tab.as_deref() == Some(tab_id.as_str());
             let show_actions = is_active || hovered || self.tab_drag.is_some();
             let mut tab_row_items = vec![tab_btn.into()];
-            if is_active {
-                tab_row_items.push(
-                    rename_btn
-                        .class(tab_action_class(show_actions, self.space(0.81)))
-                        .into(),
-                );
-            }
+            tab_row_items.push(
+                rename_btn
+                    .class(tab_action_class(show_actions, self.space(0.81)))
+                    .into(),
+            );
             tab_row_items.push(
                 close_btn
                     .class(close_button_class(show_actions, self.space(0.81)))
@@ -795,7 +852,8 @@ impl Application for OpenCodeCosmic {
                 .is_some_and(|drag| drag.to == position && drag.from != position);
             let tab_card = container(tab_row)
                 .width(Length::Fill)
-                .padding([self.space(0.07) as u16, self.space(0.3) as u16])
+                .height(Length::Fixed(self.em(2.6) as f32))
+                .padding([0, self.space(0.3) as u16])
                 .style(move |_theme: &cosmic::Theme| {
                     // GTK marked the dragged row and the drop position.
                     if drag_target {
@@ -808,25 +866,27 @@ impl Application for OpenCodeCosmic {
                             ..Default::default()
                         };
                     }
-                    if is_active || dragging || hovered {
+                    if dragging {
+                        return container::Style {
+                            background: Some(palette::current().sidebar_row_active_bg.into()),
+                            border: Border {
+                                color: palette::current().accent_bg,
+                                width: 1.0,
+                                radius: radius.into(),
+                            },
+                            ..Default::default()
+                        };
+                    }
+                    if is_active || hovered {
                         container::Style {
                             background: Some(
-                                if is_active || dragging {
+                                if is_active {
                                     palette::current().sidebar_row_active_bg
                                 } else {
                                     palette::current().sidebar_hover_bg
                                 }
                                 .into(),
                             ),
-                            border: Border {
-                                color: if dragging {
-                                    palette::current().accent_bg
-                                } else {
-                                    palette::current().nav_separator
-                                },
-                                width: 1.0,
-                                radius: radius.into(),
-                            },
                             ..Default::default()
                         }
                     } else {
@@ -2150,6 +2210,10 @@ impl Application for OpenCodeCosmic {
                 Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. }) => {
                     shortcut(&key, modifiers)
                 }
+                // GTK showed each row's shortcut number while Alt was held.
+                Event::Keyboard(keyboard::Event::ModifiersChanged(modifiers)) => {
+                    Some(Message::AltHint(modifiers.alt()))
+                }
                 // A row's press must not rebuild it (the drag state lives in
                 // the widget), so selection and the drop both happen here: the
                 // release either lands a dragged row or selects the row under
@@ -2248,7 +2312,8 @@ fn inline_image_bytes(uri: &str) -> Option<Vec<u8>> {
         .ok()
 }
 
-/// GTK's `.session-tab-action`: dimmed until the row is active or hovered.
+/// GTK's `.session-tab-action`: dimmed to `opacity: 0.45` until the row is
+/// active or hovered.
 fn tab_action_class(shown: bool, radius: f32) -> cosmic::theme::Button {
     let base = move || cosmic::widget::button::Style {
         background: None,
@@ -2257,7 +2322,8 @@ fn tab_action_class(shown: bool, radius: f32) -> cosmic::theme::Button {
         text_color: if shown {
             None
         } else {
-            Some(palette::current().muted_text)
+            let fg = palette::current().header_title_text;
+            Some(cosmic::iced::Color::from_rgba(fg.r, fg.g, fg.b, 0.45))
         },
         ..Default::default()
     };
@@ -2278,7 +2344,8 @@ fn close_button_class(shown: bool, radius: f32) -> cosmic::theme::Button {
         text_color: if shown {
             None
         } else {
-            Some(palette::current().muted_text)
+            let fg = palette::current().header_title_text;
+            Some(cosmic::iced::Color::from_rgba(fg.r, fg.g, fg.b, 0.45))
         },
         ..Default::default()
     };
@@ -2549,6 +2616,17 @@ fn inline_icon(handle: cosmic::widget::icon::Handle, zoom: f32) -> cosmic::widge
 
 /// A small drawn status dot. The GTK client drew these with CSS; before this,
 /// the port used the text glyphs `●` / `○`, which depend on the font.
+/// GTK ellipsized a row's title at the row's width; iced clips instead, so the
+/// port shortens it to roughly what fits a 272px sidebar next to its actions.
+fn truncate_title(title: &str, limit: usize) -> String {
+    if title.chars().count() > limit {
+        let clipped: String = title.chars().take(limit - 1).collect();
+        format!("{clipped}…")
+    } else {
+        title.to_string()
+    }
+}
+
 fn status_dot(color: cosmic::iced::Color, filled: bool) -> Element<'static, Message> {
     let style = move |_theme: &cosmic::Theme| container::Style {
         background: filled.then(|| color.into()),
@@ -3171,7 +3249,20 @@ impl OpenCodeCosmic {
             }
             UiEvent::ServerEvent(envelope) => {
                 if let Some((sid, status)) = model::event_run_status(&envelope.payload) {
-                    self.statuses.insert(sid, status);
+                    // GTK marked a tab unread when its run went idle while the
+                    // user was looking elsewhere.
+                    let ran = self
+                        .statuses
+                        .get(&sid)
+                        .is_some_and(|previous| previous.is_busy());
+                    if ran
+                        && !status.is_busy()
+                        && self.active_session_id.as_deref() != Some(sid.as_str())
+                        && self.tabs.iter().any(|tab| tab.as_str() == sid)
+                    {
+                        self.unread.insert(sid.to_string());
+                    }
+                    self.statuses.insert(sid.to_string(), status);
                 }
 
                 if let Ok(event) = protocol::Event::deserialize(&envelope.payload) {
@@ -3256,6 +3347,7 @@ impl OpenCodeCosmic {
     fn set_active_session(&mut self, id: &str) {
         self.active_session_id = Some(id.to_string());
         self.focus_composer = true;
+        self.unread.remove(id);
         if !self.conversations.contains_key(id) {
             if let Some(api) = &self.api {
                 api.send(Command::LoadMessages {
@@ -3341,7 +3433,11 @@ impl OpenCodeCosmic {
     }
 
     fn apply_rename(&mut self) {
-        let Some(session_id) = self.active_session_id.clone() else {
+        let Some(session_id) = self
+            .rename_target
+            .clone()
+            .or_else(|| self.active_session_id.clone())
+        else {
             return;
         };
         let title = self.rename_input.trim().to_string();
@@ -3357,6 +3453,7 @@ impl OpenCodeCosmic {
             });
         }
         self.active_drawer = None;
+        self.rename_target = None;
     }
 
     fn create_session(&mut self, directory: &str) {
