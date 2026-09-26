@@ -25,6 +25,7 @@ icons! {
     add => "add.svg",
     attach => "attach.svg",
     close => "close.svg",
+    copy => "copy.svg",
     connection => "connection.svg",
     edit => "edit.svg",
     search => "search.svg",

@@ -384,6 +384,7 @@ impl Application for OpenCodeCosmic {
                 .align_y(Alignment::Center),
             )
             .on_press(Message::ToggleDrawer(DrawerPage::Sessions))
+            .class(flat_button_class(self.zoom))
             .padding([3, 8])
             .into(),
             button::custom(
@@ -395,6 +396,7 @@ impl Application for OpenCodeCosmic {
                 .align_y(Alignment::Center),
             )
             .on_press(Message::ToggleDrawer(DrawerPage::Settings))
+            .class(flat_button_class(self.zoom))
             .padding([3, 8])
             .into(),
         ]
@@ -413,6 +415,7 @@ impl Application for OpenCodeCosmic {
             .align_y(Alignment::Center),
         )
         .on_press(Message::NewSession)
+        .class(flat_button_class(self.zoom))
         .width(Length::Fill)
         .padding([8, 12]);
         sidebar_items.push(container(new_session_btn).padding([8, 8, 4, 8]).into());
@@ -487,6 +490,7 @@ impl Application for OpenCodeCosmic {
                 .align_y(Alignment::Center),
             )
             .on_press(Message::SelectTab(tab_id_clone))
+            .class(flat_button_class(self.zoom))
             .width(Length::Fill)
             .padding([self.space(0.35) as u16, self.space(0.59) as u16]);
 
@@ -596,6 +600,7 @@ impl Application for OpenCodeCosmic {
                 .align_y(Alignment::Center),
             )
             .on_press(Message::ToggleDrawer(DrawerPage::Sessions))
+            .class(flat_button_class(self.zoom))
             .width(Length::Fill)
             .padding([6, 10])
             .into(),
@@ -608,6 +613,7 @@ impl Application for OpenCodeCosmic {
                 .align_y(Alignment::Center),
             )
             .on_press(Message::ToggleDrawer(DrawerPage::Settings))
+            .class(flat_button_class(self.zoom))
             .width(Length::Fill)
             .padding([6, 10])
             .into(),
@@ -768,7 +774,7 @@ impl Application for OpenCodeCosmic {
                             model::SegmentKind::Reasoning => {
                                 if !segment.text.trim().is_empty() {
                                     let reasoning = column::with_children(vec![
-                                        text("◆ Thinking")
+                                        text("Reasoning")
                                             .size(self.em(0.76))
                                             .class(cosmic::theme::Text::Color(
                                                 palette::current().reasoning_text,
@@ -830,89 +836,52 @@ impl Application for OpenCodeCosmic {
                                     ("tool", "COMPLETED", segment.text.as_str(), None)
                                 };
 
-                                let is_completed = status == "COMPLETED";
-                                let badge_color = if is_completed {
-                                    palette::current().status_ok
-                                } else {
-                                    palette::current().status_busy
-                                };
-
-                                let tool_header = row::with_children(vec![
-                                    text(name.to_uppercase())
+                                let tool_radius = self.space(0.59);
+                                let mut tool_box_items = vec![
+                                    text(format!("{} · {}", name, status.to_lowercase()))
                                         .size(self.em(0.76))
-                                        .font(cosmic::iced::Font {
-                                            weight: cosmic::iced::font::Weight::Bold,
-                                            ..cosmic::iced::Font::DEFAULT
-                                        })
                                         .class(cosmic::theme::Text::Color(
                                             palette::current().muted_text,
                                         ))
-                                        .width(Length::Fill)
                                         .into(),
-                                    container(text(status).size(self.em(0.72)))
-                                        .padding([1, 6])
-                                        .style(move |_theme| container::Style {
+                                    text(command)
+                                        .font(cosmic::iced::Font::MONOSPACE)
+                                        .size(self.em(0.92))
+                                        .class(cosmic::theme::Text::Color(
+                                            palette::current().code_content_text,
+                                        ))
+                                        .into(),
+                                ];
+
+                                if let Some(out) = output {
+                                    tool_box_items.push(
+                                        container(
+                                            text(out)
+                                                .font(cosmic::iced::Font::MONOSPACE)
+                                                .size(self.em(0.92))
+                                                .class(cosmic::theme::Text::Color(
+                                                    palette::current().code_content_text,
+                                                )),
+                                        )
+                                        .padding([self.space(0.52) as u16, self.space(0.74) as u16])
+                                        .width(Length::Fill)
+                                        .style(move |_theme: &cosmic::Theme| container::Style {
                                             background: Some(
-                                                palette::current().badge_overlay_bg.into(),
+                                                palette::current().code_block_bg.into(),
                                             ),
                                             border: Border {
-                                                color: badge_color,
+                                                color: palette::current().code_block_border,
                                                 width: 1.0,
-                                                radius: 4.0.into(),
+                                                radius: tool_radius.into(),
                                             },
-                                            text_color: Some(badge_color),
                                             ..Default::default()
                                         })
                                         .into(),
-                                ])
-                                .align_y(Alignment::Center);
-
-                                let cmd_text = text(command)
-                                    .font(cosmic::iced::Font::MONOSPACE)
-                                    .size(self.em(0.92));
-
-                                let mut tool_box_items = vec![tool_header.into(), cmd_text.into()];
-
-                                if let Some(out) = output {
-                                    let out_box = container(
-                                        text(out)
-                                            .font(cosmic::iced::Font::MONOSPACE)
-                                            .size(self.em(0.92))
-                                            .class(cosmic::theme::Text::Color(
-                                                palette::current().code_content_text,
-                                            )),
-                                    )
-                                    .padding([self.space(0.52) as u16, self.space(0.74) as u16])
-                                    .width(Length::Fill)
-                                    .style(|_theme| container::Style {
-                                        background: Some(palette::current().code_block_bg.into()),
-                                        border: Border {
-                                            color: palette::current().code_block_border,
-                                            width: 1.0,
-                                            radius: 4.0.into(),
-                                        },
-                                        text_color: Some(palette::current().code_language_text),
-                                        ..Default::default()
-                                    });
-                                    tool_box_items.push(out_box.into());
+                                    );
                                 }
 
-                                let tool_col =
+                                let tool_block =
                                     column::with_children(tool_box_items).spacing(self.space(0.3));
-
-                                let block_radius = self.space(0.59);
-                                let tool_block = container(tool_col)
-                                    .padding([self.space(0.52) as u16, self.space(0.74) as u16])
-                                    .width(Length::Fill)
-                                    .style(move |_theme: &cosmic::Theme| container::Style {
-                                        background: Some(palette::current().overlay_bg.into()),
-                                        border: Border {
-                                            color: palette::current().code_block_border,
-                                            width: 1.0,
-                                            radius: block_radius.into(),
-                                        },
-                                        ..Default::default()
-                                    });
 
                                 turn_items.push(tool_block.into());
                             }
@@ -1219,7 +1188,7 @@ impl Application for OpenCodeCosmic {
             }
             action_items.push(
                 button::icon(icons::send())
-                    .class(cosmic::theme::Button::Suggested)
+                    .class(accent_button_class(self.zoom))
                     .on_press(Message::SendPrompt(SendMode::Send))
                     .into(),
             );
@@ -1520,6 +1489,19 @@ fn composer_id() -> cosmic::widget::Id {
 /// The GTK client's zoom ladder.
 const ZOOM_STEPS: [f32; 9] = [0.7, 0.8, 0.9, 1.0, 1.1, 1.2, 1.3, 1.5, 1.75];
 
+/// `13400` -> `13.4k`, `200000` -> `200k`, `950` -> `950`.
+fn compact_tokens(value: u64) -> String {
+    if value < 1000 {
+        return value.to_string();
+    }
+    let thousands = value as f64 / 1000.0;
+    if (thousands.fract() * 10.0).round() < 0.5 {
+        format!("{:.0}k", thousands)
+    } else {
+        format!("{:.1}k", thousands)
+    }
+}
+
 /// The next step along [`ZOOM_STEPS`] in `direction` (clamped at both ends).
 fn next_zoom(current: f32, direction: i32) -> f32 {
     if direction > 0 {
@@ -1563,7 +1545,57 @@ fn clock_time(created: u64) -> String {
         return String::new();
     };
     let zoned = stamp.to_zoned(jiff::tz::TimeZone::system());
-    format!("{:02}:{:02}", zoned.hour(), zoned.minute())
+    format!(
+        "{:04}-{:02}-{:02} {:02}:{:02}",
+        zoned.year(),
+        zoned.month(),
+        zoned.day(),
+        zoned.hour(),
+        zoned.minute()
+    )
+}
+
+/// GTK's suggested action (`.composer-action.suggested-action`): the client's
+/// amber, not the COSMIC theme accent.
+fn accent_button_class(zoom: f32) -> cosmic::theme::Button {
+    let radius = crate::metrics::space(0.59, zoom);
+    let base = move || cosmic::widget::button::Style {
+        background: Some(palette::current().accent_bg.into()),
+        border_radius: radius.into(),
+        border_width: 0.0,
+        text_color: Some(palette::current().accent_fg),
+        ..Default::default()
+    };
+    cosmic::theme::Button::Custom {
+        active: Box::new(move |_focused, _theme| base()),
+        hovered: Box::new(move |_focused, _theme| base()),
+        pressed: Box::new(move |_focused, _theme| base()),
+        disabled: Box::new(move |_theme| base()),
+    }
+}
+
+/// GTK's flat buttons (`.sidebar-nav`, `headerbar button`): no background
+/// until hover. `cosmic::theme::Button::Transparent` hides the label, so the
+/// class is built here with an explicit text colour.
+fn flat_button_class(zoom: f32) -> cosmic::theme::Button {
+    let radius = crate::metrics::space(0.5, zoom);
+    let base = move || cosmic::widget::button::Style {
+        background: None,
+        border_radius: radius.into(),
+        border_width: 0.0,
+        text_color: Some(palette::current().header_title_text),
+        ..Default::default()
+    };
+    let hovered = move || cosmic::widget::button::Style {
+        background: Some(palette::current().action_hover_bg.into()),
+        ..base()
+    };
+    cosmic::theme::Button::Custom {
+        active: Box::new(move |_focused, _theme| base()),
+        hovered: Box::new(move |_focused, _theme| hovered()),
+        pressed: Box::new(move |_focused, _theme| base()),
+        disabled: Box::new(move |_theme| base()),
+    }
 }
 
 /// GTK's `.queue-tray-button`: 1.85em minimum height, 1px border, its own
@@ -2204,7 +2236,41 @@ impl OpenCodeCosmic {
             .map(|m| m.id.clone())
     }
 
+    /// GTK's `.composer-usage`: compact tokens against the model's window,
+    /// e.g. `13.4k / 200k`.
     fn active_context_usage(&self) -> String {
+        let Some(tokens) = self
+            .active_session_id
+            .as_ref()
+            .and_then(|id| self.conversations.get(id))
+            .and_then(|c| c.context_tokens())
+        else {
+            return String::new();
+        };
+        let limit = self
+            .active_session_id
+            .as_ref()
+            .and_then(|id| self.sessions.get(id))
+            .and_then(|s| s.model.as_ref())
+            .map(|m| m.id.clone())
+            .and_then(|id| {
+                let directory = self
+                    .active_session_id
+                    .as_ref()
+                    .and_then(|sid| self.sessions.get(sid))
+                    .map(|s| s.directory.clone())?;
+                self.catalogs
+                    .get(&directory)
+                    .and_then(|catalog| catalog.models.iter().find(|m| m.model_id == id).cloned())
+                    .and_then(|model| model.context_limit)
+            });
+        match limit {
+            Some(limit) => format!("{} / {}", compact_tokens(tokens), compact_tokens(limit)),
+            None => compact_tokens(tokens),
+        }
+    }
+
+    fn legacy_active_context_usage(&self) -> String {
         self.active_session_id
             .as_ref()
             .and_then(|id| self.conversations.get(id))
@@ -2350,11 +2416,24 @@ mod tests {
     }
 
     #[test]
+    fn compact_tokens_matches_the_gtk_usage_line() {
+        assert_eq!(compact_tokens(950), "950");
+        assert_eq!(compact_tokens(13_400), "13.4k");
+        assert_eq!(compact_tokens(200_000), "200k");
+        assert_eq!(compact_tokens(1_000), "1k");
+        assert_eq!(compact_tokens(1_050), "1.1k");
+    }
+
+    #[test]
     fn clock_formats_milliseconds_and_seconds() {
-        // 2026-09-26T00:00:00Z, in both protocol shapes.
-        assert_eq!(clock_time(1_790_000_000_000).len(), 5);
-        assert_eq!(clock_time(1_790_000_000).len(), 5);
-        assert!(clock_time(0).is_empty() || clock_time(0).len() == 5);
+        // GTK printed `YYYY-MM-DD HH:MM`; both protocol shapes must render.
+        for value in [1_790_000_000_000u64, 1_790_000_000] {
+            let stamp = clock_time(value);
+            assert_eq!(stamp.len(), 16, "{stamp}");
+            assert_eq!(&stamp[4..5], "-");
+            assert_eq!(&stamp[10..11], " ");
+            assert_eq!(&stamp[13..14], ":");
+        }
     }
 
     #[test]

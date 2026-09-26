@@ -181,8 +181,8 @@ where
                             })
                             .width(Length::Fill)
                             .into(),
-                        button::text("Copy")
-                            .padding([2, 8])
+                        button::icon(crate::icons::copy())
+                            .padding([2, 6])
                             .on_press(on_copy(code.clone()))
                             .into(),
                     ])
