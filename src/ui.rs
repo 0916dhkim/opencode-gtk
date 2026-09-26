@@ -149,6 +149,8 @@ pub enum Message {
     CancelVisibleForm,
     /// Alt was pressed or released: GTK's tab shortcut hint.
     AltHint(bool),
+    /// GTK's "Load earlier messages" button.
+    LoadOlderHistory,
     /// The cursor entered or left a session row.
     TabHover {
         tab: String,
@@ -503,6 +505,10 @@ impl Application for OpenCodeCosmic {
                 self.shortcut_hint = alt;
                 Task::none()
             }
+            Message::LoadOlderHistory => {
+                self.load_older_history();
+                Task::none()
+            }
             Message::RenameInput(value) => {
                 self.rename_input = value;
                 Task::none()
@@ -659,36 +665,9 @@ impl Application for OpenCodeCosmic {
     }
 
     fn header_end(&self) -> Vec<Element<'_, Self::Message>> {
-        vec![
-            button::custom(
-                row::with_children(vec![
-                    inline_icon(icons::sessions(), self.zoom).into(),
-                    text("Tabs (Ctrl+P)")
-                        .size(self.em(crate::metrics::px(12.0)))
-                        .into(),
-                ])
-                .spacing(self.space(crate::metrics::px(6.0)))
-                .align_y(Alignment::Center),
-            )
-            .on_press(Message::ToggleDrawer(DrawerPage::Sessions))
-            .class(flat_button_class(self.zoom))
-            .padding([self.pad_px(3.0), self.pad_px(8.0)])
-            .into(),
-            button::custom(
-                row::with_children(vec![
-                    inline_icon(icons::settings(), self.zoom).into(),
-                    text("Settings (Ctrl+,)")
-                        .size(self.em(crate::metrics::px(12.0)))
-                        .into(),
-                ])
-                .spacing(self.space(crate::metrics::px(6.0)))
-                .align_y(Alignment::Center),
-            )
-            .on_press(Message::ToggleDrawer(DrawerPage::Settings))
-            .class(flat_button_class(self.zoom))
-            .padding([self.pad_px(3.0), self.pad_px(8.0)])
-            .into(),
-        ]
+        // GTK's headerbar held only the sidebar toggle and the title; the
+        // drawers are reached from the sidebar's footer rows (as in GTK).
+        vec![]
     }
 
     fn view(&self) -> Element<'_, Self::Message> {
@@ -988,9 +967,7 @@ impl Application for OpenCodeCosmic {
             button::custom(
                 row::with_children(vec![
                     inline_icon(icons::sessions(), self.zoom).into(),
-                    text("All Sessions (Ctrl+P)")
-                        .size(self.em(crate::metrics::px(13.0)))
-                        .into(),
+                    text("Tabs").size(self.em(crate::metrics::px(13.0))).into(),
                 ])
                 .spacing(self.space(crate::metrics::px(6.0)))
                 .align_y(Alignment::Center),
@@ -1008,7 +985,7 @@ impl Application for OpenCodeCosmic {
             button::custom(
                 row::with_children(vec![
                     inline_icon(icons::settings(), self.zoom).into(),
-                    text("Settings (Ctrl+,)")
+                    text("Settings")
                         .size(self.em(crate::metrics::px(13.0)))
                         .into(),
                 ])
@@ -1086,13 +1063,27 @@ impl Application for OpenCodeCosmic {
                 .get(active_id)
                 .map(|s| s.title.as_str())
                 .unwrap_or(active_id.as_str());
-            let active_model = self.active_session_model_label();
-            let usage = self.context_usage_raw();
-
-            let hint_str = if usage.is_empty() {
-                format!("Model: {active_model}")
+            // GTK's strip: the session's marker, its title, and the tab hint.
+            let strip_busy = self.is_session_busy(active_id);
+            let strip_jobs = self.jobs.sessions_with_jobs().contains(active_id);
+            let strip_attention = if strip_busy {
+                palette::current().status_busy
+            } else if self.unread.contains(active_id) {
+                palette::current().status_unread
             } else {
-                format!("Model: {active_model} · {usage}")
+                palette::current().status_idle
+            };
+            let strip_marker: Element<'_, Message> = if strip_busy || strip_jobs {
+                inline_icon(icons::settings(), self.zoom)
+                    .size(self.em(1.04) as u16)
+                    .class(cosmic::theme::Svg::custom(move |_theme: &cosmic::Theme| {
+                        cosmic::iced::widget::svg::Style {
+                            color: Some(strip_attention),
+                        }
+                    }))
+                    .into()
+            } else {
+                status_dot(strip_attention, true)
             };
 
             let title_max = if self.active_drawer.is_some() { 20 } else { 38 };
@@ -1105,6 +1096,7 @@ impl Application for OpenCodeCosmic {
 
             let session_header = container(
                 row::with_children(vec![
+                    strip_marker,
                     text(display_title)
                         .size(self.em(0.9))
                         .font(cosmic::iced::Font {
@@ -1113,9 +1105,9 @@ impl Application for OpenCodeCosmic {
                         })
                         .width(Length::Fill)
                         .into(),
-                    button::text(hint_str)
-                        .on_press(Message::ToggleDrawer(DrawerPage::Settings))
-                        .padding([self.pad_px(3.0), self.pad_px(8.0)])
+                    text("Ctrl+P to switch")
+                        .size(self.em(0.8))
+                        .class(cosmic::theme::Text::Color(palette::current().time_text))
                         .into(),
                 ])
                 .align_y(Alignment::Center)
@@ -1132,7 +1124,11 @@ impl Application for OpenCodeCosmic {
                 ..Default::default()
             });
 
-            main_items.push(session_header.into());
+            // GTK's strip is only visible with the sidebar folded (the
+            // highlighted row carries the session otherwise).
+            if !self.sidebar_open {
+                main_items.push(session_header.into());
+            }
             let conversation = self.conversations.get(active_id);
             let tray_items: Vec<TrayItem> =
                 conversation.map(|c| c.tray_items()).unwrap_or_default();
@@ -1141,6 +1137,21 @@ impl Application for OpenCodeCosmic {
             let mut message_elements = Vec::new();
 
             if let Some(conv) = conversation {
+                // GTK kept a flat "Load earlier messages" above the transcript
+                // whenever the server had another page.
+                if conv.next_cursor.is_some() {
+                    message_elements.push(
+                        container(
+                            button::text("Load earlier messages")
+                                .on_press(Message::LoadOlderHistory)
+                                .class(flat_button_class(self.zoom)),
+                        )
+                        .width(Length::Fill)
+                        .center_x(Length::Fill)
+                        .padding([self.pad_px(6.0), 0])
+                        .into(),
+                    );
+                }
                 for message in &conv.messages {
                     if message.role == Role::User && tray_items.iter().any(|t| t.id == message.id) {
                         continue;

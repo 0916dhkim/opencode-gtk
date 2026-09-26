@@ -871,8 +871,8 @@ fn active_messages() -> Vec<protocol::SessionMessage> {
                 },
                 {
                     "type": "tool",
-                    "id": "call_preview_shell",
-                    "name": "shell",
+                    "id": "call_preview_bash",
+                    "name": "bash",
                     "state": {
                         "status": "completed",
                         "input": { "command": "cargo test composer", "description": "Run composer tests" },
@@ -953,8 +953,8 @@ fn running_messages() -> Vec<protocol::SessionMessage> {
             "agent": "build",
             "content": [{
                 "type": "tool",
-                "id": "call_running_shell",
-                "name": "shell",
+                "id": "call_running_bash",
+                "name": "bash",
                 "state": {
                     "status": "running",
                     "input": { "command": "cargo test api::", "description": "Run the API tests" }
@@ -981,8 +981,8 @@ fn parked_messages() -> Vec<protocol::SessionMessage> {
             "agent": "build",
             "content": [{
                 "type": "tool",
-                "id": "call_parked_shell",
-                "name": "shell",
+                "id": "call_parked_bash",
+                "name": "bash",
                 "state": {
                     "status": "error",
                     "input": { "command": "cargo test api::", "description": "Run the API tests" },
@@ -1044,7 +1044,7 @@ mod tests {
         assert_eq!(rows[1]["time"], CREATED + 31_000);
         assert!(rows[2]["body"].as_str().unwrap().contains("22px"));
         assert_eq!(rows[3]["kind"], "tool");
-        assert_eq!(rows[3]["body"], "shell · completed — cargo test composer");
+        assert_eq!(rows[3]["body"], "bash · completed — cargo test composer");
         assert_eq!(rows[3]["time"], CREATED + 45_000);
         assert_eq!(rows[4]["role"], "YOU");
         assert!(
@@ -1204,7 +1204,7 @@ mod tests {
         let rows = render(&page.messages);
         assert_eq!(
             rows.last().unwrap()["body"],
-            "shell · running — cargo test api::"
+            "bash · running — cargo test api::"
         );
 
         // A prompt sent into the run waits too; so does a queued one.
