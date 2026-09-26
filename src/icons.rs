@@ -24,6 +24,7 @@ macro_rules! icons {
 icons! {
     add => "add.svg",
     attach => "attach.svg",
+    chevron_down => "chevron-down.svg",
     close => "close.svg",
     copy => "copy.svg",
     connection => "connection.svg",

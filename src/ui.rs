@@ -1151,10 +1151,16 @@ impl Application for OpenCodeCosmic {
                     .as_ref()
                     .and_then(|id| ids.iter().position(|candidate| candidate == id));
                 footer_items.push(
-                    cosmic::widget::dropdown::dropdown(labels, selected, move |index| {
-                        Message::SelectModel(ids.get(index).cloned().unwrap_or_default())
-                    })
-                    .width(Length::Shrink)
+                    row::with_children(vec![
+                        cosmic::widget::dropdown::dropdown(labels, selected, move |index| {
+                            Message::SelectModel(ids.get(index).cloned().unwrap_or_default())
+                        })
+                        .width(Length::Shrink)
+                        .into(),
+                        menu_chevron(self.zoom),
+                    ])
+                    .spacing(self.space(0.3))
+                    .align_y(Alignment::Center)
                     .into(),
                 );
 
@@ -1176,10 +1182,22 @@ impl Application for OpenCodeCosmic {
                         .map(|index| index + 1)
                         .unwrap_or(0);
                     footer_items.push(
-                        cosmic::widget::dropdown::dropdown(labels, Some(selected), move |index| {
-                            Message::SelectVariant(variants.get(index).cloned().unwrap_or_default())
-                        })
-                        .width(Length::Shrink)
+                        row::with_children(vec![
+                            cosmic::widget::dropdown::dropdown(
+                                labels,
+                                Some(selected),
+                                move |index| {
+                                    Message::SelectVariant(
+                                        variants.get(index).cloned().unwrap_or_default(),
+                                    )
+                                },
+                            )
+                            .width(Length::Shrink)
+                            .into(),
+                            menu_chevron(self.zoom),
+                        ])
+                        .spacing(self.space(0.3))
+                        .align_y(Alignment::Center)
                         .into(),
                     );
                 }
@@ -1584,6 +1602,19 @@ fn clock_time(created: u64) -> String {
         zoned.hour(),
         zoned.minute()
     )
+}
+
+/// GTK's `.composer-menu` chevron: COSMIC's dropdown draws no arrow, so the
+/// menu label is followed by a small chevron icon.
+fn menu_chevron(zoom: f32) -> Element<'static, Message> {
+    cosmic::widget::icon::icon(icons::chevron_down())
+        .size(crate::metrics::em(0.76, zoom) as u16)
+        .class(cosmic::theme::Svg::custom(|_theme: &cosmic::Theme| {
+            cosmic::iced::widget::svg::Style {
+                color: Some(palette::current().muted_text),
+            }
+        }))
+        .into()
 }
 
 /// GTK's suggested action (`.composer-action.suggested-action`): the client's
