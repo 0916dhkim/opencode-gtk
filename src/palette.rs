@@ -32,6 +32,10 @@ pub struct Palette {
     pub card_bg: Color,
     /// `@oc_border_markdown_code_header` — card, header-strip and code-header borders.
     pub panel_border: Color,
+    /// `@oc_bg_new_session_palette` — GTK's modal palettes.
+    pub modal_bg: Color,
+    /// `@oc_border_new_session_palette`
+    pub modal_border: Color,
     /// `@oc_bg_queue_tray`
     pub tray_bg: Color,
     /// `@oc_border_queue_tray`
@@ -154,6 +158,8 @@ pub const LIGHT: Palette = Palette {
     inset_border: Color::from_rgb8(0xd5, 0xd0, 0xc7),
     card_bg: Color::from_rgb8(0xf4, 0xf0, 0xe6),
     panel_border: Color::from_rgb8(0xd3, 0xcf, 0xc7),
+    modal_bg: Color::from_rgb8(0xfb, 0xf9, 0xf4),
+    modal_border: Color::from_rgb8(0xd0, 0xcc, 0xc4),
     tray_bg: Color::from_rgb8(0xf0, 0xee, 0xe9),
     tray_border: Color::from_rgb8(0xcb, 0xc7, 0xbf),
     composer_bg: Color::from_rgb8(0xff, 0xff, 0xff),
@@ -221,6 +227,8 @@ pub const DARK: Palette = Palette {
     inset_border: Color::from_rgb8(0x23, 0x27, 0x2c),
     card_bg: Color::from_rgb8(0x18, 0x1c, 0x21),
     panel_border: Color::from_rgb8(0x28, 0x2c, 0x30),
+    modal_bg: Color::from_rgb8(0x15, 0x18, 0x1c),
+    modal_border: Color::from_rgb8(0x2a, 0x30, 0x38),
     tray_bg: Color::from_rgb8(0x15, 0x18, 0x1b),
     tray_border: Color::from_rgb8(0x2d, 0x32, 0x36),
     composer_bg: Color::from_rgb8(0x19, 0x1c, 0x1f),

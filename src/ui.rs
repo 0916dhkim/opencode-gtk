@@ -1440,140 +1440,75 @@ impl Application for OpenCodeCosmic {
     }
 
     fn context_drawer(&self) -> Option<ContextDrawer<'_, Self::Message>> {
-        let page = self.active_drawer?;
-        match page {
-            DrawerPage::Jobs => {
-                let job_rows = self.jobs.rows(self.active_session_id.as_deref());
-                let now = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .map(|d| d.as_millis() as u64)
-                    .unwrap_or(0);
+        // GTK had no side panels: sessions and settings were centred modal
+        // palettes, and only the background-job list stays a drawer here.
+        if self.active_drawer != Some(DrawerPage::Jobs) {
+            return None;
+        }
 
-                let mut list_items = Vec::new();
-                list_items.push(text("Running Background Jobs").size(16).into());
+        let job_rows = self.jobs.rows(self.active_session_id.as_deref());
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
 
-                if job_rows.is_empty() {
-                    list_items.push(
-                        text("No background subagents or shells running.")
-                            .size(13)
-                            .into(),
-                    );
-                } else {
-                    for row in job_rows {
-                        let kind_str = match row.kind {
-                            JobKind::Subagent => "◆ Subagent",
-                            JobKind::Shell => "$ Shell",
-                        };
+        let mut list_items = Vec::new();
+        list_items.push(text("Running Background Jobs").size(self.em(1.14)).into());
 
-                        let item = column::with_children(vec![
-                            text(format!("{kind_str}: {}", row.title)).size(13).into(),
-                            text(row.subtitle(now)).size(11).into(),
-                        ])
-                        .spacing(3);
-
-                        let job_card =
-                            container(item)
-                                .padding([8, 12])
-                                .width(Length::Fill)
-                                .style(|_theme| container::Style {
-                                    background: Some(palette::current().card_bg.into()),
-                                    border: Border {
-                                        color: palette::current().panel_border,
-                                        width: 1.0,
-                                        radius: 6.0.into(),
-                                    },
-                                    ..Default::default()
-                                });
-
-                        list_items.push(job_card.into());
-                    }
-                }
-
-                let list = column::with_children(list_items).spacing(8).padding(16);
-                Some(context_drawer(list, Message::CloseDrawer))
-            }
-            DrawerPage::Sessions => {
-                let mut list_items = Vec::new();
-                list_items.push(
-                    row::with_children(vec![
-                        text("Sessions").size(16).width(Length::Fill).into(),
-                        button::icon(icons::close())
-                            .on_press(Message::CloseDrawer)
-                            .into(),
-                    ])
-                    .align_y(Alignment::Center)
+        if job_rows.is_empty() {
+            list_items.push(
+                text("No background subagents or shells running.")
+                    .size(self.em(0.96))
                     .into(),
-                );
+            );
+        } else {
+            for row in job_rows {
+                let kind_str = match row.kind {
+                    JobKind::Subagent => "◆ Subagent",
+                    JobKind::Shell => "$ Shell",
+                };
 
-                list_items.push(
-                    row::with_children(vec![
-                        inline_icon(icons::search()).into(),
-                        text_input("Search sessions...", &self.search_query)
-                            .on_input(Message::SearchInput)
-                            .into(),
-                    ])
-                    .spacing(6)
-                    .align_y(Alignment::Center)
-                    .into(),
-                );
-
-                let q = self.search_query.to_lowercase();
-                let mut filtered_sessions: Vec<_> = self
-                    .sessions
-                    .values()
-                    .filter(|s| s.parent_id.is_none())
-                    .filter(|s| q.is_empty() || s.title.to_lowercase().contains(&q))
-                    .collect();
-
-                filtered_sessions.sort_by_key(|s| std::cmp::Reverse(s.time.updated));
-
-                for s in filtered_sessions {
-                    let s_id = s.id.clone();
-                    let item_btn = button::text(&s.title)
-                        .on_press(Message::SelectSession(s_id))
-                        .width(Length::Fill);
-
-                    list_items.push(item_btn.into());
-                }
-
-                let list = column::with_children(list_items).spacing(8).padding(16);
-                Some(context_drawer(scrollable(list), Message::CloseDrawer))
-            }
-            DrawerPage::Settings => {
-                let list = column::with_children(vec![
-                    row::with_children(vec![
-                        text("Connection Settings")
-                            .size(16)
-                            .width(Length::Fill)
-                            .into(),
-                        button::icon(icons::close())
-                            .on_press(Message::CloseDrawer)
-                            .into(),
-                    ])
-                    .align_y(Alignment::Center)
-                    .into(),
-                    text("OpenCode Server URL:").size(13).into(),
-                    text_input("https://...", &self.server_url_input)
-                        .on_input(Message::SettingsUrlInput)
+                let item = column::with_children(vec![
+                    text(format!("{kind_str}: {}", row.title))
+                        .size(self.em(0.96))
                         .into(),
-                    text("Username:").size(13).into(),
-                    text_input("opencode", &self.username_input)
-                        .on_input(Message::SettingsUsernameInput)
-                        .into(),
-                    text("Password:").size(13).into(),
-                    text_input("Password", &self.password_input)
-                        .on_input(Message::SettingsPasswordInput)
-                        .password()
-                        .into(),
-                    button::text("Save & Connect")
-                        .on_press(Message::ApplySettings)
+                    text(row.subtitle(now))
+                        .size(self.em(0.82))
+                        .class(cosmic::theme::Text::Color(palette::current().muted_text))
                         .into(),
                 ])
-                .spacing(12)
-                .padding(16);
+                .spacing(self.space(0.3));
 
-                Some(context_drawer(list, Message::CloseDrawer))
+                let radius = self.space(0.44);
+                let job_card = container(item)
+                    .padding([self.space(0.59) as u16, self.space(0.89) as u16])
+                    .width(Length::Fill)
+                    .style(move |_theme: &cosmic::Theme| container::Style {
+                        background: Some(palette::current().card_bg.into()),
+                        border: Border {
+                            color: palette::current().panel_border,
+                            width: 1.0,
+                            radius: radius.into(),
+                        },
+                        ..Default::default()
+                    });
+
+                list_items.push(job_card.into());
             }
+        }
+
+        let list = column::with_children(list_items)
+            .spacing(self.space(0.59))
+            .padding(self.space(1.19) as u16);
+        Some(context_drawer(list, Message::CloseDrawer))
+    }
+
+    /// GTK's centred modal palettes (`.app-modal-palette`).
+    fn dialog(&self) -> Option<Element<'_, Self::Message>> {
+        match self.active_drawer? {
+            DrawerPage::Jobs => None,
+            DrawerPage::Sessions => Some(self.sessions_palette()),
+            DrawerPage::Settings => Some(self.settings_palette()),
         }
     }
 
@@ -1749,6 +1684,27 @@ fn accent_button_class(zoom: f32) -> cosmic::theme::Button {
     cosmic::theme::Button::Custom {
         active: Box::new(move |_focused, _theme| base()),
         hovered: Box::new(move |_focused, _theme| base()),
+        pressed: Box::new(move |_focused, _theme| base()),
+        disabled: Box::new(move |_theme| base()),
+    }
+}
+
+/// GTK's `.new-session-row`: flat until hovered, then the row highlight.
+fn modal_row_class(radius: f32) -> cosmic::theme::Button {
+    let base = move || cosmic::widget::button::Style {
+        background: None,
+        border_radius: radius.into(),
+        border_width: 0.0,
+        text_color: Some(palette::current().header_title_text),
+        ..Default::default()
+    };
+    let hovered = move || cosmic::widget::button::Style {
+        background: Some(palette::current().sidebar_hover_bg.into()),
+        ..base()
+    };
+    cosmic::theme::Button::Custom {
+        active: Box::new(move |_focused, _theme| base()),
+        hovered: Box::new(move |_focused, _theme| hovered()),
         pressed: Box::new(move |_focused, _theme| base()),
         disabled: Box::new(move |_theme| base()),
     }
@@ -1937,6 +1893,151 @@ impl OpenCodeCosmic {
                 None
             }
         }
+    }
+
+    /// The modal frame both palettes share.
+    fn modal_frame<'a>(&'a self, title: &str, body: Element<'a, Message>) -> Element<'a, Message> {
+        let radius = self.space(0.89);
+        let frame = container(
+            column::with_children(vec![
+                row::with_children(vec![
+                    text(title.to_string())
+                        .size(self.em(1.14))
+                        .font(cosmic::iced::Font {
+                            weight: cosmic::iced::font::Weight::Semibold,
+                            ..cosmic::iced::Font::DEFAULT
+                        })
+                        .width(Length::Fill)
+                        .into(),
+                    button::icon(icons::close())
+                        .on_press(Message::CloseDrawer)
+                        .into(),
+                ])
+                .align_y(Alignment::Center)
+                .into(),
+                body,
+            ])
+            .spacing(self.space(0.89))
+            // GTK's sessions palette was `min-width: 39em`.
+            .width(Length::Fixed(39.0 * crate::metrics::BASE_FONT_PX))
+            .height(Length::Fixed(24.0 * crate::metrics::BASE_FONT_PX)),
+        )
+        .padding(self.space(1.04) as u16)
+        .style(move |_theme: &cosmic::Theme| container::Style {
+            background: Some(palette::current().modal_bg.into()),
+            border: Border {
+                color: palette::current().modal_border,
+                width: 1.0,
+                radius: radius.into(),
+            },
+            ..Default::default()
+        });
+
+        frame.into()
+    }
+
+    /// GTK's session picker: a search field over the session list.
+    fn sessions_palette(&self) -> Element<'_, Message> {
+        let mut body_items: Vec<Element<'_, Message>> = Vec::new();
+
+        body_items.push(
+            row::with_children(vec![
+                inline_icon(icons::search()).into(),
+                text_input("Search sessions...", &self.search_query)
+                    .on_input(Message::SearchInput)
+                    .width(Length::Fill)
+                    .into(),
+            ])
+            .spacing(self.space(0.44))
+            .align_y(Alignment::Center)
+            .into(),
+        );
+
+        let q = self.search_query.to_lowercase();
+        let mut filtered_sessions: Vec<_> = self
+            .sessions
+            .values()
+            .filter(|s| s.parent_id.is_none())
+            .filter(|s| q.is_empty() || s.title.to_lowercase().contains(&q))
+            .collect();
+        filtered_sessions.sort_by_key(|s| std::cmp::Reverse(s.time.updated));
+
+        let mut rows: Vec<Element<'_, Message>> = Vec::new();
+        for session in filtered_sessions {
+            let radius = self.space(0.44);
+            rows.push(
+                button::custom(
+                    column::with_children(vec![
+                        text(session.title.clone())
+                            .size(self.em(0.96))
+                            .width(Length::Fill)
+                            .into(),
+                        text(session.directory.clone())
+                            .size(self.em(0.82))
+                            .class(cosmic::theme::Text::Color(palette::current().muted_text))
+                            .into(),
+                    ])
+                    .spacing(self.space(0.15))
+                    .width(Length::Fill),
+                )
+                .padding([self.space(0.3) as u16, self.space(0.44) as u16])
+                .width(Length::Fill)
+                .class(modal_row_class(radius))
+                .on_press(Message::SelectSession(session.id.clone()))
+                .into(),
+            );
+        }
+
+        body_items.push(
+            scrollable(
+                column::with_children(rows)
+                    .spacing(self.space(0.15))
+                    .width(Length::Fill),
+            )
+            .height(Length::Fill)
+            .into(),
+        );
+
+        self.modal_frame(
+            "Sessions",
+            column::with_children(body_items)
+                .spacing(self.space(0.44))
+                .height(Length::Fill)
+                .into(),
+        )
+    }
+
+    /// GTK's connection settings palette.
+    fn settings_palette(&self) -> Element<'_, Message> {
+        let label = |value: &'static str| -> Element<'static, Message> {
+            text(value)
+                .size(self.em(0.82))
+                .class(cosmic::theme::Text::Color(palette::current().muted_text))
+                .into()
+        };
+
+        let body = column::with_children(vec![
+            label("OpenCode Server URL"),
+            text_input("https://...", &self.server_url_input)
+                .on_input(Message::SettingsUrlInput)
+                .into(),
+            label("Username"),
+            text_input("opencode", &self.username_input)
+                .on_input(Message::SettingsUsernameInput)
+                .into(),
+            label("Password"),
+            text_input("Password", &self.password_input)
+                .on_input(Message::SettingsPasswordInput)
+                .password()
+                .into(),
+            button::text("Save & Connect")
+                .on_press(Message::ApplySettings)
+                .into(),
+        ])
+        .spacing(self.space(0.59))
+        .height(Length::Fill);
+
+        self.modal_frame("Connection Settings", body.into())
     }
 
     /// GTK's compact transcript status pill (`.transcript-status-compact`):
