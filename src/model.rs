@@ -394,7 +394,7 @@ impl ChatMessage {
     }
 
     /// An undelivered user prompt: a tray item, not a transcript row.
-    fn in_tray(&self) -> bool {
+    pub fn in_tray(&self) -> bool {
         self.queued && self.role == Role::User
     }
 

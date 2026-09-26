@@ -80,6 +80,15 @@ pub struct OpenCodeCosmic {
     permissions: Vec<crate::pending::PendingRequest>,
     /// Open forms, with `pending`'s visibility and notice rules.
     forms: crate::pending::Forms,
+    /// How far the transcript is scrolled from its start (loading older
+    /// history) and from its end (following the run, GTK's sticky prompt).
+    transcript_from_top: f32,
+    transcript_from_bottom: f32,
+    /// The transcript is following the end of the run (the user has not
+    /// scrolled up).
+    transcript_follow: bool,
+    /// An older-history request is in flight.
+    history_loading: bool,
     /// Files picked with the paperclip for the next prompt.
     pending_attachments: Vec<PathBuf>,
     /// Set while the file dialog runs on its own thread.
@@ -116,6 +125,9 @@ pub enum Message {
     },
     /// Cancels the form the notice points at (GTK's `Ctrl+Shift+X`).
     CancelVisibleForm,
+    /// The transcript scrolled: GTK pinned the current request at its top and
+    /// loaded older history when it reached the beginning.
+    TranscriptScrolled(cosmic::iced::widget::scrollable::Viewport),
     /// Opens the rename palette for the active session.
     OpenRename,
     RenameInput(String),
@@ -204,6 +216,10 @@ impl Application for OpenCodeCosmic {
             tray_in_flight: false,
             permissions: Vec::new(),
             forms: crate::pending::Forms::default(),
+            transcript_from_top: 0.0,
+            transcript_from_bottom: 0.0,
+            transcript_follow: true,
+            history_loading: false,
             pending_attachments: Vec::new(),
             attachment_picker: None,
         };
@@ -311,10 +327,22 @@ impl Application for OpenCodeCosmic {
                     }
                 }
                 self.drain_events();
+                let mut tasks = Vec::new();
                 if focus {
-                    return cosmic::widget::text_input::focus(composer_id());
+                    tasks.push(cosmic::widget::text_input::focus(composer_id()));
                 }
-                Task::none()
+                // GTK's transcript followed the run; the scroll itself reports
+                // back through `TranscriptScrolled`.
+                if self.transcript_follow {
+                    tasks.push(cosmic::iced::widget::scrollable::snap_to(
+                        transcript_id(),
+                        cosmic::iced::widget::scrollable::RelativeOffset {
+                            x: None,
+                            y: Some(1.0),
+                        },
+                    ));
+                }
+                Task::batch(tasks)
             }
             Message::ToggleSidebar => {
                 self.sidebar_open = !self.sidebar_open;
@@ -353,6 +381,18 @@ impl Application for OpenCodeCosmic {
                         decision,
                     });
                 }
+                Task::none()
+            }
+            Message::TranscriptScrolled(viewport) => {
+                // The transcript is anchored to its end, so the absolute offset
+                // is the distance from the end and the reversed one from the
+                // start (where older history is).
+                self.transcript_from_bottom = viewport.absolute_offset().y;
+                self.transcript_from_top = viewport.absolute_offset_reversed().y;
+                // Follow the run until the user scrolls up; scrolling back to
+                // the end resumes it, the way GTK's transcript behaved.
+                self.transcript_follow = self.transcript_from_bottom < 24.0;
+                self.load_older_history();
                 Task::none()
             }
             Message::CancelVisibleForm => {
@@ -1326,11 +1366,63 @@ impl Application for OpenCodeCosmic {
             let message_list = column::with_children(message_elements)
                 .spacing(self.space(crate::metrics::px(0.0)));
 
+            // Anchored to the end: the run stays in view and `snap_to` keeps
+            // it there, while an empty transcript has nothing to anchor.
             let transcript_scroll = scrollable(message_list)
+                .id(transcript_id())
+                .anchor_bottom()
                 .width(Length::Fill)
-                .height(Length::Fill);
+                .height(Length::Fill)
+                .on_scroll(Message::TranscriptScrolled);
 
-            main_items.push(transcript_scroll.into());
+            // GTK's `.sticky-message`: the current request stays pinned at the
+            // transcript's top (an overlay with a shadow) once it is scrolled.
+            let transcript_area: Element<'_, Message> = match self.sticky_prompt() {
+                None => transcript_scroll.into(),
+                Some((_id, prompt_text)) => {
+                    let sticky = container(
+                        row::with_children(vec![
+                            text("YOU")
+                                .size(self.em(0.76))
+                                .font(cosmic::iced::Font {
+                                    weight: cosmic::iced::font::Weight::Bold,
+                                    ..cosmic::iced::Font::DEFAULT
+                                })
+                                .class(cosmic::theme::Text::Color(
+                                    palette::current().user_role_text,
+                                ))
+                                .into(),
+                            text(prompt_text)
+                                .size(self.em(0.96))
+                                .class(cosmic::theme::Text::Color(palette::current().content_text))
+                                .width(Length::Fill)
+                                .into(),
+                        ])
+                        .spacing(self.space(0.59))
+                        .align_y(Alignment::Center),
+                    )
+                    .padding([self.space(0.59) as u16, self.space(2.07) as u16])
+                    .width(Length::Fill)
+                    .style(move |_theme: &cosmic::Theme| container::Style {
+                        background: Some(palette::current().window_bg.into()),
+                        border: Border {
+                            color: palette::current().sticky_border,
+                            width: 1.0,
+                            radius: 0.0.into(),
+                        },
+                        ..Default::default()
+                    });
+
+                    cosmic::iced::widget::Stack::new()
+                        .width(Length::Fill)
+                        .height(Length::Fill)
+                        .push(transcript_scroll)
+                        .push(container(sticky).align_top(Length::Fill))
+                        .into()
+                }
+            };
+
+            main_items.push(transcript_area);
 
             // GTK put the working/retry state in a compact pill *below* the
             // transcript (`.transcript-status-compact`), not inside it.
@@ -1999,6 +2091,11 @@ fn shortcut(key: &Key, modifiers: Modifiers) -> Option<Message> {
         Key::Named(Named::Escape) => Some(Message::CloseDrawer),
         _ => None,
     }
+}
+
+/// Widget id of the transcript, so a `Task` can keep it at the end of the run.
+fn transcript_id() -> cosmic::widget::Id {
+    cosmic::widget::Id::new("opencode-transcript")
 }
 
 /// Widget id of the prompt composer, so a `Task` can put the caret in it.
@@ -2886,6 +2983,7 @@ impl OpenCodeCosmic {
                 cursor,
                 result: Ok(page),
             } => {
+                self.history_loading = false;
                 let conv = self.conversations.entry(session_id).or_default();
                 if cursor.is_none() {
                     conv.replace_from_api(&page.messages, page.next_cursor);
@@ -3171,6 +3269,69 @@ impl OpenCodeCosmic {
             });
             self.handle_ui_event(event);
         }
+    }
+
+    /// Loads the next older page when the transcript reaches its top.
+    fn load_older_history(&mut self) {
+        // A little slack so the next page is there when the user arrives,
+        // instead of after a visible pause.
+        if self.transcript_from_top > 24.0 || self.history_loading {
+            return;
+        }
+        let Some(active_id) = self.active_session_id.clone() else {
+            return;
+        };
+        let Some(cursor) = self
+            .conversations
+            .get(&active_id)
+            .and_then(|conversation| conversation.next_cursor.clone())
+        else {
+            return;
+        };
+        if let Some(api) = &self.api {
+            api.send(Command::LoadMessages {
+                session_id: active_id,
+                cursor: Some(cursor),
+            });
+            self.history_loading = true;
+        } else if let Some(mock) = &mut self.mock_server {
+            let event = mock.handle(Command::LoadMessages {
+                session_id: active_id,
+                cursor: Some(cursor),
+            });
+            self.handle_ui_event(event);
+        }
+    }
+
+    /// The current turn's request, for GTK's sticky prompt: pinned once its own
+    /// row has left the top of the transcript (the answer started), or while
+    /// the reader has scrolled back up through a long one.
+    fn sticky_prompt(&self) -> Option<(String, String)> {
+        let conversation = self
+            .active_session_id
+            .as_ref()
+            .and_then(|id| self.conversations.get(id))?;
+        let index = conversation
+            .messages
+            .iter()
+            .rposition(|message| message.role == model::Role::User && !message.in_tray())?;
+        let has_answer = conversation
+            .messages
+            .iter()
+            .skip(index + 1)
+            .any(|message| message.role == model::Role::Assistant);
+        if !(has_answer && self.transcript_from_top > 8.0) && self.transcript_from_bottom <= 40.0 {
+            return None;
+        }
+        let message = &conversation.messages[index];
+        let text = message
+            .segments()
+            .iter()
+            .filter(|segment| segment.kind == model::SegmentKind::Text)
+            .map(|segment| segment.text.as_str())
+            .collect::<Vec<_>>()
+            .join(" ");
+        (!text.trim().is_empty()).then(|| (message.id.clone(), text))
     }
 
     /// Adds a pending request, replacing a known one of the same id.
