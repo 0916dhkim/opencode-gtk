@@ -76,6 +76,10 @@ pub struct OpenCodeCosmic {
     /// A tray request (switch/cancel/resume) awaits its answer, so Resume
     /// stays disabled the way GTK's did.
     tray_in_flight: bool,
+    /// Open permission requests (bootstrap, reconciliation and live events).
+    permissions: Vec<crate::pending::PendingRequest>,
+    /// Open forms, with `pending`'s visibility and notice rules.
+    forms: crate::pending::Forms,
     /// Files picked with the paperclip for the next prompt.
     pending_attachments: Vec<PathBuf>,
     /// Set while the file dialog runs on its own thread.
@@ -104,6 +108,14 @@ pub enum Message {
     CreateSessionIn(String),
     /// Resumes a parked tray (GTK's `queue-tray-resume`).
     ResumeTray,
+    /// Answers a permission prompt.
+    ReplyPermission {
+        request_id: String,
+        session_id: String,
+        decision: protocol::PermissionDecision,
+    },
+    /// Cancels the form the notice points at (GTK's `Ctrl+Shift+X`).
+    CancelVisibleForm,
     /// Opens the rename palette for the active session.
     OpenRename,
     RenameInput(String),
@@ -190,6 +202,8 @@ impl Application for OpenCodeCosmic {
             projects: Vec::new(),
             rename_input: String::new(),
             tray_in_flight: false,
+            permissions: Vec::new(),
+            forms: crate::pending::Forms::default(),
             pending_attachments: Vec::new(),
             attachment_picker: None,
         };
@@ -325,6 +339,32 @@ impl Application for OpenCodeCosmic {
             }
             Message::ResumeTray => {
                 self.resume_tray();
+                Task::none()
+            }
+            Message::ReplyPermission {
+                request_id,
+                session_id,
+                decision,
+            } => {
+                if let Some(api) = &self.api {
+                    api.send(Command::ReplyPermission {
+                        request_id,
+                        session_id,
+                        decision,
+                    });
+                }
+                Task::none()
+            }
+            Message::CancelVisibleForm => {
+                if let Some(target) = self.form_notice().and_then(|notice| notice.cancel)
+                    && let Some(api) = &self.api
+                {
+                    api.send(Command::CancelForm {
+                        form_id: target.form_id,
+                        session_id: target.session_id,
+                        directory: target.directory,
+                    });
+                }
                 Task::none()
             }
             Message::OpenRename => {
@@ -1171,6 +1211,118 @@ impl Application for OpenCodeCosmic {
                 }
             }
 
+            // GTK's permission prompts: "Allow {action}?" with the source and
+            // metadata lines and Deny / Allow once / Allow always.
+            for request in self.visible_permissions() {
+                let action = if request.action.trim().is_empty() {
+                    "this action".to_owned()
+                } else {
+                    request.action.clone()
+                };
+                let mut card_items: Vec<Element<'_, Message>> = vec![
+                    text(format!("Allow {action}?"))
+                        .size(self.em(0.96))
+                        .font(cosmic::iced::Font {
+                            weight: cosmic::iced::font::Weight::Bold,
+                            ..cosmic::iced::Font::DEFAULT
+                        })
+                        .class(cosmic::theme::Text::Color(
+                            palette::current().prompt_subheading,
+                        ))
+                        .into(),
+                ];
+                if let Some(source) = crate::pending::source_text(request) {
+                    card_items.push(
+                        text(source)
+                            .size(self.em(0.9))
+                            .class(cosmic::theme::Text::Color(
+                                palette::current().prompt_metadata,
+                            ))
+                            .into(),
+                    );
+                }
+                if let Some(metadata) = crate::pending::metadata_text(request.metadata.as_ref()) {
+                    // GTK capped the details block at 320px.
+                    card_items.push(
+                        container(
+                            scrollable(text(metadata).size(self.em(0.9)).class(
+                                cosmic::theme::Text::Color(palette::current().prompt_metadata),
+                            ))
+                            .height(Length::Shrink),
+                        )
+                        .max_height(self.space(crate::metrics::px(320.0)))
+                        .into(),
+                    );
+                }
+
+                // GTK: right-aligned Deny / Allow once (`suggested-action`) /
+                // Always allow. No reply is ever the default, so a stray Enter
+                // or Space while typing can never answer a prompt.
+                let mut actions: Vec<Element<'_, Message>> = vec![
+                    container(row::with_children(Vec::<Element<'_, Message>>::new()))
+                        .width(Length::Fill)
+                        .into(),
+                    tray_text_button(
+                        "Deny",
+                        self.zoom,
+                        Message::ReplyPermission {
+                            request_id: request.id.clone(),
+                            session_id: request.session_id.clone(),
+                            decision: protocol::PermissionDecision::Reject,
+                        },
+                    ),
+                ];
+                actions.push(
+                    button::custom(
+                        text("Allow once")
+                            .size(self.em(0.96))
+                            .class(cosmic::theme::Text::Color(palette::current().accent_fg)),
+                    )
+                    .padding([self.space(0.3) as u16, self.space(0.85) as u16])
+                    .class(resume_button_class(self.space(0.59)))
+                    .on_press(Message::ReplyPermission {
+                        request_id: request.id.clone(),
+                        session_id: request.session_id.clone(),
+                        decision: protocol::PermissionDecision::Once,
+                    })
+                    .into(),
+                );
+                if request.offers_always() {
+                    actions.push(tray_text_button(
+                        "Always allow",
+                        self.zoom,
+                        Message::ReplyPermission {
+                            request_id: request.id.clone(),
+                            session_id: request.session_id.clone(),
+                            decision: protocol::PermissionDecision::Always,
+                        },
+                    ));
+                }
+                card_items.push(
+                    row::with_children(actions)
+                        .spacing(self.space(0.59))
+                        .align_y(Alignment::Center)
+                        .into(),
+                );
+
+                let radius = self.space(0.67);
+                message_elements.push(
+                    container(column::with_children(card_items).spacing(self.space(0.44)))
+                        .padding([self.space(0.74) as u16, self.space(0.89) as u16])
+                        .width(Length::Fill)
+                        .style(move |_theme: &cosmic::Theme| container::Style {
+                            background: Some(palette::current().form_notice_bg.into()),
+                            border: Border {
+                                color: palette::current().form_notice_border,
+                                width: 1.0,
+                                radius: radius.into(),
+                            },
+                            ..Default::default()
+                        })
+                        .into(),
+                );
+            }
+
             let message_list = column::with_children(message_elements)
                 .spacing(self.space(crate::metrics::px(0.0)));
 
@@ -1189,6 +1341,73 @@ impl Application for OpenCodeCosmic {
             // Steer/Queue Tray. Pushed even when it has no rows, so the
             // composer keeps its widget state (and the caret) when a run
             // starts and the tray fills up.
+            // GTK's `.form-notice`: one line, the label bold, Cancel (or the
+            // hint while every waiting form belongs to another session).
+            let notice = self.form_notice();
+            let notice_outer: Element<'_, Message> = match notice {
+                None => container(column::with_children(Vec::<Element<'_, Message>>::new()))
+                    .padding([0, self.pad_px(16.0)])
+                    .into(),
+                Some(notice) => {
+                    let radius = self.space(0.67);
+                    let mut items: Vec<Element<'_, Message>> = vec![
+                        text(notice.text)
+                            .size(self.em(0.9))
+                            .font(cosmic::iced::Font {
+                                weight: cosmic::iced::font::Weight::Semibold,
+                                ..cosmic::iced::Font::DEFAULT
+                            })
+                            .class(cosmic::theme::Text::Color(
+                                palette::current().prompt_subheading,
+                            ))
+                            .into(),
+                    ];
+                    match notice.cancel {
+                        Some(target) => {
+                            items.push(
+                                text(crate::pending::CANCEL_FORM_SHORTCUT)
+                                    .size(self.em(0.82))
+                                    .class(cosmic::theme::Text::Color(
+                                        palette::current().prompt_metadata,
+                                    ))
+                                    .into(),
+                            );
+                            let _ = target;
+                            items.push(tray_text_button(
+                                "Cancel",
+                                self.zoom,
+                                Message::CancelVisibleForm,
+                            ));
+                        }
+                        None => items.push(
+                            text(notice.tooltip)
+                                .size(self.em(0.82))
+                                .class(cosmic::theme::Text::Color(
+                                    palette::current().prompt_metadata,
+                                ))
+                                .into(),
+                        ),
+                    }
+                    container(
+                        row::with_children(items)
+                            .spacing(self.space(0.59))
+                            .align_y(Alignment::Center),
+                    )
+                    .padding([self.space(0.59) as u16, self.space(1.23) as u16])
+                    .width(Length::Fill)
+                    .style(move |_theme: &cosmic::Theme| container::Style {
+                        background: Some(palette::current().form_notice_bg.into()),
+                        border: Border {
+                            color: palette::current().form_notice_border,
+                            width: 1.0,
+                            radius: radius.into(),
+                        },
+                        ..Default::default()
+                    })
+                    .into()
+                }
+            };
+
             let tray_outer = if tray_items.is_empty() {
                 container(column::with_children(Vec::<Element<'_, Message>>::new())).padding([
                     self.pad_px(0.0),
@@ -1371,6 +1590,7 @@ impl Application for OpenCodeCosmic {
                 ])
             };
 
+            main_items.push(notice_outer);
             main_items.push(tray_outer.into());
 
             // Composer area
@@ -1745,6 +1965,8 @@ fn shortcut(key: &Key, modifiers: Modifiers) -> Option<Message> {
     if modifiers.control() {
         return match key {
             Key::Character(c) => match c.as_str() {
+                // GTK's `crate::pending::CANCEL_FORM_SHORTCUT`.
+                "x" | "X" if modifiers.shift() => Some(Message::CancelVisibleForm),
                 "t" | "T" => Some(Message::NewSession),
                 "b" | "B" => Some(Message::ToggleSidebar),
                 "w" | "W" => Some(Message::CloseActiveTab),
@@ -2599,6 +2821,7 @@ impl OpenCodeCosmic {
                 }
 
                 self.projects = bootstrap.projects.clone();
+                self.replace_pending(&bootstrap.pending);
 
                 for (id, st) in &bootstrap.statuses {
                     if st.is_busy() {
@@ -2676,6 +2899,12 @@ impl OpenCodeCosmic {
                     conv.prepend_from_api(&page.messages, page.next_cursor);
                 }
             }
+            UiEvent::PendingLoaded(snapshot) => {
+                self.replace_pending(&snapshot.requests);
+                if let Some(warning) = snapshot.warnings.first() {
+                    self.error_banner = Some(warning.clone());
+                }
+            }
             UiEvent::ModelsLoaded {
                 directory,
                 result: Ok(catalog),
@@ -2693,6 +2922,22 @@ impl OpenCodeCosmic {
                     if let Some(sid) = kind.session_id() {
                         let conv = self.conversations.entry(sid.to_string()).or_default();
                         conv.apply(&event, &kind);
+                    }
+
+                    match crate::pending::pending_change(&kind, envelope.directory.as_deref()) {
+                        Some(crate::pending::PendingChange::Permission { directory, request }) => {
+                            self.absorb_pending(crate::pending::PendingRequest::Permission {
+                                directory: directory.unwrap_or_default(),
+                                request,
+                            });
+                        }
+                        Some(crate::pending::PendingChange::Form(form)) => {
+                            self.absorb_pending(crate::pending::PendingRequest::Form(form));
+                        }
+                        Some(crate::pending::PendingChange::Resolved(id)) => {
+                            self.resolve_pending(&id)
+                        }
+                        None => {}
                     }
 
                     if let Some(job_evt) =
@@ -2926,6 +3171,79 @@ impl OpenCodeCosmic {
             });
             self.handle_ui_event(event);
         }
+    }
+
+    /// Adds a pending request, replacing a known one of the same id.
+    fn absorb_pending(&mut self, request: crate::pending::PendingRequest) {
+        let id = request.id().to_string();
+        match request {
+            crate::pending::PendingRequest::Permission { .. } => {
+                if self.permissions.iter().all(|known| known.id() != id) {
+                    self.permissions.push(request);
+                }
+            }
+            crate::pending::PendingRequest::Form(form) => self.forms.upsert(form),
+        }
+    }
+
+    /// Drops a request the server settled (a reply, an answer, a cancel).
+    fn resolve_pending(&mut self, id: &str) {
+        self.permissions.retain(|known| known.id() != id);
+        self.forms.remove(id);
+    }
+
+    /// Replaces the whole set (bootstrap and reconciliations).
+    fn replace_pending(&mut self, requests: &[crate::pending::PendingRequest]) {
+        self.permissions.clear();
+        self.forms.clear();
+        for request in requests {
+            self.absorb_pending(request.clone());
+        }
+    }
+
+    /// Session -> parent, for the form visibility rules.
+    fn session_parents(&self) -> HashMap<String, String> {
+        self.sessions
+            .iter()
+            .filter_map(|(id, session)| {
+                session
+                    .parent_id
+                    .as_ref()
+                    .map(|parent| (id.clone(), parent.clone()))
+            })
+            .collect()
+    }
+
+    /// GTK's form notice (`.form-notice`), which `Ctrl+Shift+X` cancels.
+    fn form_notice(&self) -> Option<crate::pending::FormNotice> {
+        self.forms
+            .notice(self.active_session_id.as_deref(), &self.session_parents())
+    }
+
+    /// Permission prompts whose scope is the active session: its own, or a
+    /// child's whose parent is one of the root sessions (`pending`'s rule), so
+    /// a prompt that blocks a running subagent shows where it belongs.
+    fn visible_permissions(&self) -> Vec<&protocol::PermissionRequest> {
+        let Some(active) = self.active_session_id.as_deref() else {
+            return Vec::new();
+        };
+        let parents = self.session_parents();
+        let is_root = |id: &str| {
+            self.sessions
+                .get(id)
+                .is_none_or(|session| session.parent_id.is_none())
+        };
+        self.permissions
+            .iter()
+            .filter_map(|request| match request {
+                crate::pending::PendingRequest::Permission { request, .. } => Some(request),
+                crate::pending::PendingRequest::Form(_) => None,
+            })
+            .filter(|request| {
+                crate::pending::permission_scope(&request.session_id, is_root, &parents)
+                    .is_none_or(|scope| scope == active)
+            })
+            .collect()
     }
 
     /// The active session's waiting prompts as the tray engine's rows.
