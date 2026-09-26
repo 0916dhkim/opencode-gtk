@@ -2,6 +2,7 @@
 
 mod api;
 mod credentials;
+mod icons;
 mod jobs;
 mod markdown;
 mod model;

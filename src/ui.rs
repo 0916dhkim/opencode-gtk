@@ -18,6 +18,7 @@ use crate::{
     Args,
     api::{ApiConfig, ApiHandle, Command, UiEvent},
     credentials::CloudflareAccessCredentials,
+    icons,
     jobs::{self, JobKind},
     markdown,
     model::{self, Conversation, ModelCatalog, Role, RunStatus, Session, TrayItem},
@@ -335,14 +336,13 @@ impl Application for OpenCodeCosmic {
 
     fn header_start(&self) -> Vec<Element<'_, Self::Message>> {
         vec![
-            button::text("☰")
+            button::icon(icons::sessions())
                 .on_press(Message::ToggleSidebar)
-                .padding([3, 8])
                 .into(),
             text("OpenCode").size(14).into(),
-            text(format!("· {}", self.connection_status))
-                .size(12)
-                .into(),
+            text("·").size(12).into(),
+            inline_icon(icons::connection()).size(14).into(),
+            text(&self.connection_status).size(12).into(),
         ]
     }
 
@@ -352,14 +352,28 @@ impl Application for OpenCodeCosmic {
 
     fn header_end(&self) -> Vec<Element<'_, Self::Message>> {
         vec![
-            button::text("Tabs (Ctrl+P)")
-                .on_press(Message::ToggleDrawer(DrawerPage::Sessions))
-                .padding([3, 8])
-                .into(),
-            button::text("⚙ Settings")
-                .on_press(Message::ToggleDrawer(DrawerPage::Settings))
-                .padding([3, 8])
-                .into(),
+            button::custom(
+                row::with_children(vec![
+                    inline_icon(icons::sessions()).into(),
+                    text("Tabs (Ctrl+P)").size(12).into(),
+                ])
+                .spacing(6)
+                .align_y(Alignment::Center),
+            )
+            .on_press(Message::ToggleDrawer(DrawerPage::Sessions))
+            .padding([3, 8])
+            .into(),
+            button::custom(
+                row::with_children(vec![
+                    inline_icon(icons::settings()).into(),
+                    text("Settings (Ctrl+,)").size(12).into(),
+                ])
+                .spacing(6)
+                .align_y(Alignment::Center),
+            )
+            .on_press(Message::ToggleDrawer(DrawerPage::Settings))
+            .padding([3, 8])
+            .into(),
         ]
     }
 
@@ -367,10 +381,17 @@ impl Application for OpenCodeCosmic {
         // 1. Build Left Sidebar (GTK style)
         let mut sidebar_items = Vec::new();
 
-        let new_session_btn = button::text("+ New session")
-            .on_press(Message::NewSession)
-            .width(Length::Fill)
-            .padding([8, 12]);
+        let new_session_btn = button::custom(
+            row::with_children(vec![
+                inline_icon(icons::add()).into(),
+                text("New session").size(13).into(),
+            ])
+            .spacing(6)
+            .align_y(Alignment::Center),
+        )
+        .on_press(Message::NewSession)
+        .width(Length::Fill)
+        .padding([8, 12]);
         sidebar_items.push(container(new_session_btn).padding([8, 8, 4, 8]).into());
 
         let mut tab_rows = Vec::new();
@@ -391,23 +412,27 @@ impl Application for OpenCodeCosmic {
                 title.to_string()
             };
 
-            let status_dot = if is_busy {
-                "⟳"
+            let status_marker: Element<'_, Message> = if is_busy {
+                inline_icon(icons::settings()).size(13).into()
             } else if is_active {
-                "●"
+                status_dot(palette::current().status_unread, true)
             } else {
-                "○"
+                status_dot(palette::current().status_idle, false)
             };
 
             let tab_id_clone = tab_id.clone();
             let close_id = tab_id.clone();
 
-            let tab_btn = button::text(format!("{status_dot}  {display_title}"))
-                .on_press(Message::SelectTab(tab_id_clone))
-                .width(Length::Fill)
-                .padding([6, 10]);
+            let tab_btn = button::custom(
+                row::with_children(vec![status_marker, text(display_title).size(13).into()])
+                    .spacing(6)
+                    .align_y(Alignment::Center),
+            )
+            .on_press(Message::SelectTab(tab_id_clone))
+            .width(Length::Fill)
+            .padding([6, 10]);
 
-            let close_btn = button::text("✕")
+            let close_btn = button::icon(icons::close())
                 .on_press(Message::CloseTab(close_id))
                 .padding([4, 6]);
 
@@ -468,8 +493,8 @@ impl Application for OpenCodeCosmic {
 
             for row in job_rows {
                 let kind_str = match row.kind {
-                    JobKind::Subagent => "◈",
-                    JobKind::Shell => ">_",
+                    JobKind::Subagent => "◆",
+                    JobKind::Shell => "$",
                 };
 
                 let item = column::with_children(vec![
@@ -501,16 +526,30 @@ impl Application for OpenCodeCosmic {
         }
 
         let footer_buttons = column::with_children(vec![
-            button::text("All Sessions (Ctrl+P)")
-                .on_press(Message::ToggleDrawer(DrawerPage::Sessions))
-                .width(Length::Fill)
-                .padding([6, 10])
-                .into(),
-            button::text("Settings (Ctrl+,)")
-                .on_press(Message::ToggleDrawer(DrawerPage::Settings))
-                .width(Length::Fill)
-                .padding([6, 10])
-                .into(),
+            button::custom(
+                row::with_children(vec![
+                    inline_icon(icons::sessions()).into(),
+                    text("All Sessions (Ctrl+P)").size(13).into(),
+                ])
+                .spacing(6)
+                .align_y(Alignment::Center),
+            )
+            .on_press(Message::ToggleDrawer(DrawerPage::Sessions))
+            .width(Length::Fill)
+            .padding([6, 10])
+            .into(),
+            button::custom(
+                row::with_children(vec![
+                    inline_icon(icons::settings()).into(),
+                    text("Settings (Ctrl+,)").size(13).into(),
+                ])
+                .spacing(6)
+                .align_y(Alignment::Center),
+            )
+            .on_press(Message::ToggleDrawer(DrawerPage::Settings))
+            .width(Length::Fill)
+            .padding([6, 10])
+            .into(),
         ])
         .spacing(4);
 
@@ -639,7 +678,7 @@ impl Application for OpenCodeCosmic {
                             }
                             model::SegmentKind::Reasoning => {
                                 if !segment.text.trim().is_empty() {
-                                    let reasoning_header = text("◈ Thinking").size(11).into();
+                                    let reasoning_header = text("◆ Thinking").size(11).into();
                                     let reasoning_body = text(segment.text.trim()).size(13).into();
                                     let reasoning_col = column::with_children(vec![
                                         reasoning_header,
@@ -716,7 +755,7 @@ impl Application for OpenCodeCosmic {
                                 };
 
                                 let tool_header = row::with_children(vec![
-                                    text(format!("⚙ {}", name.to_uppercase()))
+                                    text(name.to_uppercase())
                                         .size(11)
                                         .width(Length::Fill)
                                         .into(),
@@ -838,8 +877,9 @@ impl Application for OpenCodeCosmic {
 
             if is_busy {
                 let busy_indicator = row::with_children(vec![
-                    text("⟳ OpenCode is thinking...").size(13).into(),
-                    button::text("Stop")
+                    inline_icon(icons::settings()).size(14).into(),
+                    text("OpenCode is thinking...").size(13).into(),
+                    button::icon(icons::stop())
                         .padding([3, 8])
                         .on_press(Message::StopSession)
                         .into(),
@@ -929,7 +969,7 @@ impl Application for OpenCodeCosmic {
                             .padding([2, 6])
                             .on_press(Message::TrayAction(item.id.clone(), RowAction::Switch))
                             .into(),
-                        button::text("✕")
+                        button::icon(icons::close())
                             .padding([2, 4])
                             .on_press(Message::TrayAction(item.id.clone(), RowAction::Cancel))
                             .into(),
@@ -976,7 +1016,9 @@ impl Application for OpenCodeCosmic {
             // Composer area
             let send_buttons = if is_busy {
                 row::with_children(vec![
-                    button::text("Stop").on_press(Message::StopSession).into(),
+                    button::icon(icons::stop())
+                        .on_press(Message::StopSession)
+                        .into(),
                     button::text("Steer (Enter)")
                         .on_press(Message::SendPrompt(SendMode::Steer))
                         .into(),
@@ -987,7 +1029,8 @@ impl Application for OpenCodeCosmic {
                 .spacing(6)
             } else {
                 row::with_children(vec![
-                    button::suggested("Send")
+                    button::icon(icons::send())
+                        .class(cosmic::theme::Button::Suggested)
                         .on_press(Message::SendPrompt(SendMode::Send))
                         .into(),
                 ])
@@ -1093,8 +1136,8 @@ impl Application for OpenCodeCosmic {
                 } else {
                     for row in job_rows {
                         let kind_str = match row.kind {
-                            JobKind::Subagent => "◈ Subagent",
-                            JobKind::Shell => ">_ Shell",
+                            JobKind::Subagent => "◆ Subagent",
+                            JobKind::Shell => "$ Shell",
                         };
 
                         let item = column::with_children(vec![
@@ -1129,16 +1172,24 @@ impl Application for OpenCodeCosmic {
                 list_items.push(
                     row::with_children(vec![
                         text("Sessions").size(16).width(Length::Fill).into(),
-                        button::text("✕").on_press(Message::CloseDrawer).into(),
+                        button::icon(icons::close())
+                            .on_press(Message::CloseDrawer)
+                            .into(),
                     ])
                     .align_y(Alignment::Center)
                     .into(),
                 );
 
                 list_items.push(
-                    text_input("Search sessions...", &self.search_query)
-                        .on_input(Message::SearchInput)
-                        .into(),
+                    row::with_children(vec![
+                        inline_icon(icons::search()).into(),
+                        text_input("Search sessions...", &self.search_query)
+                            .on_input(Message::SearchInput)
+                            .into(),
+                    ])
+                    .spacing(6)
+                    .align_y(Alignment::Center)
+                    .into(),
                 );
 
                 let q = self.search_query.to_lowercase();
@@ -1170,7 +1221,9 @@ impl Application for OpenCodeCosmic {
                             .size(16)
                             .width(Length::Fill)
                             .into(),
-                        button::text("✕").on_press(Message::CloseDrawer).into(),
+                        button::icon(icons::close())
+                            .on_press(Message::CloseDrawer)
+                            .into(),
                     ])
                     .align_y(Alignment::Center)
                     .into(),
@@ -1254,6 +1307,31 @@ fn shortcut(key: &Key, modifiers: Modifiers) -> Option<Message> {
 /// Widget id of the prompt composer, so a `Task` can put the caret in it.
 fn composer_id() -> cosmic::widget::Id {
     cosmic::widget::Id::new("opencode-composer")
+}
+
+/// A bundled 16px icon painted in the theme's icon colour, for inline use.
+fn inline_icon(handle: cosmic::widget::icon::Handle) -> cosmic::widget::icon::Icon {
+    cosmic::widget::icon::icon(handle).size(16)
+}
+
+/// A small drawn status dot. The GTK client drew these with CSS; before this,
+/// the port used the text glyphs `●` / `○`, which depend on the font.
+fn status_dot(color: cosmic::iced::Color, filled: bool) -> Element<'static, Message> {
+    let style = move |_theme: &cosmic::Theme| container::Style {
+        background: filled.then(|| color.into()),
+        border: Border {
+            color,
+            width: if filled { 0.0 } else { 1.0 },
+            radius: 5.0.into(),
+        },
+        ..Default::default()
+    };
+
+    container(row::with_children(Vec::<Element<'_, Message>>::new()))
+        .width(Length::Fixed(9.0))
+        .height(Length::Fixed(9.0))
+        .style(style)
+        .into()
 }
 
 /// Maps a character to a zero-based tab index for the `1`..`9` shortcuts.

@@ -50,6 +50,10 @@ pub struct Palette {
     pub status_ok: Color,
     /// `@oc_fg_session_tab_busy_session_tab_title` — busy runs, stopped jobs.
     pub status_busy: Color,
+    /// `@oc_bg_session_tab_status_idle` — the inactive session dot.
+    pub status_idle: Color,
+    /// `@oc_bg_session_tab_status_unread` — the active session dot.
+    pub status_unread: Color,
     /// `@oc_fg_message_error_header`
     pub error_text: Color,
     /// `@oc_bg_message_error_card`
@@ -101,6 +105,8 @@ pub const LIGHT: Palette = Palette {
     muted_text: Color::from_rgb8(0x70, 0x76, 0x73),
     status_ok: Color::from_rgb8(0x1a, 0x7f, 0x37),
     status_busy: Color::from_rgb8(0x9c, 0x64, 0x1a),
+    status_idle: Color::from_rgb8(0x78, 0x82, 0x7e),
+    status_unread: Color::from_rgb8(0x17, 0x78, 0xa8),
     error_text: Color::from_rgb8(0xcf, 0x22, 0x2e),
     error_card_bg: Color::from_rgba8(0xcf, 0x22, 0x2e, 0.06),
     error_card_border: Color::from_rgba8(0xcf, 0x22, 0x2e, 0.28),
@@ -137,6 +143,8 @@ pub const DARK: Palette = Palette {
     muted_text: Color::from_rgb8(0x8d, 0x95, 0x9d),
     status_ok: Color::from_rgb8(0x56, 0xd3, 0x64),
     status_busy: Color::from_rgb8(0xe5, 0xb5, 0x67),
+    status_idle: Color::from_rgb8(0x68, 0x73, 0x6f),
+    status_unread: Color::from_rgb8(0x62, 0xbc, 0xeb),
     error_text: Color::from_rgb8(0xf8, 0x51, 0x49),
     error_card_bg: Color::from_rgba8(0xf8, 0x51, 0x49, 0.08),
     error_card_border: Color::from_rgba8(0xf8, 0x51, 0x49, 0.32),
