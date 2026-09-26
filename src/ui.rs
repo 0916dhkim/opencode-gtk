@@ -1,5 +1,6 @@
 use std::{
     collections::{HashMap, HashSet},
+    path::PathBuf,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -63,6 +64,10 @@ pub struct OpenCodeCosmic {
     focus_composer: bool,
     /// UI zoom, mirroring the GTK client's `zoom_level` (0.7 … 1.75).
     zoom: f32,
+    /// Files picked with the paperclip for the next prompt.
+    pending_attachments: Vec<PathBuf>,
+    /// Set while the file dialog runs on its own thread.
+    attachment_picker: Option<Receiver<Vec<PathBuf>>>,
 }
 
 #[derive(Clone, Debug)]
@@ -83,6 +88,9 @@ pub enum Message {
     },
     /// Puts the caret back in the composer (Ctrl+G).
     FocusComposer,
+    /// Opens the file dialog for the composer's attachments.
+    PickAttachments,
+    RemoveAttachment(usize),
     ZoomIn,
     ZoomOut,
     ZoomReset,
@@ -159,6 +167,8 @@ impl Application for OpenCodeCosmic {
             next_req_id: 1,
             focus_composer: false,
             zoom,
+            pending_attachments: Vec::new(),
+            attachment_picker: None,
         };
 
         if flags.preview {
@@ -195,6 +205,12 @@ impl Application for OpenCodeCosmic {
             for event in mock.take_server_events() {
                 app.handle_ui_event(event);
             }
+            // Preview mode is the screenshot/demo surface: show the paperclip
+            // chips without a real dialog.
+            app.pending_attachments = vec![
+                PathBuf::from("/state/home/paperclip-22px.png"),
+                PathBuf::from("/state/home/composer-actions-34x32.png"),
+            ];
             app.mock_server = Some(mock);
         } else {
             app.connect_api();
@@ -229,6 +245,19 @@ impl Application for OpenCodeCosmic {
                 // Focus the composer one tick after the active session changed,
                 // so the widget exists by the time the focus operation runs.
                 let focus = std::mem::take(&mut self.focus_composer);
+                let picked = self.take_picked_attachments();
+                if let Some(paths) = picked {
+                    match crate::api::check_attachments(&paths) {
+                        Ok(()) => {
+                            for path in paths {
+                                if !self.pending_attachments.contains(&path) {
+                                    self.pending_attachments.push(path);
+                                }
+                            }
+                        }
+                        Err(error) => self.error_banner = Some(error.to_string()),
+                    }
+                }
                 self.drain_events();
                 if focus {
                     return cosmic::widget::text_input::focus(composer_id());
@@ -285,6 +314,16 @@ impl Application for OpenCodeCosmic {
                 Task::none()
             }
             Message::FocusComposer => cosmic::widget::text_input::focus(composer_id()),
+            Message::PickAttachments => {
+                self.pick_attachments();
+                Task::none()
+            }
+            Message::RemoveAttachment(index) => {
+                if index < self.pending_attachments.len() {
+                    self.pending_attachments.remove(index);
+                }
+                Task::none()
+            }
             Message::ZoomIn => {
                 self.zoom_step(1);
                 Task::none()
@@ -1140,7 +1179,23 @@ impl Application for OpenCodeCosmic {
             let catalog = active_dir.as_ref().and_then(|d| self.catalogs.get(d));
             let model_id = self.active_session_model_id();
 
+            let supports_attachments = catalog.is_some_and(|catalog| {
+                catalog
+                    .models
+                    .iter()
+                    .any(|model| model.supports_attachments)
+            });
+
             let mut footer_items: Vec<Element<'_, Message>> = Vec::new();
+
+            if supports_attachments {
+                footer_items.push(
+                    button::icon(icons::attach())
+                        .padding([self.space(0.2) as u16, self.space(0.3) as u16])
+                        .on_press(Message::PickAttachments)
+                        .into(),
+                );
+            }
 
             if let Some(catalog) = catalog
                 && !catalog.models.is_empty()
@@ -1242,7 +1297,54 @@ impl Application for OpenCodeCosmic {
                     .into(),
             );
 
-            let mut composer_items: Vec<Element<'_, Message>> = vec![
+            let mut composer_items: Vec<Element<'_, Message>> = Vec::new();
+
+            if !self.pending_attachments.is_empty() {
+                let chip_radius = self.space(0.44);
+                let chips: Vec<Element<'_, Message>> = self
+                    .pending_attachments
+                    .iter()
+                    .enumerate()
+                    .map(|(index, path)| {
+                        container(
+                            row::with_children(vec![
+                                inline_icon(icons::attach())
+                                    .size(self.em(0.76) as u16)
+                                    .into(),
+                                text(attachment_label(path))
+                                    .size(self.em(0.88))
+                                    .class(cosmic::theme::Text::Color(palette::current().tray_text))
+                                    .into(),
+                                button::icon(icons::close())
+                                    .padding([1, 3])
+                                    .on_press(Message::RemoveAttachment(index))
+                                    .into(),
+                            ])
+                            .spacing(self.space(0.3))
+                            .align_y(Alignment::Center),
+                        )
+                        .padding([self.space(0.15) as u16, self.space(0.44) as u16])
+                        .style(move |_theme: &cosmic::Theme| container::Style {
+                            background: Some(palette::current().card_bg.into()),
+                            border: Border {
+                                color: palette::current().panel_border,
+                                width: 1.0,
+                                radius: chip_radius.into(),
+                            },
+                            ..Default::default()
+                        })
+                        .into()
+                    })
+                    .collect();
+                composer_items.push(
+                    row::with_children(chips)
+                        .spacing(self.space(0.3))
+                        .wrap()
+                        .into(),
+                );
+            }
+
+            composer_items.push(
                 text_input("Ask OpenCode...", &self.composer_text)
                     .id(composer_id())
                     .on_input(Message::ComposerInput)
@@ -1250,7 +1352,7 @@ impl Application for OpenCodeCosmic {
                     // so the widget must not also submit on Enter.
                     .width(Length::Fill)
                     .into(),
-            ];
+            );
 
             let footer = row::with_children(
                 footer_items
@@ -1538,6 +1640,22 @@ fn composer_id() -> cosmic::widget::Id {
 /// The GTK client's zoom ladder.
 const ZOOM_STEPS: [f32; 9] = [0.7, 0.8, 0.9, 1.0, 1.1, 1.2, 1.3, 1.5, 1.75];
 
+/// A chip label for an attachment: the file name, middle-shortened when long.
+fn attachment_label(path: &std::path::Path) -> String {
+    let name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .unwrap_or_else(|| path.to_string_lossy().to_string());
+    let chars: Vec<char> = name.chars().collect();
+    if chars.len() <= 32 {
+        name
+    } else {
+        let head: String = chars[..14].iter().collect();
+        let tail: String = chars[chars.len() - 10..].iter().collect();
+        format!("{head}…{tail}")
+    }
+}
+
 /// `13400` -> `13.4k`, `200000` -> `200k`, `950` -> `950`.
 fn compact_tokens(value: u64) -> String {
     if value < 1000 {
@@ -1772,6 +1890,53 @@ impl OpenCodeCosmic {
     /// `factor` em in the current zoom, as a logical pixel count for paddings.
     fn space(&self, factor: f32) -> f32 {
         crate::metrics::space(factor, self.zoom)
+    }
+
+    /// Opens GTK's file dialog (paperclip) on its own thread; `Tick` collects
+    /// the paths, so the UI thread never blocks on the portal.
+    fn pick_attachments(&mut self) {
+        if self.attachment_picker.is_some() {
+            return;
+        }
+        let (sender, receiver) = async_channel::bounded(1);
+        self.attachment_picker = Some(receiver);
+        std::thread::spawn(move || {
+            let picked = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .ok()
+                .and_then(|runtime| {
+                    runtime.block_on(
+                        rfd::AsyncFileDialog::new()
+                            .set_title("Attach files")
+                            .pick_files(),
+                    )
+                })
+                .map(|files| {
+                    files
+                        .into_iter()
+                        .map(|file| file.path().to_path_buf())
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            let _ = sender.send_blocking(picked);
+        });
+    }
+
+    /// The paths the dialog thread handed back, if it finished.
+    fn take_picked_attachments(&mut self) -> Option<Vec<PathBuf>> {
+        let receiver = self.attachment_picker.as_ref()?;
+        match receiver.try_recv() {
+            Ok(paths) => {
+                self.attachment_picker = None;
+                Some(paths)
+            }
+            Err(async_channel::TryRecvError::Empty) => None,
+            Err(async_channel::TryRecvError::Closed) => {
+                self.attachment_picker = None;
+                None
+            }
+        }
     }
 
     /// GTK's compact transcript status pill (`.transcript-status-compact`):
@@ -2139,6 +2304,7 @@ impl OpenCodeCosmic {
         };
 
         let prompt = std::mem::take(&mut self.composer_text);
+        let attachments = std::mem::take(&mut self.pending_attachments);
         let req_id = self.next_request_id();
         let msg_id = format!("msg_{}", req_id);
 
@@ -2148,7 +2314,7 @@ impl OpenCodeCosmic {
                 message_id: msg_id,
                 session_id: active_id,
                 text: prompt,
-                attachments: Vec::new(),
+                attachments: attachments.clone(),
                 delivery: mode.delivery(),
             });
         } else if let Some(mock) = &mut self.mock_server {
@@ -2157,7 +2323,7 @@ impl OpenCodeCosmic {
                 message_id: msg_id,
                 session_id: active_id,
                 text: prompt,
-                attachments: Vec::new(),
+                attachments,
                 delivery: mode.delivery(),
             });
             self.handle_ui_event(event);
@@ -2497,6 +2663,19 @@ mod tests {
         assert_eq!(crate::metrics::em(1.0, 1.0), 13);
         assert_eq!(crate::metrics::em(0.76, 1.75), 17);
         assert!((crate::metrics::space(1.19, 1.2) - 18.564).abs() < 0.01);
+    }
+
+    #[test]
+    fn attachment_labels_use_the_file_name_and_shorten_middle() {
+        assert_eq!(
+            attachment_label(std::path::Path::new("/state/home/paperclip-22px.png")),
+            "paperclip-22px.png"
+        );
+        let long = attachment_label(std::path::Path::new(
+            "/tmp/a-very-long-name-for-a-screenshot-of-the-composer.png",
+        ));
+        assert!(long.contains('…'), "{long}");
+        assert!(long.chars().count() <= 26, "{long}");
     }
 
     #[test]

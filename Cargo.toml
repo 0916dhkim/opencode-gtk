@@ -20,6 +20,7 @@ libcosmic = { git = "https://github.com/pop-os/libcosmic.git", default-features 
 log = "0.4"
 mime_guess = "2.0"
 pulldown-cmark = { version = "0.13", default-features = false }
+rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "tokio"] }
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls-native-roots"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
