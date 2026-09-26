@@ -29,6 +29,13 @@ use crate::{
     tray::{RowAction, SendMode, enter_mode},
 };
 
+/// A session-row drag: `to` follows the row under the cursor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct TabDrag {
+    from: usize,
+    to: usize,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DrawerPage {
     /// GTK's new-session palette.
@@ -89,6 +96,12 @@ pub struct OpenCodeCosmic {
     transcript_follow: bool,
     /// An older-history request is in flight.
     history_loading: bool,
+    /// The session row a drag started on, and the row it would land on:
+    /// GTK's drag-to-reorder.
+    tab_drag: Option<TabDrag>,
+    /// The session row under the cursor, for GTK's row hover (and its tab
+    /// actions, which only show for the active or hovered row).
+    hovered_tab: Option<String>,
     /// Files picked with the paperclip for the next prompt.
     pending_attachments: Vec<PathBuf>,
     /// Set while the file dialog runs on its own thread.
@@ -125,6 +138,18 @@ pub enum Message {
     },
     /// Cancels the form the notice points at (GTK's `Ctrl+Shift+X`).
     CancelVisibleForm,
+    /// The cursor entered or left a session row.
+    TabHover {
+        tab: String,
+        hovered: bool,
+    },
+    /// The left button was released: the dragged row lands, or the row under
+    /// the cursor is selected.
+    PointerRelease,
+    /// A session row started being dragged (GTK reorders tabs by drag).
+    TabDragStart(usize),
+    /// The cursor is over this session row while dragging.
+    TabDragOver(usize),
     /// The transcript scrolled: GTK pinned the current request at its top and
     /// loaded older history when it reached the beginning.
     TranscriptScrolled(cosmic::iced::widget::scrollable::Viewport),
@@ -220,6 +245,8 @@ impl Application for OpenCodeCosmic {
             transcript_from_bottom: 0.0,
             transcript_follow: true,
             history_loading: false,
+            tab_drag: None,
+            hovered_tab: None,
             pending_attachments: Vec::new(),
             attachment_picker: None,
         };
@@ -380,6 +407,39 @@ impl Application for OpenCodeCosmic {
                         session_id,
                         decision,
                     });
+                }
+                Task::none()
+            }
+            Message::TabHover { tab, hovered } => {
+                if hovered {
+                    self.hovered_tab = Some(tab);
+                } else if self.hovered_tab.as_deref() == Some(tab.as_str()) {
+                    self.hovered_tab = None;
+                }
+                Task::none()
+            }
+            Message::TabDragStart(position) => {
+                self.tab_drag = Some(TabDrag {
+                    from: position,
+                    to: position,
+                });
+                Task::none()
+            }
+            Message::TabDragOver(position) => {
+                if let Some(drag) = &mut self.tab_drag {
+                    drag.to = position;
+                }
+                Task::none()
+            }
+            Message::PointerRelease => {
+                if let Some(drag) = self.tab_drag.take() {
+                    reorder_tabs(&mut self.tabs, drag.from, drag.to);
+                    return Task::none();
+                }
+                if let Some(tab) = self.hovered_tab.clone()
+                    && self.tabs.contains(&tab)
+                {
+                    self.set_active_session(&tab);
                 }
                 Task::none()
             }
@@ -668,11 +728,10 @@ impl Application for OpenCodeCosmic {
                 palette::current().muted_text
             };
 
-            let tab_id_clone = tab_id.clone();
             let close_id = tab_id.clone();
             let index = position + 1;
 
-            let tab_btn = button::custom(
+            let tab_btn = container(
                 row::with_children(vec![
                     status_marker,
                     text(index.to_string())
@@ -698,40 +757,73 @@ impl Application for OpenCodeCosmic {
                 .spacing(self.space(0.3))
                 .align_y(Alignment::Center),
             )
-            .on_press(Message::SelectTab(tab_id_clone))
-            .class(flat_button_class(self.zoom))
             .width(Length::Fill)
             .padding([self.space(0.35) as u16, self.space(0.59) as u16]);
 
             let close_btn = button::icon(icons::close())
                 .on_press(Message::CloseTab(close_id))
-                .padding([self.space(0.2) as u16, self.space(0.4) as u16])
-                .class(close_button_class(self.space(0.81)));
+                .padding([self.space(0.2) as u16, self.space(0.4) as u16]);
 
             // GTK showed rename and close on the active tab.
             let rename_btn = button::icon(icons::edit())
                 .padding([self.space(0.2) as u16, self.space(0.2) as u16])
                 .on_press(Message::OpenRename);
 
+            let hovered = self.hovered_tab.as_deref() == Some(tab_id.as_str());
+            let show_actions = is_active || hovered || self.tab_drag.is_some();
             let mut tab_row_items = vec![tab_btn.into()];
             if is_active {
-                tab_row_items.push(rename_btn.into());
+                tab_row_items.push(
+                    rename_btn
+                        .class(tab_action_class(show_actions, self.space(0.81)))
+                        .into(),
+                );
             }
-            tab_row_items.push(close_btn.into());
+            tab_row_items.push(
+                close_btn
+                    .class(close_button_class(show_actions, self.space(0.81)))
+                    .into(),
+            );
             let tab_row = row::with_children(tab_row_items)
                 .align_y(Alignment::Center)
                 .spacing(self.space(0.15));
 
             let radius = self.space(0.5);
+            let dragging = self.tab_drag.is_some_and(|drag| drag.from == position);
+            let drag_target = self
+                .tab_drag
+                .is_some_and(|drag| drag.to == position && drag.from != position);
             let tab_card = container(tab_row)
                 .width(Length::Fill)
                 .padding([self.space(0.07) as u16, self.space(0.3) as u16])
                 .style(move |_theme: &cosmic::Theme| {
-                    if is_active {
-                        container::Style {
-                            background: Some(palette::current().sidebar_row_active_bg.into()),
+                    // GTK marked the dragged row and the drop position.
+                    if drag_target {
+                        return container::Style {
                             border: Border {
-                                color: palette::current().nav_separator,
+                                color: palette::current().accent_bg,
+                                width: 1.0,
+                                radius: radius.into(),
+                            },
+                            ..Default::default()
+                        };
+                    }
+                    if is_active || dragging || hovered {
+                        container::Style {
+                            background: Some(
+                                if is_active || dragging {
+                                    palette::current().sidebar_row_active_bg
+                                } else {
+                                    palette::current().sidebar_hover_bg
+                                }
+                                .into(),
+                            ),
+                            border: Border {
+                                color: if dragging {
+                                    palette::current().accent_bg
+                                } else {
+                                    palette::current().nav_separator
+                                },
                                 width: 1.0,
                                 radius: radius.into(),
                             },
@@ -741,6 +833,22 @@ impl Application for OpenCodeCosmic {
                         container::Style::default()
                     }
                 });
+
+            // GTK's drag-to-reorder: each row reports the drag and the rows the
+            // cursor crosses, so a drop lands where the cursor is.
+            let hover_id = tab_id.clone();
+            let leave_id = tab_id.clone();
+            let tab_card = cosmic::iced::widget::mouse_area(tab_card)
+                .on_enter(Message::TabHover {
+                    tab: hover_id,
+                    hovered: true,
+                })
+                .on_exit(Message::TabHover {
+                    tab: leave_id,
+                    hovered: false,
+                })
+                .on_drag(Message::TabDragStart(position))
+                .on_move(move |_point| Message::TabDragOver(position));
 
             // GTK separates inactive rows with a hairline.
             if !first_row && !is_active && !previous_active {
@@ -2042,6 +2150,13 @@ impl Application for OpenCodeCosmic {
                 Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. }) => {
                     shortcut(&key, modifiers)
                 }
+                // A row's press must not rebuild it (the drag state lives in
+                // the widget), so selection and the drop both happen here: the
+                // release either lands a dragged row or selects the row under
+                // the cursor.
+                Event::Mouse(cosmic::iced::mouse::Event::ButtonReleased(
+                    cosmic::iced::mouse::Button::Left,
+                )) => Some(Message::PointerRelease),
                 _ => None,
             }),
         ])
@@ -2093,6 +2208,17 @@ fn shortcut(key: &Key, modifiers: Modifiers) -> Option<Message> {
     }
 }
 
+/// GTK's drag-to-reorder: the dragged session lands at `to`, the rows between
+/// shift by one. Reports whether anything moved.
+fn reorder_tabs(tabs: &mut Vec<String>, from: usize, to: usize) -> bool {
+    if from == to || from >= tabs.len() || to >= tabs.len() {
+        return false;
+    }
+    let tab = tabs.remove(from);
+    tabs.insert(to, tab);
+    true
+}
+
 /// Widget id of the transcript, so a `Task` can keep it at the end of the run.
 fn transcript_id() -> cosmic::widget::Id {
     cosmic::widget::Id::new("opencode-transcript")
@@ -2122,17 +2248,51 @@ fn inline_image_bytes(uri: &str) -> Option<Vec<u8>> {
         .ok()
 }
 
-/// GTK's `button.session-tab-close:hover`: a red fill with a white glyph.
-fn close_button_class(radius: f32) -> cosmic::theme::Button {
+/// GTK's `.session-tab-action`: dimmed until the row is active or hovered.
+fn tab_action_class(shown: bool, radius: f32) -> cosmic::theme::Button {
     let base = move || cosmic::widget::button::Style {
         background: None,
         border_radius: radius.into(),
         border_width: 0.0,
+        text_color: if shown {
+            None
+        } else {
+            Some(palette::current().muted_text)
+        },
+        ..Default::default()
+    };
+    cosmic::theme::Button::Custom {
+        active: Box::new(move |_focused, _theme| base()),
+        hovered: Box::new(move |_focused, _theme| base()),
+        pressed: Box::new(move |_focused, _theme| base()),
+        disabled: Box::new(move |_theme| base()),
+    }
+}
+
+/// GTK's `button.session-tab-close:hover`: a red fill with a white glyph.
+fn close_button_class(shown: bool, radius: f32) -> cosmic::theme::Button {
+    let base = move || cosmic::widget::button::Style {
+        background: None,
+        border_radius: radius.into(),
+        border_width: 0.0,
+        text_color: if shown {
+            None
+        } else {
+            Some(palette::current().muted_text)
+        },
         ..Default::default()
     };
     let hovered = move || cosmic::widget::button::Style {
         background: Some(palette::current().tab_close_hover_bg.into()),
         text_color: Some(palette::current().tab_close_hover_fg),
+        ..base()
+    };
+    let base = move || cosmic::widget::button::Style {
+        text_color: if shown {
+            None
+        } else {
+            Some(palette::current().muted_text)
+        },
         ..base()
     };
     cosmic::theme::Button::Custom {
@@ -3844,5 +4004,24 @@ mod tests {
             );
         }
         assert!(message(&ch("q"), Modifiers::CTRL).is_none());
+    }
+
+    #[test]
+    fn dragging_a_session_moves_it_and_shifts_the_rest() {
+        let tabs = |ids: &[&str]| ids.iter().map(|id| (*id).to_string()).collect::<Vec<_>>();
+
+        let mut open = tabs(&["a", "b", "c", "d", "e"]);
+        assert!(reorder_tabs(&mut open, 4, 1));
+        assert_eq!(open, tabs(&["a", "e", "b", "c", "d"]));
+
+        let mut open = tabs(&["a", "b", "c"]);
+        assert!(reorder_tabs(&mut open, 0, 2));
+        assert_eq!(open, tabs(&["b", "c", "a"]));
+
+        // Dropping a row on itself, or out of range, leaves the order alone.
+        let mut open = tabs(&["a", "b"]);
+        assert!(!reorder_tabs(&mut open, 1, 1));
+        assert!(!reorder_tabs(&mut open, 0, 5));
+        assert_eq!(open, tabs(&["a", "b"]));
     }
 }
