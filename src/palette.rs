@@ -44,12 +44,70 @@ pub struct Palette {
     pub accent_bg: Color,
     /// `@oc_fg_composer_frame_button_composer_action_suggested_action`
     pub accent_fg: Color,
-    /// `@oc_fg_message_role` — muted labels.
+    /// `@oc_fg_message_role` — muted labels and the message role.
     pub muted_text: Color,
+    /// `@oc_fg_message_content`
+    pub content_text: Color,
+    /// `@oc_fg_session_header_hint` — message timestamps and header hints.
+    pub time_text: Color,
+    /// `@oc_fg_session_header_title` — the session title in the header strip.
+    pub header_title_text: Color,
+    /// `@oc_fg_user_message_message_role`
+    pub user_role_text: Color,
+    /// `@oc_fg_message_reasoning_message_role`
+    pub reasoning_text: Color,
+    /// `@oc_fg_message_content_link`
+    pub link_text: Color,
+    /// `@oc_fg_window` — the error card's body text.
+    pub error_body_text: Color,
+    /// `@oc_bg_transcript_status_compact`
+    pub status_pill_bg: Color,
+    /// `@oc_border_transcript_status_compact`
+    pub status_pill_border: Color,
+    /// `@oc_fg_transcript_status_compact`
+    pub status_pill_text: Color,
+    /// `@oc_fg_session_tab_unread_session_tab_title`
+    pub tab_unread_text: Color,
+    /// `@oc_fg_session_tab_index`
+    pub tab_index_text: Color,
+    /// `@oc_bg_session_tab_button_session_tab_close_hover`
+    pub tab_close_hover_bg: Color,
+    /// `@oc_bg_sidebar_new_session_hover` — session row hover.
+    pub sidebar_hover_bg: Color,
+    /// `@oc_bg_composer_action_hover`
+    pub action_hover_bg: Color,
+    /// `@oc_border_queue_tray_row` — hairlines between tray rows.
+    pub tray_row_divider: Color,
+    /// `@oc_fg_queue_tray_title`
+    pub tray_title_text: Color,
+    /// `@oc_fg_queue_tray_group`
+    pub tray_group_text: Color,
+    /// `@oc_fg_queue_tray_text`
+    pub tray_text: Color,
+    /// `@oc_bg_queue_tray_button`
+    pub tray_button_bg: Color,
+    /// `@oc_border_queue_tray_button`
+    pub tray_button_border: Color,
+    /// `@oc_fg_queue_tray_button`
+    pub tray_button_text: Color,
+    /// `@oc_bg_queue_tray_paused`
+    pub tray_paused: Color,
     /// `@oc_fg_button_session_id_copy_copied` — completed jobs, open sessions.
     pub status_ok: Color,
     /// `@oc_fg_session_tab_busy_session_tab_title` — busy runs, stopped jobs.
     pub status_busy: Color,
+    /// `@oc_bg_queue_badge_steer`
+    pub badge_steer_bg: Color,
+    /// `@oc_border_queue_badge_steer`
+    pub badge_steer_border: Color,
+    /// `@oc_fg_queue_badge_steer`
+    pub badge_steer_text: Color,
+    /// `@oc_bg_queue_badge_queue`
+    pub badge_queue_bg: Color,
+    /// `@oc_border_queue_badge_queue`
+    pub badge_queue_border: Color,
+    /// `@oc_fg_queue_badge_queue`
+    pub badge_queue_text: Color,
     /// `@oc_bg_session_tab_status_idle` — the inactive session dot.
     pub status_idle: Color,
     /// `@oc_bg_session_tab_status_unread` — the active session dot.
@@ -103,6 +161,35 @@ pub const LIGHT: Palette = Palette {
     accent_bg: Color::from_rgb8(0xc4, 0x92, 0x3a),
     accent_fg: Color::from_rgb8(0x1a, 0x17, 0x13),
     muted_text: Color::from_rgb8(0x70, 0x76, 0x73),
+    content_text: Color::from_rgb8(0x29, 0x27, 0x24),
+    time_text: Color::from_rgb8(0x8b, 0x91, 0x8e),
+    header_title_text: Color::from_rgb8(0x1f, 0x1e, 0x1c),
+    user_role_text: Color::from_rgb8(0x5c, 0x4a, 0x2e),
+    reasoning_text: Color::from_rgb8(0x9a, 0x9e, 0x9b),
+    link_text: Color::from_rgb8(0x8f, 0x5d, 0x1c),
+    error_body_text: Color::from_rgb8(0x28, 0x26, 0x23),
+    status_pill_bg: Color::from_rgba8(0xff, 0xff, 0xff, 0.94),
+    status_pill_border: Color::from_rgb8(0xcb, 0xc7, 0xbf),
+    status_pill_text: Color::from_rgb8(0x4d, 0x51, 0x4f),
+    tab_unread_text: Color::from_rgb8(0x13, 0x5d, 0x83),
+    tab_index_text: Color::from_rgb8(0x92, 0x99, 0x9f),
+    tab_close_hover_bg: Color::from_rgb8(0xb8, 0x4b, 0x45),
+    sidebar_hover_bg: Color::from_rgb8(0xe5, 0xe2, 0xdc),
+    action_hover_bg: Color::from_rgb8(0xee, 0xeb, 0xe4),
+    tray_row_divider: Color::from_rgb8(0xde, 0xda, 0xd2),
+    tray_title_text: Color::from_rgb8(0x34, 0x31, 0x2d),
+    tray_group_text: Color::from_rgb8(0x85, 0x7f, 0x75),
+    tray_text: Color::from_rgb8(0x26, 0x24, 0x21),
+    tray_button_bg: Color::from_rgb8(0xff, 0xff, 0xff),
+    tray_button_border: Color::from_rgb8(0xd5, 0xd0, 0xc7),
+    tray_button_text: Color::from_rgb8(0x34, 0x31, 0x2d),
+    tray_paused: Color::from_rgb8(0x8f, 0x8a, 0x82),
+    badge_steer_bg: Color::from_rgb8(0xf6, 0xe7, 0xcc),
+    badge_steer_border: Color::from_rgb8(0xe2, 0xc4, 0x8f),
+    badge_steer_text: Color::from_rgb8(0x8b, 0x59, 0x18),
+    badge_queue_bg: Color::from_rgb8(0xe8, 0xe6, 0xe1),
+    badge_queue_border: Color::from_rgb8(0xcf, 0xcc, 0xc5),
+    badge_queue_text: Color::from_rgb8(0x5d, 0x60, 0x5e),
     status_ok: Color::from_rgb8(0x1a, 0x7f, 0x37),
     status_busy: Color::from_rgb8(0x9c, 0x64, 0x1a),
     status_idle: Color::from_rgb8(0x78, 0x82, 0x7e),
@@ -141,6 +228,35 @@ pub const DARK: Palette = Palette {
     accent_bg: Color::from_rgb8(0xd2, 0x9b, 0x52),
     accent_fg: Color::from_rgb8(0x17, 0x13, 0x0e),
     muted_text: Color::from_rgb8(0x8d, 0x95, 0x9d),
+    content_text: Color::from_rgb8(0xe7, 0xe3, 0xdc),
+    time_text: Color::from_rgb8(0x6a, 0x72, 0x79),
+    header_title_text: Color::from_rgb8(0xf0, 0xed, 0xe7),
+    user_role_text: Color::from_rgb8(0xd7, 0xc4, 0xa3),
+    reasoning_text: Color::from_rgb8(0x6a, 0x72, 0x79),
+    link_text: Color::from_rgb8(0xe0, 0xa7, 0x5e),
+    error_body_text: Color::from_rgb8(0xe8, 0xe5, 0xdf),
+    status_pill_bg: Color::from_rgba8(0x17, 0x1a, 0x1d, 0.94),
+    status_pill_border: Color::from_rgb8(0x34, 0x39, 0x3e),
+    status_pill_text: Color::from_rgb8(0xc4, 0xc8, 0xca),
+    tab_unread_text: Color::from_rgb8(0xd9, 0xef, 0xff),
+    tab_index_text: Color::from_rgb8(0x92, 0x99, 0x9f),
+    tab_close_hover_bg: Color::from_rgb8(0x8e, 0x37, 0x37),
+    sidebar_hover_bg: Color::from_rgb8(0x19, 0x1d, 0x20),
+    action_hover_bg: Color::from_rgb8(0x22, 0x26, 0x2a),
+    tray_row_divider: Color::from_rgb8(0x26, 0x2b, 0x2f),
+    tray_title_text: Color::from_rgb8(0xe2, 0xdf, 0xd8),
+    tray_group_text: Color::from_rgb8(0x8e, 0x93, 0x8f),
+    tray_text: Color::from_rgb8(0xd6, 0xd3, 0xcc),
+    tray_button_bg: Color::from_rgb8(0x1d, 0x21, 0x24),
+    tray_button_border: Color::from_rgb8(0x35, 0x3b, 0x40),
+    tray_button_text: Color::from_rgb8(0xe2, 0xdf, 0xd8),
+    tray_paused: Color::from_rgb8(0x7d, 0x83, 0x7f),
+    badge_steer_bg: Color::from_rgb8(0x3a, 0x2d, 0x19),
+    badge_steer_border: Color::from_rgb8(0x5a, 0x44, 0x24),
+    badge_steer_text: Color::from_rgb8(0xe0, 0xae, 0x6a),
+    badge_queue_bg: Color::from_rgb8(0x23, 0x27, 0x2b),
+    badge_queue_border: Color::from_rgb8(0x3a, 0x40, 0x45),
+    badge_queue_text: Color::from_rgb8(0xae, 0xb3, 0xb0),
     status_ok: Color::from_rgb8(0x56, 0xd3, 0x64),
     status_busy: Color::from_rgb8(0xe5, 0xb5, 0x67),
     status_idle: Color::from_rgb8(0x68, 0x73, 0x6f),

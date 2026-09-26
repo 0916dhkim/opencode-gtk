@@ -14,6 +14,7 @@ async-channel = "2.3"
 base64 = "0.22"
 clap = { version = "4.5", features = ["derive", "env"] }
 dirs = "6.0"
+jiff = "0.2"
 keyring = { version = "3.6", features = ["crypto-rust", "sync-secret-service"] }
 libcosmic = { git = "https://github.com/pop-os/libcosmic.git", default-features = false, features = ["tokio", "winit", "wayland", "wgpu", "dbus-config"] }
 log = "0.4"

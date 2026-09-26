@@ -3827,6 +3827,7 @@ dependencies = [
  "base64",
  "clap",
  "dirs",
+ "jiff",
  "keyring",
  "libcosmic",
  "log",

@@ -61,6 +61,8 @@ pub struct OpenCodeCosmic {
     next_req_id: u64,
     /// Set when the active session changes: the next tick focuses the composer.
     focus_composer: bool,
+    /// UI zoom, mirroring the GTK client's `zoom_level` (0.7 … 1.75).
+    zoom: f32,
 }
 
 #[derive(Clone, Debug)]
@@ -81,6 +83,9 @@ pub enum Message {
     },
     /// Puts the caret back in the composer (Ctrl+G).
     FocusComposer,
+    ZoomIn,
+    ZoomOut,
+    ZoomReset,
     StopSession,
     TrayAction(String, RowAction),
     TrayClear,
@@ -113,6 +118,11 @@ impl Application for OpenCodeCosmic {
 
     fn init(core: Core, flags: Self::Flags) -> (Self, Task<Self::Message>) {
         let (state, _) = PersistedState::load(&default_path()).unwrap_or_default();
+        let zoom = if (0.5..=3.0).contains(&state.zoom_level) {
+            state.zoom_level as f32
+        } else {
+            1.0
+        };
         let server_url = flags
             .server
             .clone()
@@ -147,6 +157,7 @@ impl Application for OpenCodeCosmic {
             password_input: flags.password.clone().unwrap_or_default(),
             next_req_id: 1,
             focus_composer: false,
+            zoom,
         };
 
         if flags.preview {
@@ -273,6 +284,18 @@ impl Application for OpenCodeCosmic {
                 Task::none()
             }
             Message::FocusComposer => cosmic::widget::text_input::focus(composer_id()),
+            Message::ZoomIn => {
+                self.zoom_step(1);
+                Task::none()
+            }
+            Message::ZoomOut => {
+                self.zoom_step(-1);
+                Task::none()
+            }
+            Message::ZoomReset => {
+                self.set_zoom(1.0);
+                Task::none()
+            }
             Message::StopSession => {
                 self.stop_active_session();
                 Task::none()
@@ -395,7 +418,9 @@ impl Application for OpenCodeCosmic {
         sidebar_items.push(container(new_session_btn).padding([8, 8, 4, 8]).into());
 
         let mut tab_rows = Vec::new();
-        for tab_id in &self.tabs {
+        let mut first_row = true;
+        let mut previous_active = true;
+        for (position, tab_id) in self.tabs.iter().enumerate() {
             let title = self
                 .sessions
                 .get(tab_id)
@@ -413,57 +438,93 @@ impl Application for OpenCodeCosmic {
             };
 
             let status_marker: Element<'_, Message> = if is_busy {
-                inline_icon(icons::settings()).size(13).into()
+                inline_icon(icons::settings())
+                    .size(self.em(0.92) as u16)
+                    .into()
             } else if is_active {
                 status_dot(palette::current().status_unread, true)
             } else {
                 status_dot(palette::current().status_idle, false)
             };
 
+            // GTK: unread/attention and busy recolour the title, busy is bold.
+            let title_color = if is_busy {
+                palette::current().status_busy
+            } else if is_active {
+                palette::current().header_title_text
+            } else {
+                palette::current().muted_text
+            };
+
             let tab_id_clone = tab_id.clone();
             let close_id = tab_id.clone();
+            let index = position + 1;
 
             let tab_btn = button::custom(
-                row::with_children(vec![status_marker, text(display_title).size(13).into()])
-                    .spacing(6)
-                    .align_y(Alignment::Center),
+                row::with_children(vec![
+                    status_marker,
+                    text(index.to_string())
+                        .size(self.em(0.76))
+                        .class(cosmic::theme::Text::Color(
+                            palette::current().tab_index_text,
+                        ))
+                        .into(),
+                    text(display_title)
+                        .size(self.em(0.96))
+                        .font(cosmic::iced::Font {
+                            weight: if is_busy {
+                                cosmic::iced::font::Weight::Bold
+                            } else {
+                                cosmic::iced::font::Weight::Normal
+                            },
+                            ..cosmic::iced::Font::DEFAULT
+                        })
+                        .class(cosmic::theme::Text::Color(title_color))
+                        .width(Length::Fill)
+                        .into(),
+                ])
+                .spacing(self.space(0.3))
+                .align_y(Alignment::Center),
             )
             .on_press(Message::SelectTab(tab_id_clone))
             .width(Length::Fill)
-            .padding([6, 10]);
+            .padding([self.space(0.35) as u16, self.space(0.59) as u16]);
 
             let close_btn = button::icon(icons::close())
                 .on_press(Message::CloseTab(close_id))
-                .padding([4, 6]);
+                .padding([self.space(0.2) as u16, self.space(0.4) as u16]);
 
             let tab_row = row::with_children(vec![tab_btn.into(), close_btn.into()])
                 .align_y(Alignment::Center)
-                .spacing(2);
+                .spacing(self.space(0.15));
 
+            let radius = self.space(0.5);
             let tab_card = container(tab_row)
                 .width(Length::Fill)
-                .padding([1, 4])
-                .style(move |_theme| {
+                .padding([self.space(0.07) as u16, self.space(0.3) as u16])
+                .style(move |_theme: &cosmic::Theme| {
                     if is_active {
                         container::Style {
                             background: Some(palette::current().sidebar_row_active_bg.into()),
                             border: Border {
                                 color: palette::current().nav_separator,
                                 width: 1.0,
-                                radius: 6.0.into(),
+                                radius: radius.into(),
                             },
                             ..Default::default()
                         }
                     } else {
-                        container::Style {
-                            background: None,
-                            border: Border::default(),
-                            ..Default::default()
-                        }
+                        container::Style::default()
                     }
                 });
 
+            // GTK separates inactive rows with a hairline.
+            if !first_row && !is_active && !previous_active {
+                tab_rows.push(hairline(palette::current().nav_separator));
+            }
             tab_rows.push(tab_card.into());
+            previous_active = is_active;
+            first_row = false;
         }
 
         let tab_list_col = column::with_children(tab_rows).spacing(2);
@@ -621,14 +682,21 @@ impl Application for OpenCodeCosmic {
 
             let session_header = container(
                 row::with_children(vec![
-                    text(display_title).size(15).width(Length::Fill).into(),
+                    text(display_title)
+                        .size(self.em(0.9))
+                        .font(cosmic::iced::Font {
+                            weight: cosmic::iced::font::Weight::Semibold,
+                            ..cosmic::iced::Font::DEFAULT
+                        })
+                        .width(Length::Fill)
+                        .into(),
                     button::text(hint_str)
                         .on_press(Message::ToggleDrawer(DrawerPage::Settings))
                         .padding([3, 8])
                         .into(),
                 ])
                 .align_y(Alignment::Center)
-                .padding([10, 20]),
+                .padding([self.space(0.35) as u16, self.space(2.0) as u16]),
             )
             .width(Length::Fill)
             .style(|_theme| container::Style {
@@ -657,9 +725,28 @@ impl Application for OpenCodeCosmic {
 
                     let is_user = message.role == Role::User;
                     let role_text = if is_user { "YOU" } else { "AGENT" };
+                    let role_color = if is_user {
+                        palette::current().user_role_text
+                    } else {
+                        palette::current().muted_text
+                    };
 
+                    // GTK: `.message-role` 0.76em/700 plus a right-aligned
+                    // `.message-time` 0.76em.
                     let header_row = row::with_children(vec![
-                        text(role_text).size(11).width(Length::Fill).into(),
+                        text(role_text)
+                            .size(self.em(0.76))
+                            .font(cosmic::iced::Font {
+                                weight: cosmic::iced::font::Weight::Bold,
+                                ..cosmic::iced::Font::DEFAULT
+                            })
+                            .class(cosmic::theme::Text::Color(role_color))
+                            .width(Length::Fill)
+                            .into(),
+                        text(clock_time(message.created))
+                            .size(self.em(0.76))
+                            .class(cosmic::theme::Text::Color(palette::current().time_text))
+                            .into(),
                     ])
                     .align_y(Alignment::Center);
 
@@ -673,34 +760,29 @@ impl Application for OpenCodeCosmic {
                                     turn_items.push(markdown::render_markdown(
                                         &segment.text,
                                         Message::CopyText,
+                                        self.zoom,
                                     ));
                                 }
                             }
                             model::SegmentKind::Reasoning => {
                                 if !segment.text.trim().is_empty() {
-                                    let reasoning_header = text("◆ Thinking").size(11).into();
-                                    let reasoning_body = text(segment.text.trim()).size(13).into();
-                                    let reasoning_col = column::with_children(vec![
-                                        reasoning_header,
-                                        reasoning_body,
+                                    let reasoning = column::with_children(vec![
+                                        text("◆ Thinking")
+                                            .size(self.em(0.76))
+                                            .class(cosmic::theme::Text::Color(
+                                                palette::current().reasoning_text,
+                                            ))
+                                            .into(),
+                                        text(segment.text.trim())
+                                            .size(self.em(0.92))
+                                            .class(cosmic::theme::Text::Color(
+                                                palette::current().reasoning_text,
+                                            ))
+                                            .into(),
                                     ])
-                                    .spacing(4);
+                                    .spacing(self.space(0.3));
 
-                                    let reasoning_box = container(reasoning_col)
-                                        .padding([8, 12])
-                                        .width(Length::Fill)
-                                        .style(|_theme| container::Style {
-                                            background: Some(palette::current().overlay_bg.into()),
-                                            border: Border {
-                                                color: palette::current().quote_border,
-                                                width: 1.0,
-                                                radius: 4.0.into(),
-                                            },
-                                            text_color: Some(palette::current().muted_text),
-                                            ..Default::default()
-                                        });
-
-                                    turn_items.push(reasoning_box.into());
+                                    turn_items.push(reasoning.into());
                                 }
                             }
                             model::SegmentKind::Tool => {
@@ -756,10 +838,17 @@ impl Application for OpenCodeCosmic {
 
                                 let tool_header = row::with_children(vec![
                                     text(name.to_uppercase())
-                                        .size(11)
+                                        .size(self.em(0.76))
+                                        .font(cosmic::iced::Font {
+                                            weight: cosmic::iced::font::Weight::Bold,
+                                            ..cosmic::iced::Font::DEFAULT
+                                        })
+                                        .class(cosmic::theme::Text::Color(
+                                            palette::current().muted_text,
+                                        ))
                                         .width(Length::Fill)
                                         .into(),
-                                    container(text(status).size(10))
+                                    container(text(status).size(self.em(0.72)))
                                         .padding([1, 6])
                                         .style(move |_theme| container::Style {
                                             background: Some(
@@ -777,16 +866,22 @@ impl Application for OpenCodeCosmic {
                                 ])
                                 .align_y(Alignment::Center);
 
-                                let cmd_text =
-                                    text(command).font(cosmic::iced::Font::MONOSPACE).size(12);
+                                let cmd_text = text(command)
+                                    .font(cosmic::iced::Font::MONOSPACE)
+                                    .size(self.em(0.92));
 
                                 let mut tool_box_items = vec![tool_header.into(), cmd_text.into()];
 
                                 if let Some(out) = output {
                                     let out_box = container(
-                                        text(out).font(cosmic::iced::Font::MONOSPACE).size(12),
+                                        text(out)
+                                            .font(cosmic::iced::Font::MONOSPACE)
+                                            .size(self.em(0.92))
+                                            .class(cosmic::theme::Text::Color(
+                                                palette::current().code_content_text,
+                                            )),
                                     )
-                                    .padding([6, 10])
+                                    .padding([self.space(0.52) as u16, self.space(0.74) as u16])
                                     .width(Length::Fill)
                                     .style(|_theme| container::Style {
                                         background: Some(palette::current().code_block_bg.into()),
@@ -801,118 +896,127 @@ impl Application for OpenCodeCosmic {
                                     tool_box_items.push(out_box.into());
                                 }
 
-                                let tool_col = column::with_children(tool_box_items).spacing(6);
+                                let tool_col =
+                                    column::with_children(tool_box_items).spacing(self.space(0.3));
 
-                                let tool_card = container(tool_col)
-                                    .padding(10)
+                                let block_radius = self.space(0.59);
+                                let tool_block = container(tool_col)
+                                    .padding([self.space(0.52) as u16, self.space(0.74) as u16])
                                     .width(Length::Fill)
-                                    .style(|_theme| container::Style {
-                                        background: Some(palette::current().code_header_bg.into()),
+                                    .style(move |_theme: &cosmic::Theme| container::Style {
+                                        background: Some(palette::current().overlay_bg.into()),
                                         border: Border {
-                                            color: palette::current().panel_border,
+                                            color: palette::current().code_block_border,
                                             width: 1.0,
-                                            radius: 6.0.into(),
+                                            radius: block_radius.into(),
                                         },
                                         ..Default::default()
                                     });
 
-                                turn_items.push(tool_card.into());
+                                turn_items.push(tool_block.into());
                             }
                             model::SegmentKind::File => {
-                                let file_text = text(&segment.text).size(13);
+                                let file_text = text(&segment.text).size(self.em(0.92));
                                 turn_items.push(file_text.into());
                             }
                         }
                     }
 
                     if let Some(error) = message.error() {
-                        let err_box = container(text(format!("⚠ Error: {error}")).size(13))
-                            .padding([8, 12])
-                            .width(Length::Fill)
-                            .style(|_theme| container::Style {
-                                background: Some(palette::current().error_card_bg.into()),
-                                border: Border {
-                                    color: palette::current().error_card_border,
-                                    width: 1.0,
-                                    radius: 4.0.into(),
-                                },
-                                text_color: Some(palette::current().error_text),
-                                ..Default::default()
-                            });
-                        turn_items.push(err_box.into());
-                    }
+                        // GTK `.message-error-card`: tinted background, 1px
+                        // border, a 4px accent bar on the left, a bold header
+                        // and a softer body.
+                        let accent =
+                            container(row::with_children(Vec::<Element<'_, Message>>::new()))
+                                .width(Length::Fixed(4.0))
+                                .height(Length::Fill)
+                                .style(|_theme: &cosmic::Theme| container::Style {
+                                    background: Some(palette::current().error_text.into()),
+                                    ..Default::default()
+                                });
 
-                    let turn_col = column::with_children(turn_items).spacing(8);
+                        let body = column::with_children(vec![
+                            text("⚠ Error")
+                                .size(self.em(0.88))
+                                .font(cosmic::iced::Font {
+                                    weight: cosmic::iced::font::Weight::Bold,
+                                    ..cosmic::iced::Font::DEFAULT
+                                })
+                                .class(cosmic::theme::Text::Color(palette::current().error_text))
+                                .into(),
+                            text(error)
+                                .size(self.em(0.92))
+                                .class(cosmic::theme::Text::Color(
+                                    palette::current().error_body_text,
+                                ))
+                                .into(),
+                        ])
+                        .spacing(self.space(0.3))
+                        .width(Length::Fill);
 
-                    let card = container(turn_col)
-                        .padding([14, 20])
+                        let card_radius = self.space(0.44);
+                        let card = container(
+                            row::with_children(vec![accent.into(), body.into()])
+                                .spacing(self.space(1.04))
+                                .align_y(Alignment::Start),
+                        )
+                        .padding(0)
                         .width(Length::Fill)
-                        .style(move |_theme| {
-                            if is_user {
-                                container::Style {
-                                    background: Some(palette::current().user_message_bg.into()),
-                                    border: Border {
-                                        color: palette::current().message_border,
-                                        width: 1.0,
-                                        radius: 8.0.into(),
-                                    },
-                                    ..Default::default()
-                                }
-                            } else {
-                                container::Style {
-                                    background: Some(palette::current().inset_bg.into()),
-                                    border: Border {
-                                        color: palette::current().overlay_border,
-                                        width: 1.0,
-                                        radius: 8.0.into(),
-                                    },
-                                    ..Default::default()
-                                }
-                            }
-                        });
-
-                    message_elements.push(card.into());
-                }
-            }
-
-            if is_busy {
-                let busy_indicator = row::with_children(vec![
-                    inline_icon(icons::settings()).size(14).into(),
-                    text("OpenCode is thinking...").size(13).into(),
-                    button::icon(icons::stop())
-                        .padding([3, 8])
-                        .on_press(Message::StopSession)
-                        .into(),
-                ])
-                .spacing(10)
-                .align_y(Alignment::Center);
-
-                let busy_card =
-                    container(busy_indicator)
-                        .padding([8, 14])
-                        .style(|_theme| container::Style {
-                            background: Some(palette::current().card_bg.into()),
+                        .style(move |_theme: &cosmic::Theme| container::Style {
+                            background: Some(palette::current().error_card_bg.into()),
                             border: Border {
-                                color: palette::current().panel_border,
+                                color: palette::current().error_card_border,
                                 width: 1.0,
-                                radius: 6.0.into(),
+                                radius: card_radius.into(),
                             },
-                            text_color: Some(palette::current().status_busy),
                             ..Default::default()
                         });
 
-                message_elements.push(busy_card.into());
+                        turn_items.push(card.into());
+                    }
+
+                    let turn_col = column::with_children(turn_items).spacing(self.space(0.59));
+
+                    // GTK: `.message-row { padding: 1.33em 2.07em 1.48em }`
+                    // with a hairline bottom border; user turns are full-width
+                    // tinted bands.
+                    let row = container(turn_col)
+                        .padding([
+                            self.space(1.33) as u16,
+                            self.space(2.07) as u16,
+                            self.space(1.48) as u16,
+                            self.space(2.07) as u16,
+                        ])
+                        .width(Length::Fill)
+                        .style(move |_theme: &cosmic::Theme| {
+                            if is_user {
+                                container::Style {
+                                    background: Some(palette::current().user_message_bg.into()),
+                                    ..Default::default()
+                                }
+                            } else {
+                                container::Style::default()
+                            }
+                        });
+
+                    message_elements.push(row.into());
+                    message_elements.push(hairline(palette::current().message_border));
+                }
             }
 
-            let message_list = column::with_children(message_elements)
-                .spacing(12)
-                .padding(16);
+            let message_list = column::with_children(message_elements).spacing(0);
 
             let transcript_scroll = scrollable(message_list)
                 .width(Length::Fill)
                 .height(Length::Fill);
 
             main_items.push(transcript_scroll.into());
+
+            // GTK put the working/retry state in a compact pill *below* the
+            // transcript (`.transcript-status-compact`), not inside it.
+            if let Some(pill) = self.status_pill(active_id) {
+                main_items.push(pill);
+            }
 
             // Steer/Queue Tray. Pushed even when it has no rows, so the
             // composer keeps its widget state (and the caret) when a run
@@ -921,19 +1025,28 @@ impl Application for OpenCodeCosmic {
                 container(column::with_children(Vec::<Element<'_, Message>>::new()))
                     .padding([0, 16, 0, 16])
             } else {
+                // GTK: `.queue-tray-header` with a bold, padded title, then
+                // hairline-separated rows.
                 let mut tray_rows = Vec::new();
                 tray_rows.push(
-                    row::with_children(vec![
-                        text(format!("Waiting ({}):", tray_items.len()))
-                            .size(12)
-                            .width(Length::Fill)
-                            .into(),
-                        button::text("Clear all")
-                            .padding([2, 6])
-                            .on_press(Message::TrayClear)
-                            .into(),
-                    ])
-                    .align_y(Alignment::Center)
+                    container(
+                        row::with_children(vec![
+                            text(format!("Waiting ({})", tray_items.len()))
+                                .size(self.em(0.96))
+                                .font(cosmic::iced::Font {
+                                    weight: cosmic::iced::font::Weight::Bold,
+                                    ..cosmic::iced::Font::DEFAULT
+                                })
+                                .class(cosmic::theme::Text::Color(
+                                    palette::current().tray_title_text,
+                                ))
+                                .width(Length::Fill)
+                                .into(),
+                            tray_text_button("Clear all", self.zoom, Message::TrayClear),
+                        ])
+                        .align_y(Alignment::Center),
+                    )
+                    .padding([self.space(0.1) as u16, self.space(0.6) as u16])
                     .into(),
                 );
 
@@ -950,63 +1063,90 @@ impl Application for OpenCodeCosmic {
                         item.text.clone()
                     };
 
-                    let badge = container(text(delivery_label).size(10))
-                        .padding([2, 6])
-                        .style(|_theme| container::Style {
-                            background: Some(palette::current().accent_bg.into()),
-                            border: Border {
-                                radius: 4.0.into(),
-                                ..Default::default()
-                            },
-                            text_color: Some(palette::current().accent_fg),
-                            ..Default::default()
-                        });
+                    // GTK queue badges: tinted pills, amber for steers and
+                    // grey for queued turns.
+                    let is_steer = item.delivery != protocol::Delivery::Queue;
+                    let (badge_bg, badge_border, badge_fg) = if is_steer {
+                        (
+                            palette::current().badge_steer_bg,
+                            palette::current().badge_steer_border,
+                            palette::current().badge_steer_text,
+                        )
+                    } else {
+                        (
+                            palette::current().badge_queue_bg,
+                            palette::current().badge_queue_border,
+                            palette::current().badge_queue_text,
+                        )
+                    };
+
+                    let badge_radius = self.space(0.44);
+                    let badge = container(text(delivery_label).size(self.em(0.72)).font(
+                        cosmic::iced::Font {
+                            weight: cosmic::iced::font::Weight::Bold,
+                            ..cosmic::iced::Font::DEFAULT
+                        },
+                    ))
+                    .padding([self.space(0.15) as u16, self.space(0.44) as u16])
+                    .style(move |_theme: &cosmic::Theme| container::Style {
+                        background: Some(badge_bg.into()),
+                        border: Border {
+                            color: badge_border,
+                            width: 1.0,
+                            radius: badge_radius.into(),
+                        },
+                        text_color: Some(badge_fg),
+                        ..Default::default()
+                    });
 
                     let item_row = row::with_children(vec![
                         badge.into(),
-                        text(preview_text).size(13).width(Length::Fill).into(),
-                        button::text("Switch")
-                            .padding([2, 6])
-                            .on_press(Message::TrayAction(item.id.clone(), RowAction::Switch))
+                        text(preview_text)
+                            .size(self.em(0.96))
+                            .class(cosmic::theme::Text::Color(palette::current().tray_text))
+                            .width(Length::Fill)
                             .into(),
-                        button::icon(icons::close())
-                            .padding([2, 4])
-                            .on_press(Message::TrayAction(item.id.clone(), RowAction::Cancel))
-                            .into(),
+                        tray_text_button(
+                            crate::tray::switch_label(item.delivery),
+                            self.zoom,
+                            Message::TrayAction(item.id.clone(), RowAction::Switch),
+                        ),
+                        tray_icon_button(
+                            icons::close(),
+                            self.zoom,
+                            Message::TrayAction(item.id.clone(), RowAction::Cancel),
+                        ),
                     ])
-                    .spacing(8)
+                    .spacing(self.space(0.59))
                     .align_y(Alignment::Center);
 
-                    let item_card =
+                    tray_rows.push(
                         container(item_row)
-                            .padding([4, 8])
-                            .style(|_theme| container::Style {
-                                background: Some(palette::current().card_bg.into()),
-                                border: Border {
-                                    color: palette::current().panel_border,
-                                    width: 1.0,
-                                    radius: 4.0.into(),
-                                },
-                                ..Default::default()
-                            });
-
-                    tray_rows.push(item_card.into());
+                            .padding([self.space(0.3) as u16, self.space(0.6) as u16])
+                            .into(),
+                    );
+                    tray_rows.push(hairline(palette::current().tray_row_divider));
                 }
 
-                let tray_col = column::with_children(tray_rows).spacing(6);
-                let tray_container =
-                    container(tray_col)
-                        .padding(10)
-                        .width(Length::Fill)
-                        .style(|_theme| container::Style {
-                            background: Some(palette::current().tray_bg.into()),
-                            border: Border {
-                                color: palette::current().tray_border,
-                                width: 1.0,
-                                radius: 6.0.into(),
-                            },
-                            ..Default::default()
-                        });
+                let tray_radius = self.space(0.67);
+                let tray_col = column::with_children(tray_rows).spacing(0);
+                let tray_container = container(tray_col)
+                    .padding([
+                        self.space(0.25) as u16,
+                        self.space(0.3) as u16,
+                        self.space(0.3) as u16,
+                        self.space(0.3) as u16,
+                    ])
+                    .width(Length::Fill)
+                    .style(move |_theme: &cosmic::Theme| container::Style {
+                        background: Some(palette::current().tray_bg.into()),
+                        border: Border {
+                            color: palette::current().tray_border,
+                            width: 1.0,
+                            radius: tray_radius.into(),
+                        },
+                        ..Default::default()
+                    });
 
                 container(tray_container).padding([0, 16, 6, 16])
             };
@@ -1280,6 +1420,9 @@ fn shortcut(key: &Key, modifiers: Modifiers) -> Option<Message> {
                 "p" | "P" => Some(Message::ToggleDrawer(DrawerPage::Sessions)),
                 "," => Some(Message::ToggleDrawer(DrawerPage::Settings)),
                 "g" | "G" => Some(Message::FocusComposer),
+                "=" | "+" => Some(Message::ZoomIn),
+                "-" => Some(Message::ZoomOut),
+                "0" => Some(Message::ZoomReset),
                 _ => tab_index(c).map(Message::SelectTabIndex),
             },
             Key::Named(Named::Enter) => Some(Message::ComposerEnter { ctrl: true }),
@@ -1307,6 +1450,118 @@ fn shortcut(key: &Key, modifiers: Modifiers) -> Option<Message> {
 /// Widget id of the prompt composer, so a `Task` can put the caret in it.
 fn composer_id() -> cosmic::widget::Id {
     cosmic::widget::Id::new("opencode-composer")
+}
+
+/// The GTK client's zoom ladder.
+const ZOOM_STEPS: [f32; 9] = [0.7, 0.8, 0.9, 1.0, 1.1, 1.2, 1.3, 1.5, 1.75];
+
+/// The next step along [`ZOOM_STEPS`] in `direction` (clamped at both ends).
+fn next_zoom(current: f32, direction: i32) -> f32 {
+    if direction > 0 {
+        ZOOM_STEPS
+            .iter()
+            .copied()
+            .find(|step| *step > current + 0.04)
+            .unwrap_or_else(|| *ZOOM_STEPS.last().unwrap_or(&1.0))
+    } else {
+        ZOOM_STEPS
+            .iter()
+            .rev()
+            .copied()
+            .find(|step| *step < current - 0.04)
+            .unwrap_or_else(|| *ZOOM_STEPS.first().unwrap_or(&1.0))
+    }
+}
+
+/// A 1px full-width rule, for the GTK client's `border-bottom` row separators
+/// (iced's `Border` has no per-side control).
+fn hairline(color: cosmic::iced::Color) -> Element<'static, Message> {
+    container(row::with_children(Vec::<Element<'_, Message>>::new()))
+        .width(Length::Fill)
+        .height(Length::Fixed(1.0))
+        .style(move |_theme: &cosmic::Theme| container::Style {
+            background: Some(color.into()),
+            ..Default::default()
+        })
+        .into()
+}
+
+/// `HH:MM` in local time from a protocol timestamp (milliseconds, or seconds
+/// when the value is small enough to be one).
+fn clock_time(created: u64) -> String {
+    let ms = if created > 10_000_000_000 {
+        created
+    } else {
+        created.saturating_mul(1000)
+    };
+    let Ok(stamp) = jiff::Timestamp::from_millisecond(ms as i64) else {
+        return String::new();
+    };
+    let zoned = stamp.to_zoned(jiff::tz::TimeZone::system());
+    format!("{:02}:{:02}", zoned.hour(), zoned.minute())
+}
+
+/// GTK's `.queue-tray-button`: 1.85em minimum height, 1px border, its own
+/// background and text colour.
+fn tray_button_class(radius: f32) -> cosmic::theme::Button {
+    let base = move || cosmic::widget::button::Style {
+        background: Some(palette::current().tray_button_bg.into()),
+        border_radius: radius.into(),
+        border_width: 1.0,
+        border_color: palette::current().tray_button_border,
+        text_color: Some(palette::current().tray_button_text),
+        ..Default::default()
+    };
+    let hovered = move || cosmic::widget::button::Style {
+        background: Some(palette::current().action_hover_bg.into()),
+        ..base()
+    };
+    cosmic::theme::Button::Custom {
+        active: Box::new(move |_focused, _theme| base()),
+        hovered: Box::new(move |_focused, _theme| hovered()),
+        pressed: Box::new(move |_focused, _theme| base()),
+        disabled: Box::new(move |_theme| base()),
+    }
+}
+
+fn tray_text_button(label: &'static str, zoom: f32, message: Message) -> Element<'static, Message> {
+    let radius = crate::metrics::space(0.37, zoom);
+    button::custom(text(label).size(crate::metrics::em(0.96, zoom)).class(
+        cosmic::theme::Text::Color(palette::current().tray_button_text),
+    ))
+    .padding([
+        crate::metrics::space(0.3, zoom) as u16,
+        crate::metrics::space(0.7, zoom) as u16,
+    ])
+    .class(tray_button_class(radius))
+    .on_press(message)
+    .into()
+}
+
+/// The square icon twin of [`tray_text_button`].
+fn tray_icon_button(
+    handle: cosmic::widget::icon::Handle,
+    zoom: f32,
+    message: Message,
+) -> Element<'static, Message> {
+    let radius = crate::metrics::space(0.37, zoom);
+    let size = crate::metrics::em(0.92, zoom) as u16;
+    button::custom(
+        cosmic::widget::icon::icon(handle)
+            .size(size)
+            .class(cosmic::theme::Svg::custom(|_theme: &cosmic::Theme| {
+                cosmic::iced::widget::svg::Style {
+                    color: Some(palette::current().tray_button_text),
+                }
+            })),
+    )
+    .padding([
+        crate::metrics::space(0.3, zoom) as u16,
+        crate::metrics::space(0.4, zoom) as u16,
+    ])
+    .class(tray_button_class(radius))
+    .on_press(message)
+    .into()
 }
 
 /// A bundled 16px icon painted in the theme's icon colour, for inline use.
@@ -1345,6 +1600,87 @@ fn tab_index(c: &str) -> Option<usize> {
 }
 
 impl OpenCodeCosmic {
+    /// `factor` em in the current zoom, as whole pixels.
+    fn em(&self, factor: f32) -> u32 {
+        crate::metrics::em(factor, self.zoom)
+    }
+
+    /// `factor` em in the current zoom, as a logical pixel count for paddings.
+    fn space(&self, factor: f32) -> f32 {
+        crate::metrics::space(factor, self.zoom)
+    }
+
+    /// GTK's compact transcript status pill (`.transcript-status-compact`):
+    /// the working or retry state below the transcript, not a card inside it.
+    fn status_pill(&self, active_id: &str) -> Option<Element<'_, Message>> {
+        let status = self.statuses.get(active_id);
+        if !status.is_some_and(RunStatus::is_busy) {
+            return None;
+        }
+        let retry = match status {
+            Some(RunStatus::Retry { message, .. }) => Some(message.clone()),
+            _ => None,
+        };
+        let color = if retry.is_some() {
+            palette::current().status_busy
+        } else {
+            palette::current().status_pill_text
+        };
+        let label = retry.unwrap_or_else(|| "Working…".to_string());
+
+        let pill = container(
+            row::with_children(vec![
+                inline_icon(icons::settings())
+                    .size(self.em(0.92) as u16)
+                    .into(),
+                text(label)
+                    .size(self.em(0.96))
+                    .class(cosmic::theme::Text::Color(color))
+                    .into(),
+                button::icon(icons::stop())
+                    .on_press(Message::StopSession)
+                    .into(),
+            ])
+            .spacing(self.space(0.59))
+            .align_y(Alignment::Center),
+        )
+        .padding([self.space(0.52) as u16, self.space(0.89) as u16])
+        .style(|_theme: &cosmic::Theme| container::Style {
+            background: Some(palette::current().status_pill_bg.into()),
+            border: Border {
+                color: palette::current().status_pill_border,
+                width: 1.0,
+                radius: 999.0.into(),
+            },
+            ..Default::default()
+        });
+
+        Some(
+            container(pill)
+                .padding([
+                    self.space(0.59) as u16,
+                    self.space(2.07) as u16,
+                    self.space(0.74) as u16,
+                    self.space(2.07) as u16,
+                ])
+                .into(),
+        )
+    }
+
+    /// Moves one step along [`ZOOM_STEPS`] and persists the result.
+    fn zoom_step(&mut self, direction: i32) {
+        self.set_zoom(next_zoom(self.zoom, direction));
+    }
+
+    fn set_zoom(&mut self, zoom: f32) {
+        if (zoom - self.zoom).abs() < 0.001 {
+            return;
+        }
+        self.zoom = zoom;
+        self.state.zoom_level = f64::from(zoom);
+        let _ = self.state.save(&default_path());
+    }
+
     fn next_request_id(&mut self) -> u64 {
         let id = self.next_req_id;
         self.next_req_id += 1;
@@ -1881,7 +2217,52 @@ mod tests {
             message(&ch("9"), Modifiers::ALT),
             Some(Message::SelectTabIndex(8))
         ));
-        assert!(message(&ch("0"), Modifiers::CTRL).is_none());
+        // Ctrl+0 resets the zoom (GTK's Ctrl+= / Ctrl+- / Ctrl+0 ladder).
+        assert!(matches!(
+            message(&ch("0"), Modifiers::CTRL),
+            Some(Message::ZoomReset)
+        ));
+    }
+
+    #[test]
+    fn zoom_keys_follow_the_gtk_ladder() {
+        for key in ["=", "+"] {
+            assert!(matches!(
+                message(&ch(key), Modifiers::CTRL),
+                Some(Message::ZoomIn)
+            ));
+        }
+        assert!(matches!(
+            message(&ch("-"), Modifiers::CTRL),
+            Some(Message::ZoomOut)
+        ));
+        assert!(matches!(
+            message(&ch("0"), Modifiers::CTRL),
+            Some(Message::ZoomReset)
+        ));
+        assert_eq!(ZOOM_STEPS.first(), Some(&0.7));
+        assert_eq!(ZOOM_STEPS.last(), Some(&1.75));
+    }
+
+    #[test]
+    fn zoom_ladder_matches_the_gtk_steps() {
+        assert_eq!(next_zoom(1.0, 1), 1.1);
+        assert_eq!(next_zoom(1.0, -1), 0.9);
+        assert_eq!(next_zoom(1.3, 1), 1.5);
+        assert_eq!(next_zoom(0.7, -1), 0.7, "clamped at the bottom");
+        assert_eq!(next_zoom(1.75, 1), 1.75, "clamped at the top");
+        // 1em and the GTK spacing scale grow with the zoom.
+        assert_eq!(crate::metrics::em(1.0, 1.0), 13);
+        assert_eq!(crate::metrics::em(0.76, 1.75), 17);
+        assert!((crate::metrics::space(1.19, 1.2) - 18.564).abs() < 0.01);
+    }
+
+    #[test]
+    fn clock_formats_milliseconds_and_seconds() {
+        // 2026-09-26T00:00:00Z, in both protocol shapes.
+        assert_eq!(clock_time(1_790_000_000_000).len(), 5);
+        assert_eq!(clock_time(1_790_000_000).len(), 5);
+        assert!(clock_time(0).is_empty() || clock_time(0).len() == 5);
     }
 
     #[test]

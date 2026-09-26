@@ -3,6 +3,7 @@ use cosmic::iced::{Border, Length};
 use cosmic::widget::{button, column, container, row, text};
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 
+use crate::metrics::{em, space};
 use crate::palette;
 
 #[derive(Clone, Debug)]
@@ -138,6 +139,7 @@ pub fn parse_markdown(source: &str) -> Vec<MarkdownBlock> {
 pub fn render_markdown<'a, Message: Clone + 'static, F>(
     source: &str,
     on_copy: F,
+    zoom: f32,
 ) -> Element<'a, Message>
 where
     F: Fn(String) -> Message + Copy + 'static,
@@ -148,22 +150,37 @@ where
     for block in blocks {
         match block {
             MarkdownBlock::Paragraph(p) => {
-                elements.push(text(p).size(14).into());
+                elements.push(text(p).size(em(0.96, zoom)).into());
             }
             MarkdownBlock::Heading(level, h) => {
+                // GTK: .markdown-heading-1/2/3 = 1.45 / 1.28 / 1.14em.
                 let size = match level {
-                    1 => 22,
-                    2 => 18,
-                    3 => 16,
-                    _ => 14,
+                    1 => em(1.45, zoom),
+                    2 => em(1.28, zoom),
+                    3 => em(1.14, zoom),
+                    _ => em(0.96, zoom),
                 };
-                elements.push(text(h).size(size).into());
+                elements.push(
+                    text(h)
+                        .size(size)
+                        .class(cosmic::theme::Text::Color(
+                            palette::current().header_title_text,
+                        ))
+                        .into(),
+                );
             }
             MarkdownBlock::Code(lang, code) => {
                 let lang_label = lang.unwrap_or_else(|| "code".to_string());
                 let header = container(
                     row::with_children(vec![
-                        text(lang_label).size(11).width(Length::Fill).into(),
+                        text(lang_label)
+                            .size(em(0.76, zoom))
+                            .font(cosmic::iced::Font {
+                                weight: cosmic::iced::font::Weight::Bold,
+                                ..cosmic::iced::Font::DEFAULT
+                            })
+                            .width(Length::Fill)
+                            .into(),
                         button::text("Copy")
                             .padding([2, 8])
                             .on_press(on_copy(code.clone()))
@@ -171,7 +188,7 @@ where
                     ])
                     .align_y(cosmic::iced::Alignment::Center),
                 )
-                .padding([4, 10])
+                .padding([space(0.3, zoom) as u16, space(0.59, zoom) as u16])
                 .style(|_theme| container::Style {
                     background: Some(palette::current().code_header_bg.into()),
                     border: Border {
@@ -183,16 +200,17 @@ where
                     ..Default::default()
                 });
 
-                let code_text = text(code).font(cosmic::iced::Font::MONOSPACE).size(13);
+                let code_text = text(code)
+                    .font(cosmic::iced::Font::MONOSPACE)
+                    .size(em(0.92, zoom));
 
-                let code_container =
-                    container(code_text)
-                        .padding(10)
-                        .width(Length::Fill)
-                        .style(|_theme| container::Style {
-                            text_color: Some(palette::current().code_content_text),
-                            ..Default::default()
-                        });
+                let code_container = container(code_text)
+                    .padding([space(0.59, zoom) as u16, space(0.74, zoom) as u16])
+                    .width(Length::Fill)
+                    .style(|_theme| container::Style {
+                        text_color: Some(palette::current().code_content_text),
+                        ..Default::default()
+                    });
 
                 let block_col = column::with_children(vec![header.into(), code_container.into()]);
 
@@ -212,19 +230,26 @@ where
                 elements.push(code_block_container.into());
             }
             MarkdownBlock::List(items) => {
-                let mut list_col = column::with_capacity(items.len()).spacing(4);
+                let mut list_col = column::with_capacity(items.len()).spacing(space(0.3, zoom));
                 for item in items {
                     let bullet_item = row::with_children(vec![
-                        text("• ").size(14).into(),
-                        text(item).size(14).width(Length::Fill).into(),
+                        text("• ")
+                            .size(em(0.96, zoom))
+                            .class(cosmic::theme::Text::Color(palette::current().muted_text))
+                            .into(),
+                        text(item).size(em(0.96, zoom)).width(Length::Fill).into(),
                     ]);
                     list_col = list_col.push(bullet_item);
                 }
-                elements.push(container(list_col).padding([2, 8]).into());
+                elements.push(
+                    container(list_col)
+                        .padding([space(0.15, zoom) as u16, space(0.59, zoom) as u16])
+                        .into(),
+                );
             }
             MarkdownBlock::Blockquote(quote) => {
-                let q = container(text(quote).size(13))
-                    .padding([6, 12])
+                let q = container(text(quote).size(em(0.96, zoom)))
+                    .padding([space(0.4, zoom) as u16, space(0.7, zoom) as u16])
                     .style(|_theme| container::Style {
                         background: Some(palette::current().overlay_bg.into()),
                         border: Border {
