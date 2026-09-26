@@ -13,12 +13,20 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: dtolnay/rust-toolchain@2eae45db285e407f22119950686d47e1101e071b # 1.88.0
+      # libcosmic 03d7dcb pulls cosmic-text 0.19, which needs Rust >= 1.93.
+      # 1.98.1 matches the toolchain in Dockerfile.
+      - uses: dtolnay/rust-toolchain@ce678459e9fc7500d337468f904b95f1b5c10b5e # 1.98.1
         with:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
-      - name: Install GTK
-        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev libgtk-4-dev xvfb xclip xdotool xauth python3
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            cmake libdbus-1-dev libexpat1-dev libfontconfig1-dev libfreetype6-dev \
+            libgl1-mesa-dev libxkbcommon-dev libwayland-dev pkg-config \
+            libgl1-mesa-dri libxkbcommon-x11-0 \
+            xvfb xdotool xauth python3
       - name: Format
         run: cargo fmt --check
       - name: Lint
@@ -27,9 +35,12 @@ jobs:
         run: cargo test --all-targets --locked
       - name: Fake v2 server self-test
         run: python3 tests/fake_v2/selftest.py
-      - name: GTK smoke test
+      - name: Headless smoke test
         run: xvfb-run --auto-servernum bash tests/smoke-ui.sh
-      - name: Remote flow GTK test (fake v2 server)
-        run: xvfb-run --auto-servernum -s "-screen 0 1280x1024x24" bash tests/remote-flow-ui.sh
+      - name: Headless keyboard-shortcut test
+        run: xvfb-run --auto-servernum bash tests/shortcut-ui.sh
+      # TODO(port): tests/remote-flow-ui.sh still drives the GTK client's widget
+      # layout (pixel coordinates) and its GTK-only cancel-form shortcut, so it
+      # cannot run against the COSMIC client yet.
       # The real OpenCode 2.0.8 end-to-end run (tests/v2/e2e.sh) needs Docker and
       # downloads the pinned CLI when its image is built, so it runs locally only.

@@ -5,9 +5,13 @@ use std::{
 
 use async_channel::Receiver;
 use cosmic::app::{ContextDrawer, Core, Task, context_drawer};
-use cosmic::iced::{Alignment, Border, Color, Length, Subscription};
+use cosmic::iced::{
+    Alignment, Border, Color, Event, Length, Subscription,
+    event::listen_with,
+    keyboard::{self, Key, Modifiers, key::Named},
+};
 use cosmic::widget::{button, column, container, row, scrollable, text, text_input};
-use cosmic::{Application, Element};
+use cosmic::{Application, ApplicationExt, Element};
 use serde::Deserialize;
 
 use crate::{
@@ -19,7 +23,7 @@ use crate::{
     model::{self, Conversation, ModelCatalog, Role, RunStatus, Session, TrayItem},
     persist::{PersistedState, default_path},
     preview, protocol,
-    tray::{RowAction, SendMode},
+    tray::{RowAction, SendMode, enter_mode},
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -53,6 +57,8 @@ pub struct OpenCodeCosmic {
     username_input: String,
     password_input: String,
     next_req_id: u64,
+    /// Set when the active session changes: the next tick focuses the composer.
+    focus_composer: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -62,8 +68,17 @@ pub enum Message {
     SelectTab(String),
     CloseTab(String),
     NewSession,
+    CloseActiveTab,
+    CycleTab(i32),
+    SelectTabIndex(usize),
     ComposerInput(String),
     SendPrompt(SendMode),
+    /// Enter in the composer; the run status decides send/steer/queue.
+    ComposerEnter {
+        ctrl: bool,
+    },
+    /// Puts the caret back in the composer (Ctrl+G).
+    FocusComposer,
     StopSession,
     TrayAction(String, RowAction),
     TrayClear,
@@ -129,6 +144,7 @@ impl Application for OpenCodeCosmic {
             username_input: username,
             password_input: flags.password.clone().unwrap_or_default(),
             next_req_id: 1,
+            focus_composer: false,
         };
 
         if flags.preview {
@@ -147,6 +163,7 @@ impl Application for OpenCodeCosmic {
                 app.tabs.push(tab.id.clone());
             }
             app.active_session_id = s_state.active;
+            app.focus_composer = app.active_session_id.is_some();
 
             for tab in &s_state.tabs {
                 let m_event = mock.handle(Command::LoadMessages {
@@ -178,13 +195,30 @@ impl Application for OpenCodeCosmic {
             }
         }
 
-        (app, Task::none())
+        // Without this the compositor shows an empty window title.
+        let title = if flags.preview {
+            "OpenCode Preview".to_string()
+        } else {
+            "OpenCode".to_string()
+        };
+        let title_task = match app.core().main_window_id() {
+            Some(id) => app.set_window_title(title, id),
+            None => Task::none(),
+        };
+
+        (app, title_task)
     }
 
     fn update(&mut self, message: Self::Message) -> Task<Self::Message> {
         match message {
             Message::Tick => {
+                // Focus the composer one tick after the active session changed,
+                // so the widget exists by the time the focus operation runs.
+                let focus = std::mem::take(&mut self.focus_composer);
                 self.drain_events();
+                if focus {
+                    return cosmic::widget::text_input::focus(composer_id());
+                }
                 Task::none()
             }
             Message::ToggleSidebar => {
@@ -203,6 +237,22 @@ impl Application for OpenCodeCosmic {
                 self.create_session();
                 Task::none()
             }
+            Message::CloseActiveTab => {
+                if let Some(id) = self.active_session_id.clone() {
+                    self.close_tab(&id);
+                }
+                Task::none()
+            }
+            Message::CycleTab(delta) => {
+                self.cycle_tab(delta);
+                Task::none()
+            }
+            Message::SelectTabIndex(index) => {
+                if let Some(id) = self.tabs.get(index).cloned() {
+                    self.set_active_session(&id);
+                }
+                Task::none()
+            }
             Message::ComposerInput(val) => {
                 self.composer_text = val;
                 Task::none()
@@ -211,6 +261,16 @@ impl Application for OpenCodeCosmic {
                 self.send_composer_prompt(mode);
                 Task::none()
             }
+            Message::ComposerEnter { ctrl } => {
+                // Enter steers while a run is active, Ctrl+Enter queues a new turn.
+                let busy = self
+                    .active_session_id
+                    .as_deref()
+                    .is_some_and(|id| self.is_session_busy(id));
+                self.send_composer_prompt(enter_mode(busy, ctrl));
+                Task::none()
+            }
+            Message::FocusComposer => cosmic::widget::text_input::focus(composer_id()),
             Message::StopSession => {
                 self.stop_active_session();
                 Task::none()
@@ -475,7 +535,11 @@ impl Application for OpenCodeCosmic {
         // 2. Build Main Content Pane
         let mut main_items = Vec::new();
 
-        if let Some(err) = &self.error_banner {
+        // The banner and tray nodes stay in the tree even when they are empty:
+        // a sibling appearing above the composer would otherwise be matched
+        // against the composer's own widget state, dropping its focus while a
+        // run starts.
+        let banner_node = if let Some(err) = &self.error_banner {
             let banner = row::with_children(vec![
                 text(format!("⚠ {err}")).size(13).width(Length::Fill).into(),
                 button::text("Dismiss")
@@ -485,8 +549,12 @@ impl Application for OpenCodeCosmic {
             .padding(8)
             .spacing(8);
 
-            main_items.push(container(banner).padding(4).into());
-        }
+            container(banner).padding(4)
+        } else {
+            container(column::with_children(Vec::<Element<'_, Message>>::new()))
+        };
+
+        main_items.push(banner_node.into());
 
         if let Some(active_id) = &self.active_session_id {
             let active_title = self
@@ -807,8 +875,13 @@ impl Application for OpenCodeCosmic {
 
             main_items.push(transcript_scroll.into());
 
-            // Steer/Queue Tray
-            if !tray_items.is_empty() {
+            // Steer/Queue Tray. Pushed even when it has no rows, so the
+            // composer keeps its widget state (and the caret) when a run
+            // starts and the tray fills up.
+            let tray_outer = if tray_items.is_empty() {
+                container(column::with_children(Vec::<Element<'_, Message>>::new()))
+                    .padding([0, 16, 0, 16])
+            } else {
                 let mut tray_rows = Vec::new();
                 tray_rows.push(
                     row::with_children(vec![
@@ -896,9 +969,10 @@ impl Application for OpenCodeCosmic {
                             ..Default::default()
                         });
 
-                let tray_outer = container(tray_container).padding([0, 16, 6, 16]);
-                main_items.push(tray_outer.into());
-            }
+                container(tray_container).padding([0, 16, 6, 16])
+            };
+
+            main_items.push(tray_outer.into());
 
             // Composer area
             let send_buttons = if is_busy {
@@ -924,8 +998,10 @@ impl Application for OpenCodeCosmic {
             let composer_frame = container(
                 row::with_children(vec![
                     text_input("Ask OpenCode...", &self.composer_text)
+                        .id(composer_id())
                         .on_input(Message::ComposerInput)
-                        .on_submit(|_| Message::SendPrompt(SendMode::Send))
+                        // Enter / Ctrl+Enter are handled by the key subscription (see `shortcut`),
+                        // so the widget must not also submit on Enter.
                         .width(Length::Fill)
                         .into(),
                     send_buttons.into(),
@@ -1125,7 +1201,69 @@ impl Application for OpenCodeCosmic {
     }
 
     fn subscription(&self) -> Subscription<Self::Message> {
-        cosmic::iced::time::every(Duration::from_millis(50)).map(|_| Message::Tick)
+        Subscription::batch([
+            cosmic::iced::time::every(Duration::from_millis(50)).map(|_| Message::Tick),
+            listen_with(|event, _status, _window| match event {
+                Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. }) => {
+                    shortcut(&key, modifiers)
+                }
+                _ => None,
+            }),
+        ])
+    }
+}
+
+/// Keyboard shortcuts, mirroring the GTK client's key controller.
+///
+/// Shortcuts advertised in the UI ("Ctrl+P", "Ctrl+,", "Ctrl+Enter") must
+/// resolve here. Enter reports whether Ctrl is held; the run status then
+/// decides between send, steer and queue (see [`enter_mode`]).
+fn shortcut(key: &Key, modifiers: Modifiers) -> Option<Message> {
+    if modifiers.control() {
+        return match key {
+            Key::Character(c) => match c.as_str() {
+                "t" | "T" => Some(Message::NewSession),
+                "b" | "B" => Some(Message::ToggleSidebar),
+                "w" | "W" => Some(Message::CloseActiveTab),
+                "p" | "P" => Some(Message::ToggleDrawer(DrawerPage::Sessions)),
+                "," => Some(Message::ToggleDrawer(DrawerPage::Settings)),
+                "g" | "G" => Some(Message::FocusComposer),
+                _ => tab_index(c).map(Message::SelectTabIndex),
+            },
+            Key::Named(Named::Enter) => Some(Message::ComposerEnter { ctrl: true }),
+            Key::Named(Named::Tab) => {
+                Some(Message::CycleTab(if modifiers.shift() { -1 } else { 1 }))
+            }
+            _ => None,
+        };
+    }
+
+    if modifiers.alt() {
+        return match key {
+            Key::Character(c) => tab_index(c).map(Message::SelectTabIndex),
+            _ => None,
+        };
+    }
+
+    match key {
+        Key::Named(Named::Enter) => Some(Message::ComposerEnter { ctrl: false }),
+        Key::Named(Named::Escape) => Some(Message::CloseDrawer),
+        _ => None,
+    }
+}
+
+/// Widget id of the prompt composer, so a `Task` can put the caret in it.
+fn composer_id() -> cosmic::widget::Id {
+    cosmic::widget::Id::new("opencode-composer")
+}
+
+/// Maps a character to a zero-based tab index for the `1`..`9` shortcuts.
+fn tab_index(c: &str) -> Option<usize> {
+    let digit = c.parse::<usize>().ok()?;
+    if (1..=9).contains(&digit) {
+        Some(digit - 1)
+    } else {
+        None
     }
 }
 
@@ -1238,6 +1376,7 @@ impl OpenCodeCosmic {
 
                 if self.active_session_id.is_none() {
                     self.active_session_id = self.tabs.first().cloned();
+                    self.focus_composer = self.active_session_id.is_some();
                 }
 
                 if let Some(active_id) = &self.active_session_id {
@@ -1311,6 +1450,7 @@ impl OpenCodeCosmic {
                 self.sessions.insert(id.clone(), session);
                 self.tabs.push(id.clone());
                 self.active_session_id = Some(id.clone());
+                self.focus_composer = true;
 
                 if let Some(api) = &self.api {
                     api.send(Command::LoadMessages {
@@ -1346,6 +1486,7 @@ impl OpenCodeCosmic {
 
     fn set_active_session(&mut self, id: &str) {
         self.active_session_id = Some(id.to_string());
+        self.focus_composer = true;
         if !self.conversations.contains_key(id) {
             if let Some(api) = &self.api {
                 api.send(Command::LoadMessages {
@@ -1367,6 +1508,22 @@ impl OpenCodeCosmic {
         if self.active_session_id.as_deref() == Some(id) {
             self.active_session_id = self.tabs.first().cloned();
         }
+    }
+
+    /// Moves the active tab by `delta` positions, wrapping around.
+    fn cycle_tab(&mut self, delta: i32) {
+        if self.tabs.len() < 2 {
+            return;
+        }
+        let current = self
+            .active_session_id
+            .as_ref()
+            .and_then(|id| self.tabs.iter().position(|tab| tab == id))
+            .unwrap_or(0);
+        let len = self.tabs.len() as i32;
+        let next = (current as i32 + delta).rem_euclid(len) as usize;
+        let id = self.tabs[next].clone();
+        self.set_active_session(&id);
     }
 
     fn open_session(&mut self, id: &str) {
@@ -1553,5 +1710,124 @@ impl OpenCodeCosmic {
 
     fn active_jobs_count(&self) -> usize {
         self.jobs.rows(self.active_session_id.as_deref()).len()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ch(value: &str) -> Key {
+        Key::Character(value.into())
+    }
+
+    fn message(key: &Key, modifiers: Modifiers) -> Option<Message> {
+        shortcut(key, modifiers)
+    }
+
+    #[test]
+    fn advertised_shortcuts_resolve() {
+        assert!(matches!(
+            message(&ch("p"), Modifiers::CTRL),
+            Some(Message::ToggleDrawer(DrawerPage::Sessions))
+        ));
+        assert!(matches!(
+            message(&ch(","), Modifiers::CTRL),
+            Some(Message::ToggleDrawer(DrawerPage::Settings))
+        ));
+        assert!(matches!(
+            message(&ch("t"), Modifiers::CTRL),
+            Some(Message::NewSession)
+        ));
+        assert!(matches!(
+            message(&ch("w"), Modifiers::CTRL),
+            Some(Message::CloseActiveTab)
+        ));
+        assert!(matches!(
+            message(&ch("b"), Modifiers::CTRL),
+            Some(Message::ToggleSidebar)
+        ));
+        assert!(matches!(
+            message(&ch("g"), Modifiers::CTRL),
+            Some(Message::FocusComposer)
+        ));
+    }
+
+    #[test]
+    fn uppercase_variants_match_too() {
+        assert!(matches!(
+            message(&ch("P"), Modifiers::CTRL),
+            Some(Message::ToggleDrawer(DrawerPage::Sessions))
+        ));
+        assert!(matches!(
+            message(&ch("T"), Modifiers::CTRL),
+            Some(Message::NewSession)
+        ));
+    }
+
+    #[test]
+    fn enter_reports_whether_ctrl_is_held() {
+        let enter = Key::Named(Named::Enter);
+        assert!(matches!(
+            message(&enter, Modifiers::NONE),
+            Some(Message::ComposerEnter { ctrl: false })
+        ));
+        assert!(matches!(
+            message(&enter, Modifiers::CTRL),
+            Some(Message::ComposerEnter { ctrl: true })
+        ));
+        // The run status turns these into send/steer/queue (tray::enter_mode).
+        assert_eq!(enter_mode(false, false), SendMode::Send);
+        assert_eq!(enter_mode(true, false), SendMode::Steer);
+        assert_eq!(enter_mode(true, true), SendMode::Queue);
+    }
+
+    #[test]
+    fn tab_cycling_wraps_with_shift() {
+        assert!(matches!(
+            message(&Key::Named(Named::Tab), Modifiers::CTRL),
+            Some(Message::CycleTab(1))
+        ));
+        assert!(matches!(
+            message(&Key::Named(Named::Tab), Modifiers::CTRL | Modifiers::SHIFT),
+            Some(Message::CycleTab(-1))
+        ));
+    }
+
+    #[test]
+    fn digits_select_tabs_with_ctrl_or_alt() {
+        assert!(matches!(
+            message(&ch("3"), Modifiers::CTRL),
+            Some(Message::SelectTabIndex(2))
+        ));
+        assert!(matches!(
+            message(&ch("9"), Modifiers::ALT),
+            Some(Message::SelectTabIndex(8))
+        ));
+        assert!(message(&ch("0"), Modifiers::CTRL).is_none());
+    }
+
+    #[test]
+    fn escape_closes_the_drawer() {
+        assert!(matches!(
+            message(&Key::Named(Named::Escape), Modifiers::NONE),
+            Some(Message::CloseDrawer)
+        ));
+    }
+
+    #[test]
+    fn typed_text_is_never_swallowed() {
+        // Plain keys must reach the composer instead of triggering a shortcut.
+        for value in ["t", "p", "b", "w", ",", "1", "9", "0"] {
+            assert!(
+                message(&ch(value), Modifiers::NONE).is_none(),
+                "plain {value:?} must not trigger a shortcut"
+            );
+            assert!(
+                message(&ch(value), Modifiers::SHIFT).is_none(),
+                "shift+{value:?} must not trigger a shortcut"
+            );
+        }
+        assert!(message(&ch("q"), Modifiers::CTRL).is_none());
     }
 }

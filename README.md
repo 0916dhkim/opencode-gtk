@@ -43,3 +43,19 @@ cargo run -- --preview
 --cf-access-client-secret    Cloudflare Access client secret
 --preview                    Launch offline mock preview UI
 ```
+
+## Keyboard Shortcuts
+
+| Key | Action |
+| --- | --- |
+| `Ctrl+T` | New session |
+| `Ctrl+W` | Close the active tab |
+| `Ctrl+Tab` / `Ctrl+Shift+Tab` | Next / previous tab |
+| `Ctrl+1` … `Ctrl+9`, `Alt+1` … `Alt+9` | Select a tab by position |
+| `Ctrl+B` | Fold the sidebar |
+| `Ctrl+P` | Session search drawer |
+| `Ctrl+,` | Settings drawer |
+| `Ctrl+G` | Put the caret back in the prompt composer |
+| `Enter` | Send; steers into the run while a session is running |
+| `Ctrl+Enter` | Queue a follow-up turn while a session is running |
+| `Escape` | Close the open drawer |

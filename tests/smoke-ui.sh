@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# Headless GTK smoke test: the window opens and survives the everyday
-# shortcuts, both in --preview mode (canned v2 data, no network) and against
-# an unreachable server. Run it only headless:
+# Headless smoke test for the COSMIC client: the window opens and survives the
+# everyday shortcuts, both in --preview mode (canned v2 data, no network) and
+# against an unreachable server. Run it only headless:
 #   CI:     xvfb-run --auto-servernum bash tests/smoke-ui.sh
-#   Docker: docker run --rm --platform linux/amd64 -v "$PWD":/app -w /app \
-#             opencode-gtk-ui-test-amd64-v4:latest bash tests/smoke-ui.sh
+#   Docker: docker run --rm --platform linux/amd64 -v "$PWD":/repo -w /repo \
+#             opencode-cosmic-builder-amd64:latest bash tests/smoke-ui.sh
+#           (that image needs `apt-get install -y xdotool` first)
 # Without DISPLAY it starts its own Xvfb. SMOKE_BINARY=path skips the build;
 # SMOKE_SHOTS=dir saves a screenshot of each run.
 set -euo pipefail
@@ -50,13 +51,13 @@ alive() { kill -0 "${pid}" 2>/dev/null; }
 run() {
   local name="$1" window="" key
   shift
+  mkdir -p "${temporary}/${name}/runtime"
+  chmod 700 "${temporary}/${name}/runtime"
   XDG_CONFIG_HOME="${temporary}/${name}/config" \
   XDG_DATA_HOME="${temporary}/${name}/data" \
   XDG_CACHE_HOME="${temporary}/${name}/cache" \
+  XDG_RUNTIME_DIR="${temporary}/${name}/runtime" \
   GSETTINGS_BACKEND=memory \
-  GDK_BACKEND=x11 \
-  GTK_A11Y=none \
-  NO_AT_BRIDGE=1 \
   "${binary}" "$@" >"${temporary}/${name}.log" 2>&1 &
   pid=$!
   # The first start in a fresh container also builds the font cache.
