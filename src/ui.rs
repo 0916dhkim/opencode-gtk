@@ -95,6 +95,7 @@ pub enum Message {
     SearchInput(String),
     SelectSession(String),
     SelectModel(String),
+    SelectVariant(String),
     SettingsUrlInput(String),
     SettingsUsernameInput(String),
     SettingsPasswordInput(String),
@@ -332,6 +333,10 @@ impl Application for OpenCodeCosmic {
             }
             Message::SelectModel(model_id) => {
                 self.switch_model(&model_id);
+                Task::none()
+            }
+            Message::SelectVariant(variant) => {
+                self.switch_variant(&variant);
                 Task::none()
             }
             Message::SettingsUrlInput(url) => {
@@ -1152,6 +1157,32 @@ impl Application for OpenCodeCosmic {
                     .width(Length::Shrink)
                     .into(),
                 );
+
+                if let Some(model) = model_id
+                    .as_ref()
+                    .and_then(|id| catalog.models.iter().find(|model| &model.model_id == id))
+                    .filter(|model| !model.variants.is_empty())
+                {
+                    let mut labels = vec!["Default".to_string()];
+                    labels.extend(model.variants.iter().cloned());
+                    let mut variants = vec![String::new()];
+                    variants.extend(model.variants.iter().cloned());
+                    let selected = self
+                        .sessions
+                        .get(active_id)
+                        .and_then(|session| session.model.as_ref())
+                        .and_then(|model| model.variant.as_ref())
+                        .and_then(|variant| model.variants.iter().position(|v| v == variant))
+                        .map(|index| index + 1)
+                        .unwrap_or(0);
+                    footer_items.push(
+                        cosmic::widget::dropdown::dropdown(labels, Some(selected), move |index| {
+                            Message::SelectVariant(variants.get(index).cloned().unwrap_or_default())
+                        })
+                        .width(Length::Shrink)
+                        .into(),
+                    );
+                }
             }
 
             footer_items.push(
@@ -1696,6 +1727,11 @@ fn tab_index(c: &str) -> Option<usize> {
     }
 }
 
+/// The first effort-menu entry is the unqualified model selection.
+fn variant_selection(selection: &str) -> Option<String> {
+    (!selection.is_empty()).then(|| selection.to_string())
+}
+
 impl OpenCodeCosmic {
     /// `factor` em in the current zoom, as whole pixels.
     fn em(&self, factor: f32) -> u32 {
@@ -2169,6 +2205,17 @@ impl OpenCodeCosmic {
     }
 
     fn switch_model(&mut self, model_id: &str) {
+        self.send_model_selection(model_id, None);
+    }
+
+    fn switch_variant(&mut self, variant: &str) {
+        let Some(model_id) = self.active_session_model_id() else {
+            return;
+        };
+        self.send_model_selection(&model_id, variant_selection(variant));
+    }
+
+    fn send_model_selection(&mut self, model_id: &str, variant: Option<String>) {
         let Some(active_id) = self.active_session_id.clone() else {
             return;
         };
@@ -2200,7 +2247,7 @@ impl OpenCodeCosmic {
                 model: protocol::ModelRef {
                     id: model_id.to_string(),
                     provider_id,
-                    variant: None,
+                    variant,
                 },
             });
         }
@@ -2287,6 +2334,12 @@ impl OpenCodeCosmic {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn effort_default_and_named_selection_map_to_model_variants() {
+        assert_eq!(variant_selection(""), None);
+        assert_eq!(variant_selection("medium"), Some("medium".to_string()));
+    }
 
     fn ch(value: &str) -> Key {
         Key::Character(value.into())
