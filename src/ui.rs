@@ -31,6 +31,10 @@ use crate::{
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DrawerPage {
+    /// GTK's new-session palette.
+    NewSession,
+    /// GTK's rename dialog (title + session ID).
+    Rename,
     Jobs,
     Sessions,
     Settings,
@@ -64,6 +68,11 @@ pub struct OpenCodeCosmic {
     focus_composer: bool,
     /// UI zoom, mirroring the GTK client's `zoom_level` (0.7 … 1.75).
     zoom: f32,
+    /// Locations the server knows (`project.list`), for GTK's new-session
+    /// palette.
+    projects: Vec<model::Project>,
+    /// The rename palette's title entry.
+    rename_input: String,
     /// Files picked with the paperclip for the next prompt.
     pending_attachments: Vec<PathBuf>,
     /// Set while the file dialog runs on its own thread.
@@ -88,6 +97,12 @@ pub enum Message {
     },
     /// Puts the caret back in the composer (Ctrl+G).
     FocusComposer,
+    /// Creates a session in a palette-chosen location.
+    CreateSessionIn(String),
+    /// Opens the rename palette for the active session.
+    OpenRename,
+    RenameInput(String),
+    ApplyRename,
     /// Opens the file dialog for the composer's attachments.
     PickAttachments,
     RemoveAttachment(usize),
@@ -167,6 +182,8 @@ impl Application for OpenCodeCosmic {
             next_req_id: 1,
             focus_composer: false,
             zoom,
+            projects: Vec::new(),
+            rename_input: String::new(),
             pending_attachments: Vec::new(),
             attachment_picker: None,
         };
@@ -205,6 +222,21 @@ impl Application for OpenCodeCosmic {
             for event in mock.take_server_events() {
                 app.handle_ui_event(event);
             }
+            app.projects = vec![
+                model::Project {
+                    worktree: "/repo".to_string(),
+                    name: Some("opencode".to_string()),
+                },
+                model::Project {
+                    worktree: "/state/workspace".to_string(),
+                    name: Some("workspace".to_string()),
+                },
+                model::Project {
+                    worktree: "/state/other".to_string(),
+                    name: Some("other".to_string()),
+                },
+            ];
+
             // Preview mode is the screenshot/demo surface: show the paperclip
             // chips without a real dialog.
             app.pending_attachments = vec![
@@ -277,7 +309,25 @@ impl Application for OpenCodeCosmic {
                 Task::none()
             }
             Message::NewSession => {
-                self.create_session();
+                self.active_drawer = Some(DrawerPage::NewSession);
+                Task::none()
+            }
+            Message::CreateSessionIn(directory) => {
+                self.active_drawer = None;
+                self.create_session(&directory);
+                Task::none()
+            }
+            Message::OpenRename => {
+                self.rename_input = self.active_session_title();
+                self.active_drawer = Some(DrawerPage::Rename);
+                Task::none()
+            }
+            Message::RenameInput(value) => {
+                self.rename_input = value;
+                Task::none()
+            }
+            Message::ApplyRename => {
+                self.apply_rename();
                 Task::none()
             }
             Message::CloseActiveTab => {
@@ -305,6 +355,10 @@ impl Application for OpenCodeCosmic {
                 Task::none()
             }
             Message::ComposerEnter { ctrl } => {
+                if self.active_drawer == Some(DrawerPage::NewSession) {
+                    self.confirm_new_session();
+                    return Task::none();
+                }
                 // Enter steers while a run is active, Ctrl+Enter queues a new turn.
                 let busy = self
                     .active_session_id
@@ -542,7 +596,17 @@ impl Application for OpenCodeCosmic {
                 .on_press(Message::CloseTab(close_id))
                 .padding([self.space(0.2) as u16, self.space(0.4) as u16]);
 
-            let tab_row = row::with_children(vec![tab_btn.into(), close_btn.into()])
+            // GTK showed rename and close on the active tab.
+            let rename_btn = button::icon(icons::edit())
+                .padding([self.space(0.2) as u16, self.space(0.2) as u16])
+                .on_press(Message::OpenRename);
+
+            let mut tab_row_items = vec![tab_btn.into()];
+            if is_active {
+                tab_row_items.push(rename_btn.into());
+            }
+            tab_row_items.push(close_btn.into());
+            let tab_row = row::with_children(tab_row_items)
                 .align_y(Alignment::Center)
                 .spacing(self.space(0.15));
 
@@ -715,7 +779,7 @@ impl Application for OpenCodeCosmic {
                 .map(|s| s.title.as_str())
                 .unwrap_or(active_id.as_str());
             let active_model = self.active_session_model_label();
-            let usage = self.active_context_usage();
+            let usage = self.context_usage_raw();
 
             let hint_str = if usage.is_empty() {
                 format!("Model: {active_model}")
@@ -1299,50 +1363,51 @@ impl Application for OpenCodeCosmic {
 
             let mut composer_items: Vec<Element<'_, Message>> = Vec::new();
 
-            if !self.pending_attachments.is_empty() {
-                let chip_radius = self.space(0.44);
-                let chips: Vec<Element<'_, Message>> = self
-                    .pending_attachments
-                    .iter()
-                    .enumerate()
-                    .map(|(index, path)| {
-                        container(
-                            row::with_children(vec![
-                                inline_icon(icons::attach())
-                                    .size(self.em(0.76) as u16)
-                                    .into(),
-                                text(attachment_label(path))
-                                    .size(self.em(0.88))
-                                    .class(cosmic::theme::Text::Color(palette::current().tray_text))
-                                    .into(),
-                                button::icon(icons::close())
-                                    .padding([1, 3])
-                                    .on_press(Message::RemoveAttachment(index))
-                                    .into(),
-                            ])
-                            .spacing(self.space(0.3))
-                            .align_y(Alignment::Center),
-                        )
-                        .padding([self.space(0.15) as u16, self.space(0.44) as u16])
-                        .style(move |_theme: &cosmic::Theme| container::Style {
-                            background: Some(palette::current().card_bg.into()),
-                            border: Border {
-                                color: palette::current().panel_border,
-                                width: 1.0,
-                                radius: chip_radius.into(),
-                            },
-                            ..Default::default()
-                        })
-                        .into()
-                    })
-                    .collect();
-                composer_items.push(
-                    row::with_children(chips)
+            // The chip row stays in the tree even when empty: dropping it
+            // would shift the prompt input's widget state (iced matches
+            // siblings positionally) and panic on the next frame.
+            let chip_radius = self.space(0.44);
+            let chips: Vec<Element<'_, Message>> = self
+                .pending_attachments
+                .iter()
+                .enumerate()
+                .map(|(index, path)| {
+                    container(
+                        row::with_children(vec![
+                            inline_icon(icons::attach())
+                                .size(self.em(0.76) as u16)
+                                .into(),
+                            text(attachment_label(path))
+                                .size(self.em(0.88))
+                                .class(cosmic::theme::Text::Color(palette::current().tray_text))
+                                .into(),
+                            button::icon(icons::close())
+                                .padding([1, 3])
+                                .on_press(Message::RemoveAttachment(index))
+                                .into(),
+                        ])
                         .spacing(self.space(0.3))
-                        .wrap()
-                        .into(),
-                );
-            }
+                        .align_y(Alignment::Center),
+                    )
+                    .padding([self.space(0.15) as u16, self.space(0.44) as u16])
+                    .style(move |_theme: &cosmic::Theme| container::Style {
+                        background: Some(palette::current().card_bg.into()),
+                        border: Border {
+                            color: palette::current().panel_border,
+                            width: 1.0,
+                            radius: chip_radius.into(),
+                        },
+                        ..Default::default()
+                    })
+                    .into()
+                })
+                .collect();
+            composer_items.push(
+                row::with_children(chips)
+                    .spacing(self.space(0.3))
+                    .wrap()
+                    .into(),
+            );
 
             composer_items.push(
                 text_input("Ask OpenCode...", &self.composer_text)
@@ -1509,6 +1574,8 @@ impl Application for OpenCodeCosmic {
             DrawerPage::Jobs => None,
             DrawerPage::Sessions => Some(self.sessions_palette()),
             DrawerPage::Settings => Some(self.settings_palette()),
+            DrawerPage::NewSession => Some(self.new_session_palette()),
+            DrawerPage::Rename => Some(self.rename_palette()),
         }
     }
 
@@ -1561,6 +1628,7 @@ fn shortcut(key: &Key, modifiers: Modifiers) -> Option<Message> {
     }
 
     match key {
+        Key::Named(Named::F2) => Some(Message::OpenRename),
         Key::Named(Named::Enter) => Some(Message::ComposerEnter { ctrl: false }),
         Key::Named(Named::Escape) => Some(Message::CloseDrawer),
         _ => None,
@@ -2007,7 +2075,144 @@ impl OpenCodeCosmic {
         )
     }
 
-    /// GTK's connection settings palette.
+    /// GTK's new-session palette: search over the known locations.
+    fn new_session_palette(&self) -> Element<'_, Message> {
+        let query = self.search_query.to_lowercase();
+        let mut rows: Vec<Element<'_, Message>> = Vec::new();
+
+        for project in self.filtered_projects(&query) {
+            let radius = self.space(0.44);
+            let name = project
+                .name
+                .clone()
+                .unwrap_or_else(|| project.worktree.clone());
+            rows.push(
+                button::custom(
+                    column::with_children(vec![
+                        text(name)
+                            .size(self.em(0.93))
+                            .font(cosmic::iced::Font {
+                                weight: cosmic::iced::font::Weight::Semibold,
+                                ..cosmic::iced::Font::DEFAULT
+                            })
+                            .width(Length::Fill)
+                            .into(),
+                        text(project.worktree.clone())
+                            .size(self.em(0.81))
+                            .class(cosmic::theme::Text::Color(palette::current().muted_text))
+                            .into(),
+                    ])
+                    .spacing(self.space(0.15))
+                    .width(Length::Fill),
+                )
+                .padding([self.space(0.52) as u16, self.space(0.74) as u16])
+                .width(Length::Fill)
+                .class(modal_row_class(radius))
+                .on_press(Message::CreateSessionIn(project.worktree.clone()))
+                .into(),
+            );
+        }
+
+        if rows.is_empty() {
+            rows.push(
+                text("No locations yet — is the server reachable?")
+                    .size(self.em(0.92))
+                    .class(cosmic::theme::Text::Color(palette::current().muted_text))
+                    .into(),
+            );
+        }
+
+        let search_row: Element<'_, Message> = row::with_children(vec![
+            inline_icon(icons::search()).into(),
+            text_input("Search locations...", &self.search_query)
+                .on_input(Message::SearchInput)
+                .width(Length::Fill)
+                .into(),
+        ])
+        .spacing(self.space(0.44))
+        .align_y(Alignment::Center)
+        .into();
+
+        let list: Element<'_, Message> = scrollable(
+            column::with_children(rows)
+                .spacing(self.space(0.15))
+                .width(Length::Fill),
+        )
+        .height(Length::Fill)
+        .into();
+
+        let body = column::with_children(vec![search_row, list])
+            .spacing(self.space(0.59))
+            .height(Length::Fill);
+
+        self.modal_frame("New session", body.into())
+    }
+
+    /// GTK's rename dialog: the title entry plus the session ID with a copy
+    /// button (`.session-id-field`).
+    fn rename_palette(&self) -> Element<'_, Message> {
+        let session_id = self.active_session_id.clone().unwrap_or_default();
+        let id_radius = self.space(0.44);
+
+        let id_field = container(
+            row::with_children(vec![
+                text(session_id.clone())
+                    .font(cosmic::iced::Font::MONOSPACE)
+                    .size(self.em(0.85))
+                    .class(cosmic::theme::Text::Color(palette::current().tray_text))
+                    .width(Length::Fill)
+                    .into(),
+                button::icon(icons::copy())
+                    .padding([2, 4])
+                    .on_press(Message::CopyText(session_id.clone()))
+                    .into(),
+            ])
+            .spacing(self.space(0.3))
+            .align_y(Alignment::Center),
+        )
+        .padding([self.space(0.15) as u16, self.space(0.44) as u16])
+        .width(Length::Fill)
+        .style(move |_theme: &cosmic::Theme| container::Style {
+            background: Some(palette::current().composer_bg.into()),
+            border: Border {
+                color: palette::current().panel_border,
+                width: 1.0,
+                radius: id_radius.into(),
+            },
+            ..Default::default()
+        });
+
+        let body_items: Vec<Element<'_, Message>> = vec![
+            text("Title")
+                .size(self.em(0.82))
+                .class(cosmic::theme::Text::Color(palette::current().muted_text))
+                .into(),
+            text_input("Session title", &self.rename_input)
+                .on_input(Message::RenameInput)
+                .into(),
+            text("Session ID")
+                .size(self.em(0.82))
+                .class(cosmic::theme::Text::Color(palette::current().muted_text))
+                .into(),
+            id_field.into(),
+            row::with_children(vec![
+                button::text("Cancel").on_press(Message::CloseDrawer).into(),
+                button::text("Rename")
+                    .class(accent_button_class(self.zoom))
+                    .on_press(Message::ApplyRename)
+                    .into(),
+            ])
+            .spacing(self.space(0.59))
+            .into(),
+        ];
+
+        let body = column::with_children(body_items)
+            .spacing(self.space(0.44))
+            .height(Length::Fill);
+
+        self.modal_frame("Rename session", body.into())
+    }
+
     fn settings_palette(&self) -> Element<'_, Message> {
         let label = |value: &'static str| -> Element<'static, Message> {
             text(value)
@@ -2144,7 +2349,11 @@ impl OpenCodeCosmic {
 
                 handle.send(Command::Bootstrap {
                     sessions: self.tabs.clone(),
-                    directories: Vec::new(),
+                    directories: self
+                        .projects
+                        .iter()
+                        .map(|project| project.worktree.clone())
+                        .collect(),
                 });
             }
             Err(e) => {
@@ -2182,6 +2391,8 @@ impl OpenCodeCosmic {
                 for session in &bootstrap.sessions {
                     self.sessions.insert(session.id.clone(), session.clone());
                 }
+
+                self.projects = bootstrap.projects.clone();
 
                 for (id, st) in &bootstrap.statuses {
                     if st.is_busy() {
@@ -2376,18 +2587,75 @@ impl OpenCodeCosmic {
         self.set_active_session(id);
     }
 
-    fn create_session(&mut self) {
+    /// GTK's new-session palette: create in the first location that matches
+    /// the palette's search, so `Ctrl+T` then `Enter` still makes a session.
+    fn confirm_new_session(&mut self) {
+        let query = self.search_query.to_lowercase();
+        let directory = self
+            .filtered_projects(&query)
+            .first()
+            .map(|project| project.worktree.clone());
+        if let Some(directory) = directory {
+            self.search_query.clear();
+            self.active_drawer = None;
+            self.create_session(&directory);
+        }
+    }
+
+    /// The locations matching a search over name and path, in list order.
+    fn filtered_projects(&self, query: &str) -> Vec<&model::Project> {
+        self.projects
+            .iter()
+            .filter(|project| {
+                query.is_empty()
+                    || project.worktree.to_lowercase().contains(query)
+                    || project
+                        .name
+                        .as_deref()
+                        .is_some_and(|name| name.to_lowercase().contains(query))
+            })
+            .collect()
+    }
+
+    fn active_session_title(&self) -> String {
+        self.active_session_id
+            .as_ref()
+            .and_then(|id| self.sessions.get(id))
+            .map(|session| session.title.clone())
+            .unwrap_or_default()
+    }
+
+    fn apply_rename(&mut self) {
+        let Some(session_id) = self.active_session_id.clone() else {
+            return;
+        };
+        let title = self.rename_input.trim().to_string();
+        if title.is_empty() {
+            return;
+        }
+        let req_id = self.next_request_id();
+        if let Some(api) = &self.api {
+            api.send(Command::RenameSession {
+                request_id: req_id,
+                session_id,
+                title,
+            });
+        }
+        self.active_drawer = None;
+    }
+
+    fn create_session(&mut self, directory: &str) {
         let req_id = self.next_request_id();
         if let Some(api) = &self.api {
             api.send(Command::CreateSession {
                 request_id: req_id,
-                directory: "/repo".to_string(),
+                directory: directory.to_string(),
                 title: None,
             });
         } else if let Some(mock) = &mut self.mock_server {
             let event = mock.handle(Command::CreateSession {
                 request_id: req_id,
-                directory: "/repo".to_string(),
+                directory: directory.to_string(),
                 title: Some("New Preview Session".to_string()),
             });
             self.handle_ui_event(event);
@@ -2579,6 +2847,16 @@ impl OpenCodeCosmic {
             .and_then(|id| self.sessions.get(id))
             .and_then(|s| s.model.as_ref())
             .map(|m| m.id.clone())
+    }
+
+    /// GTK's session-header strip shows the raw count (`13400 tokens`).
+    fn context_usage_raw(&self) -> String {
+        self.active_session_id
+            .as_ref()
+            .and_then(|id| self.conversations.get(id))
+            .and_then(|conversation| conversation.context_tokens())
+            .map(|tokens| format!("{tokens} tokens"))
+            .unwrap_or_default()
     }
 
     /// GTK's `.composer-usage`: compact tokens against the model's window,

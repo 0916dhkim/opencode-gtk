@@ -146,9 +146,11 @@ done
 sleep 1
 
 # ---------------------------------------------------------------- Ctrl+T
-# Opens a new session, and Ctrl+G leaves the caret in the composer.
+# Opens GTK's new-session palette; Enter takes the first location and Ctrl+G
+# then leaves the caret in the composer.
 mark_now
 key ctrl+t
+key Return
 expect "ctrl-t.create" "http and route == 'session.create' and r['status'] == 200"
 sleep 1
 
