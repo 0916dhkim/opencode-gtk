@@ -617,8 +617,9 @@ impl Application for OpenCodeCosmic {
         let footer_container = container(footer_buttons).padding([8, 8, 8, 8]);
         sidebar_items.push(footer_container.into());
 
+        // GTK measured ≈272px in the last screenshots.
         let sidebar_column = column::with_children(sidebar_items)
-            .width(Length::Fixed(260.0))
+            .width(Length::Fixed(272.0))
             .height(Length::Fill);
 
         let sidebar = container(sidebar_column)
@@ -1154,56 +1155,120 @@ impl Application for OpenCodeCosmic {
             main_items.push(tray_outer.into());
 
             // Composer area
-            let send_buttons = if is_busy {
-                row::with_children(vec![
+            // GTK's composer: the prompt row, then a footer with the model
+            // menu, the token counter, the queue hint while a run is active,
+            // and the actions (0.3/0.59/1.19em group spacing).
+            let active_dir = self
+                .active_session_id
+                .as_ref()
+                .and_then(|id| self.sessions.get(id))
+                .map(|s| s.directory.clone());
+            let catalog = active_dir.as_ref().and_then(|d| self.catalogs.get(d));
+            let model_id = self.active_session_model_id();
+
+            let mut footer_items: Vec<Element<'_, Message>> = Vec::new();
+
+            if let Some(catalog) = catalog
+                && !catalog.models.is_empty()
+            {
+                let labels: Vec<String> = catalog.models.iter().map(|m| m.label.clone()).collect();
+                let ids: Vec<String> = catalog.models.iter().map(|m| m.model_id.clone()).collect();
+                let selected = model_id
+                    .as_ref()
+                    .and_then(|id| ids.iter().position(|candidate| candidate == id));
+                footer_items.push(
+                    cosmic::widget::dropdown::dropdown(labels, selected, move |index| {
+                        Message::SelectModel(ids.get(index).cloned().unwrap_or_default())
+                    })
+                    .width(Length::Shrink)
+                    .into(),
+                );
+            }
+
+            footer_items.push(
+                row::with_children(Vec::<Element<'_, Message>>::new())
+                    .width(Length::Fill)
+                    .into(),
+            );
+
+            let usage = self.active_context_usage();
+            if !usage.is_empty() {
+                footer_items.push(
+                    text(usage)
+                        .size(self.em(0.82))
+                        .class(cosmic::theme::Text::Color(palette::current().muted_text))
+                        .into(),
+                );
+            }
+            if is_busy {
+                footer_items.push(
+                    text("Ctrl + Enter to queue")
+                        .size(self.em(0.82))
+                        .class(cosmic::theme::Text::Color(palette::current().muted_text))
+                        .into(),
+                );
+            }
+
+            let mut action_items: Vec<Element<'_, Message>> = Vec::new();
+            if is_busy {
+                action_items.push(
                     button::icon(icons::stop())
                         .on_press(Message::StopSession)
                         .into(),
-                    button::text("Steer (Enter)")
-                        .on_press(Message::SendPrompt(SendMode::Steer))
-                        .into(),
-                    button::text("Queue (Ctrl+Enter)")
-                        .on_press(Message::SendPrompt(SendMode::Queue))
-                        .into(),
-                ])
-                .spacing(6)
-            } else {
-                row::with_children(vec![
-                    button::icon(icons::send())
-                        .class(cosmic::theme::Button::Suggested)
-                        .on_press(Message::SendPrompt(SendMode::Send))
-                        .into(),
-                ])
-                .spacing(6)
-            };
+                );
+            }
+            action_items.push(
+                button::icon(icons::send())
+                    .class(cosmic::theme::Button::Suggested)
+                    .on_press(Message::SendPrompt(SendMode::Send))
+                    .into(),
+            );
 
-            let composer_frame = container(
-                row::with_children(vec![
-                    text_input("Ask OpenCode...", &self.composer_text)
-                        .id(composer_id())
-                        .on_input(Message::ComposerInput)
-                        // Enter / Ctrl+Enter are handled by the key subscription (see `shortcut`),
-                        // so the widget must not also submit on Enter.
-                        .width(Length::Fill)
-                        .into(),
-                    send_buttons.into(),
-                ])
-                .spacing(8)
-                .padding([6, 10])
-                .align_y(Alignment::Center),
+            let mut composer_items: Vec<Element<'_, Message>> = vec![
+                text_input("Ask OpenCode...", &self.composer_text)
+                    .id(composer_id())
+                    .on_input(Message::ComposerInput)
+                    // Enter / Ctrl+Enter are handled by the key subscription (see `shortcut`),
+                    // so the widget must not also submit on Enter.
+                    .width(Length::Fill)
+                    .into(),
+            ];
+
+            let footer = row::with_children(
+                footer_items
+                    .into_iter()
+                    .chain(action_items)
+                    .collect::<Vec<_>>(),
             )
+            .spacing(self.space(0.59))
+            .align_y(Alignment::Center);
+
+            composer_items.push(footer.into());
+
+            let composer_radius = self.space(0.89);
+            let composer_frame = container(
+                column::with_children(composer_items)
+                    .spacing(self.space(0.3))
+                    .width(Length::Fill),
+            )
+            .padding([self.space(0.59) as u16, self.space(0.74) as u16])
             .width(Length::Fill)
-            .style(|_theme| container::Style {
+            .style(move |_theme: &cosmic::Theme| container::Style {
                 background: Some(palette::current().composer_bg.into()),
                 border: Border {
                     color: palette::current().composer_border,
                     width: 1.0,
-                    radius: 8.0.into(),
+                    radius: composer_radius.into(),
                 },
                 ..Default::default()
             });
 
-            let composer_outer = container(composer_frame).padding([8, 16, 14, 16]);
+            let composer_outer = container(composer_frame).padding([
+                self.space(0.59) as u16,
+                self.space(1.19) as u16,
+                self.space(1.19) as u16,
+                self.space(1.19) as u16,
+            ]);
             main_items.push(composer_outer.into());
         } else {
             let empty_view = column::with_children(vec![
@@ -2076,6 +2141,25 @@ impl OpenCodeCosmic {
             return;
         };
 
+        // The provider ID comes from the catalog; only fall back to the
+        // historical default when the model is not in it.
+        let directory = self
+            .sessions
+            .get(&active_id)
+            .map(|s| s.directory.clone())
+            .unwrap_or_default();
+        let provider_id = self
+            .catalogs
+            .get(&directory)
+            .and_then(|catalog| {
+                catalog
+                    .models
+                    .iter()
+                    .find(|m| m.model_id == model_id)
+                    .map(|m| m.provider_id.clone())
+            })
+            .unwrap_or_else(|| "anthropic".to_string());
+
         let req_id = self.next_request_id();
         if let Some(api) = &self.api {
             api.send(Command::SelectModel {
@@ -2083,7 +2167,7 @@ impl OpenCodeCosmic {
                 session_id: active_id,
                 model: protocol::ModelRef {
                     id: model_id.to_string(),
-                    provider_id: "anthropic".to_string(),
+                    provider_id,
                     variant: None,
                 },
             });
@@ -2110,6 +2194,14 @@ impl OpenCodeCosmic {
             .and_then(|s| s.model.as_ref())
             .map(|m| m.id.clone())
             .unwrap_or_else(|| "Default".to_string())
+    }
+
+    fn active_session_model_id(&self) -> Option<String> {
+        self.active_session_id
+            .as_ref()
+            .and_then(|id| self.sessions.get(id))
+            .and_then(|s| s.model.as_ref())
+            .map(|m| m.id.clone())
     }
 
     fn active_context_usage(&self) -> String {
